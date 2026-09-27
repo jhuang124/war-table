@@ -40,6 +40,11 @@ export interface ContinentGeom {
   id: ContinentId;
   /** Where the continent name + bonus label sits (usually on the ocean beside the continent). */
   labelAnchor: Vec2;
+  /**
+   * Optional (additive): width in board units of clear water centred on `labelAnchor` (no land,
+   * sea lanes or other labels within ~0.35 units, for a ~1.3-unit-tall line of text).
+   */
+  labelRoom?: number;
 }
 
 export interface BoardGeometry {

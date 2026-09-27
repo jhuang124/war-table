@@ -180,7 +180,15 @@ export type Phase =
     }
   | { kind: 'attack' }
   /** A territory was just conquered. Move between `min` and `max` armies from `from` into `to`. */
-  | { kind: 'occupy'; from: TerritoryId; to: TerritoryId; min: number; max: number }
+  | {
+      kind: 'occupy';
+      from: TerritoryId;
+      to: TerritoryId;
+      min: number;
+      max: number;
+      /** Engine bookkeeping (additive): who owned `to` before the conquest, for continent diffing. */
+      previousOwner?: PlayerId;
+    }
   | { kind: 'fortify' }
   | {
       kind: 'game-over';
