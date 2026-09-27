@@ -1,16 +1,13 @@
-// Modal-ish layers: hand-off cover (§6.3), all-humans-out card (§4.5), confirm dialog, pause menu,
-// rules card (§7.6) and settings.
+// Modal-ish layers: the hand-off cover, the confirm dialog, and the menu (≡ / Esc) with the sheets it
+// opens: rules, settings (AI speed and the seat hand-off live here now) and the read-only log.
 
-import type { GameVM, RosterRowVM, SeatRef, Settings, UiIntent, ViewModel } from '../game/viewModel';
+import type { GameVM, LogLineVM, SeatRef, Settings, UiIntent, ViewModel } from '../game/viewModel';
 
 import { PLAYER_COLORS } from '../shared/palette';
 import { Segmented, Slider, Switch, uiButton } from './controls';
-import { animateIn, emblem, h, motion, setAttr, setStyle, setText, titleText, toggle } from './dom';
+import { animateIn, emblem, h, minus, motion, setAttr, setStyle, setText, titleText, toggle } from './dom';
 
 type Send = (i: UiIntent) => void;
-
-/** Pause → Seats (R1-22): the controller owns the copy and the intent; with no action the row doesn't render. */
-const seatAction = (r: RosterRowVM) => r.seatAction ?? null;
 
 // ---------------------------------------------------------------------------
 // Hand-off cover: mounted at full opacity in the same frame (no fade in), fades out 240 ms.
@@ -34,7 +31,7 @@ export class Handoff {
     this.emb = h('div', 'ho-emb');
     this.title = h('h1', 'ho-title');
     this.sub = h('p', 'ho-sub num');
-    const btn = uiButton('', 'brass role-primary big', () => send({ type: 'handoffAccept' }), 'Enter', 'handoff-accept');
+    const btn = uiButton('', 'brass role-primary big', () => send({ type: 'handoffAccept' }), undefined, 'handoff-accept');
     this.btnLabel = btn.querySelector('.btn-label')!;
     box.append(this.emb, this.title, this.sub, btn);
     this.el.append(box);
@@ -71,34 +68,6 @@ export class Handoff {
 }
 
 // ---------------------------------------------------------------------------
-// All humans out: non-modal card.
-// ---------------------------------------------------------------------------
-
-export class HumansOut {
-  readonly el: HTMLDivElement;
-  private on = false;
-  constructor(send: Send) {
-    this.el = h('div', 'humans-out panel hidden');
-    this.el.setAttribute('role', 'status');
-    const t = h('div', 'ho2-text');
-    t.append(h('strong', '', 'All humans are out.'), h('span', '', 'The AIs can play it out, or you can call it now.'));
-    const row = h('div', 'ho2-row');
-    row.append(
-      uiButton('Watch the AIs finish · fast', 'brass role-primary', () => send({ type: 'watchAisFinish' }), undefined, 'watch-ais'),
-      uiButton('End game', 'role-secondary', () => send({ type: 'endGameNow' }), undefined, 'humans-out-end'),
-    );
-    this.el.append(t, row);
-  }
-  update(on: boolean): void {
-    if (on === this.on) return;
-    this.on = on;
-    setAttr(this.el, 'data-testid', on ? 'humans-out' : null);
-    toggle(this.el, 'hidden', !on);
-    if (on) animateIn(this.el);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Confirm dialog (End game now / Restart): the only confirms in the game.
 // ---------------------------------------------------------------------------
 
@@ -117,9 +86,9 @@ export class Confirm {
     this.box = h('div', 'sheet confirm-box');
     this.text = h('p', 'confirm-text num');
     const row = h('div', 'confirm-row');
-    this.yes = uiButton('', 'brass role-primary', () => send({ type: 'confirm', yes: true }), 'Enter', 'confirm-yes');
+    this.yes = uiButton('', 'brass role-primary', () => send({ type: 'confirm', yes: true }), undefined, 'confirm-yes');
     this.yesLabel = this.yes.querySelector('.btn-label')!;
-    row.append(uiButton('Keep playing', 'role-secondary', () => send({ type: 'confirm', yes: false }), 'Esc', 'confirm-no'), this.yes);
+    row.append(uiButton('Keep playing', 'role-secondary', () => send({ type: 'confirm', yes: false }), undefined, 'confirm-no'), this.yes);
     this.box.append(this.text, row);
     this.el.append(this.box);
   }
@@ -139,37 +108,56 @@ export class Confirm {
 }
 
 // ---------------------------------------------------------------------------
-// Pause, rules, settings: one scrim, three sheets.
+// The menu and its sheets: one scrim, four sheets.
 // ---------------------------------------------------------------------------
 
 const RULE_BLOCKS: [string, string, string][] = [
-  ['Turn', 'Reinforce, attack as often as you like, then make one fortify move.', 'Take at least one territory in a turn to earn a card.'],
+  ['Turn', 'Place your new armies, attack as often as you like, then make one fortify move.', 'Take at least one territory in a turn to earn a card.'],
   ['Armies', '1 army per 3 territories you hold (at least 3), plus a bonus for each whole continent.', 'Card sets add more on top.'],
   ['Attacking', 'Attack a neighbor from a territory with 2+ armies. You roll up to 3 dice, the defender up to 2.', 'Highest dice pair off. Ties go to the defender.'],
   ['Cards', 'Three of a kind, one of each, or any two plus a wild trades for armies.', 'Sets grow every time anyone trades. At 5 cards you must trade.'],
   ['Fortify', 'Move armies once, through your own connected territories. It ends your turn.', 'One army always stays behind to hold a territory.'],
 ];
 
-const SHORTCUTS: [string, string][] = [
-  ['Enter', 'The brass button'],
-  ['Space', 'Blitz · confirm a move'],
-  ['E', 'Fortify → / End turn'],
-  ['B', 'Blitz'],
-  ['1 2 3', 'Dice to roll'],
-  ['Right-click', 'Take one army back'],
-  ['Shift · Alt', '+5 · all on a click'],
-  ['Tab', 'Cycle clickable territories'],
-  ['F', 'Focus the selection'],
-  ['L', 'Territory names'],
-  ['M', 'Mute'],
-  ['Esc', 'Back · pause'],
-];
+class LogSheet {
+  readonly el: HTMLDivElement;
+  private list: HTMLDivElement;
+  private empty: HTMLDivElement;
+  private lines: LogLineVM[] | null = null;
+
+  constructor(back: () => void) {
+    this.el = h('div', 'sheet log-sheet');
+    const head = h('div', 'sheet-head');
+    head.append(h('h1', 'sheet-title', 'Log'), uiButton('Close', 'role-exit', back, undefined, 'log-close'));
+    this.list = h('div', 'log-list');
+    this.empty = h('div', 'log-empty', 'Nothing yet. Battles show up here, one line each.');
+    this.el.append(head, this.list, this.empty);
+  }
+
+  update(lines: LogLineVM[]): void {
+    if (lines === this.lines) return;
+    this.lines = lines;
+    this.list.textContent = '';
+    // Newest first.
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const l = lines[i];
+      const row = h('div', `log-line kind-${l.kind}`);
+      const emb = h('span', 'log-emb');
+      if (l.seat) emb.append(emblem(l.seat.color));
+      row.append(emb, h('span', 'log-text', minus(l.text)), h('span', 'log-round num', l.round > 0 ? `R${l.round}` : ''));
+      this.list.append(row);
+    }
+    toggle(this.empty, 'hidden', lines.length > 0);
+    this.list.scrollTop = 0;
+  }
+}
 
 export class Overlays {
   readonly el: HTMLDivElement;
   private pause: HTMLDivElement;
   private rules: HTMLDivElement;
   private settings: HTMLDivElement;
+  private log: LogSheet;
   private rulesHouse: HTMLDivElement;
   private current: string | null = null;
   private s: {
@@ -179,7 +167,6 @@ export class Overlays {
     vol: Slider;
     sw: Record<string, Switch>;
   };
-  private settingsBack: HTMLButtonElement;
   private fitNote: HTMLSpanElement;
   private seats: HTMLDivElement;
   private seatsKey = '';
@@ -189,31 +176,32 @@ export class Overlays {
     this.el = h('div', 'scrim overlays hidden');
     this.el.setAttribute('role', 'dialog');
     this.el.setAttribute('aria-modal', 'true');
+    // A click on the scrim itself (not a sheet) closes the menu.
+    this.el.addEventListener('click', (e) => {
+      if (e.target === this.el && this.current === 'pause') send({ type: 'overlay', overlay: null });
+    });
 
-    // Pause
+    // Menu
     this.pause = h('div', 'sheet pause-sheet');
-    this.pause.append(h('h1', 'sheet-title', 'Paused'));
+    this.pause.append(h('h1', 'sheet-title', 'Menu'));
     const list = h('div', 'menu-list');
     list.append(
-      uiButton('Resume', 'brass role-primary menu-item', () => send({ type: 'overlay', overlay: null }), 'Esc', 'pause-resume'),
-      uiButton('Rules', 'menu-item', () => send({ type: 'overlay', overlay: 'rules' }), '?', 'pause-rules'),
+      uiButton('Resume', 'brass role-primary menu-item', () => send({ type: 'overlay', overlay: null }), undefined, 'pause-resume'),
+      uiButton('Rules', 'menu-item', () => send({ type: 'overlay', overlay: 'rules' }), undefined, 'pause-rules'),
       uiButton('Settings', 'menu-item', () => send({ type: 'overlay', overlay: 'settings' }), undefined, 'pause-settings'),
-      uiButton('Save & quit to title', 'menu-item', () => send({ type: 'saveAndQuit' }), undefined, 'pause-quit'),
+      uiButton('Log', 'menu-item', () => send({ type: 'overlay', overlay: 'log' }), undefined, 'pause-log'),
+      uiButton('Save & quit', 'menu-item', () => send({ type: 'saveAndQuit' }), undefined, 'pause-quit'),
       h('div', 'menu-sep'),
-      uiButton('Restart', 'menu-item quiet', () => send({ type: 'restart' }), undefined, 'pause-restart'),
       uiButton('End game now', 'menu-item quiet', () => send({ type: 'endGameNow' }), undefined, 'pause-endgame'),
+      uiButton('Restart', 'menu-item quiet', () => send({ type: 'restart' }), undefined, 'pause-restart'),
     );
     this.pause.append(list);
-    // Seats: hand a seat to the AI when a friend leaves (and back). Filled from the roster in update().
-    this.seats = h('div', 'menu-seats hidden');
-    this.pause.append(this.seats);
 
     // Rules
     this.rules = h('div', 'sheet rules-sheet');
     const rh = h('div', 'sheet-head');
     rh.append(h('h1', 'sheet-title', 'How to play'));
-    rh.append(uiButton('Close', 'role-exit', () => send({ type: 'overlay', overlay: this.backTarget() }), 'Esc'));
-    const rg = h('div', 'rules-grid');
+    rh.append(uiButton('Close', 'role-exit', () => send({ type: 'overlay', overlay: this.backTarget() }), undefined, 'rules-close'));
     const blocks = h('div', 'rules-blocks');
     for (const [t, a, b] of RULE_BLOCKS) {
       const blk = h('div', 'rule');
@@ -222,24 +210,13 @@ export class Overlays {
     }
     this.rulesHouse = h('div', 'rule house');
     blocks.append(this.rulesHouse);
-    const keys = h('div', 'rules-keys');
-    keys.append(h('h2', 'rule-title', 'Shortcuts'));
-    const dl = h('dl', 'keys');
-    for (const [k, d] of SHORTCUTS) {
-      const dt = h('dt');
-      for (const part of k.split(' · ')) dt.append(h('kbd', 'kc', part));
-      dl.append(dt, h('dd', '', d));
-    }
-    keys.append(dl);
-    rg.append(blocks, keys);
-    this.rules.append(rh, rg);
+    this.rules.append(rh, blocks);
 
     // Settings
     this.settings = h('div', 'sheet settings-sheet');
     const sh = h('div', 'sheet-head');
     sh.append(h('h1', 'sheet-title', 'Settings'));
-    this.settingsBack = uiButton('Done', 'role-exit', () => send({ type: 'overlay', overlay: this.backTarget() }), 'Esc');
-    sh.append(this.settingsBack);
+    sh.append(uiButton('Done', 'role-exit', () => send({ type: 'overlay', overlay: this.backTarget() }), undefined, 'settings-done'));
     const set = (patch: Partial<Settings>) => send({ type: 'setting', patch });
     const anim = new Segmented<0 | 1 | 2>('seg-row', (v) => set({ animationSpeed: v }), 'Animation speed');
     anim.setOptions([
@@ -247,7 +224,7 @@ export class Overlays {
       { value: 2, label: '2×' },
       { value: 0, label: 'Instant' },
     ]);
-    const ai = new Segmented<Settings['aiSpeed']>('seg-row', (v) => set({ aiSpeed: v }), 'AI speed');
+    const ai = new Segmented<Settings['aiSpeed']>('seg-row', (v) => set({ aiSpeed: v }), 'AI speed', 'ai');
     ai.setOptions([
       { value: 'watch', label: 'Watch' },
       { value: 'fast', label: 'Fast' },
@@ -261,11 +238,11 @@ export class Overlays {
     ]);
     const vol = new Slider('Sound volume', (v) => set({ sfxVolume: v }));
     const sw: Record<string, Switch> = {
+      showLabels: new Switch('Territory names', (v) => set({ showLabels: v }), 'On every tile, not just the one you point at', 'set-labels'),
+      showWinChance: new Switch('Show win chance', (v) => set({ showWinChance: v }), 'Otherwise a word: likely, coin flip…'),
+      hideCardsBetweenTurns: new Switch('Hide cards between turns', (v) => set({ hideCardsBetweenTurns: v }), 'A pass-the-laptop cover when 2+ humans play'),
       muted: new Switch('Mute all sound', (v) => set({ muted: v })),
       music: new Switch('Music', (v) => set({ music: v }), 'A quiet ambient bed'),
-      showLabels: new Switch('Territory names on the board', (v) => set({ showLabels: v })),
-      showWinChance: new Switch('Show win chance', (v) => set({ showWinChance: v }), 'The odds word always shows'),
-      hideCardsBetweenTurns: new Switch('Hide cards between turns', (v) => set({ hideCardsBetweenTurns: v }), 'A pass-the-laptop cover when 2+ humans play'),
       autoCamera: new Switch('Return camera home each turn', (v) => set({ autoCamera: v }), 'Only if you moved it'),
       reduceMotion: new Switch('Reduce motion', (v) => set({ reduceMotion: v })),
     };
@@ -283,17 +260,23 @@ export class Overlays {
     const cols = h('div', 'settings-cols');
     const c1 = h('div', 'settings-col');
     c1.append(
-      field('Text size', text.el, this.fitNote),
-      field('Animation speed', anim.el, 'Your own turns'),
       field('AI speed', ai.el, 'How AI turns play'),
+      field('Animation speed', anim.el, 'Your own turns'),
+      field('Text size', text.el, this.fitNote),
       field('Sound volume', vol.el),
     );
+    // Seats: hand a seat to the AI when a friend leaves (and back). Filled in update().
+    this.seats = h('div', 'menu-seats hidden');
+    c1.append(this.seats);
     const c2 = h('div', 'settings-col');
-    c2.append(sw.muted.el, sw.music.el, sw.showLabels.el, sw.showWinChance.el, sw.hideCardsBetweenTurns.el, sw.autoCamera.el, sw.reduceMotion.el);
+    c2.append(sw.showLabels.el, sw.showWinChance.el, sw.hideCardsBetweenTurns.el, sw.muted.el, sw.music.el, sw.autoCamera.el, sw.reduceMotion.el);
     cols.append(c1, c2);
     this.settings.append(sh, cols);
 
-    this.el.append(this.pause, this.rules, this.settings);
+    // Log
+    this.log = new LogSheet(() => send({ type: 'overlay', overlay: this.backTarget() }));
+
+    this.el.append(this.pause, this.rules, this.settings, this.log.el);
   }
 
   /** The chosen text size was fitted down to this screen (src/ui/uiScale.ts). */
@@ -301,7 +284,7 @@ export class Overlays {
     toggle(this.fitNote, 'hidden', !on);
   }
 
-  /** Where Close / Esc goes from rules or settings: back to the pause menu only if it was opened from there. */
+  /** Where Close / Esc goes from a sheet: back to the menu only if it was opened from there. */
   backTarget(): 'pause' | null {
     return this.screen === 'game' && this.fromPause ? 'pause' : null;
   }
@@ -310,19 +293,18 @@ export class Overlays {
   update(vm: ViewModel): void {
     this.screen = vm.screen;
     const o = vm.overlay;
-    if (o !== this.current && (o === 'rules' || o === 'settings')) this.fromPause = this.current === 'pause' || (this.fromPause && this.current !== null);
+    if (o !== this.current && o !== null && o !== 'pause') this.fromPause = this.current === 'pause' || (this.fromPause && this.current !== null);
     toggle(this.el, 'hidden', !o);
     toggle(this.el, 'over-menu', vm.screen !== 'game');
-    toggle(this.pause, 'hidden', o !== 'pause');
-    toggle(this.rules, 'hidden', o !== 'rules');
-    toggle(this.settings, 'hidden', o !== 'settings');
-    setAttr(this.pause, 'data-testid', o === 'pause' ? 'pause' : null);
-    setAttr(this.rules, 'data-testid', o === 'rules' ? 'rules' : null);
-    setAttr(this.settings, 'data-testid', o === 'settings' ? 'settings' : null);
+    const sheets = { pause: this.pause, rules: this.rules, settings: this.settings, log: this.log.el };
+    for (const [k, el] of Object.entries(sheets)) {
+      toggle(el, 'hidden', o !== k);
+      setAttr(el, 'data-testid', o === k ? k : null);
+    }
     if (o !== this.current) {
       const prev = this.current;
       this.current = o;
-      const sheet = o === 'pause' ? this.pause : o === 'rules' ? this.rules : o === 'settings' ? this.settings : null;
+      const sheet = o ? sheets[o] : null;
       if (sheet) {
         if (!prev && !motion.reduced) this.el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: 'ease-out' });
         animateIn(sheet, { dy: 12 });
@@ -335,42 +317,31 @@ export class Overlays {
       this.s.text.set(st.textSize);
       this.s.vol.set(st.sfxVolume);
       for (const k of Object.keys(this.s.sw)) this.s.sw[k].set(!!st[k as keyof Settings]);
+      this.renderSeats(vm.game?.seatActions ?? []);
     }
-    if (o === 'rules') this.renderHouse(vm);
-    if (o === 'pause') this.renderSeats(vm);
+    if (o === 'rules') this.renderHouse(vm.rulesNotes);
+    if (o === 'log') this.log.update(vm.game?.log ?? []);
   }
 
-  private renderSeats(vm: ViewModel): void {
-    const rows = (vm.game?.roster ?? []).filter((r) => !r.eliminated && seatAction(r));
-    const key = rows.map((r) => `${r.seat.id}:${r.seat.color}:${seatAction(r)!.label}`).join('|');
+  private renderSeats(actions: GameVM['seatActions']): void {
+    const key = actions.map((a) => `${a.seat.id}:${a.seat.color}:${a.label}`).join('|');
     if (key === this.seatsKey) return;
     this.seatsKey = key;
     this.seats.textContent = '';
-    toggle(this.seats, 'hidden', rows.length === 0);
-    if (!rows.length) return;
-    this.seats.append(h('div', 'menu-sep'), h('div', 'menu-head', 'Seats'));
-    for (const r of rows) {
-      const a = seatAction(r)!;
-      const b = uiButton(a.label, 'menu-item quiet seat-item', () => this.send(a.intent), undefined, `pause-seat-${r.seat.id}`);
-      const emb = emblem(r.seat.color);
-      setStyle(b, '--seat-light', PLAYER_COLORS[r.seat.color].light);
-      b.prepend(emb);
+    toggle(this.seats, 'hidden', actions.length === 0);
+    if (!actions.length) return;
+    this.seats.append(h('div', 'field-label', 'Seats'));
+    for (const a of actions) {
+      const b = uiButton(a.label, 'menu-item quiet seat-item', () => this.send(a.intent), undefined, `seat-action-${a.seat.id}`);
+      setStyle(b, '--seat-light', PLAYER_COLORS[a.seat.color].light);
+      b.prepend(emblem(a.seat.color));
       this.seats.append(b);
     }
   }
 
-  private renderHouse(vm: ViewModel): void {
-    const g = vm.game;
-    const needed = g?.roster.find((r) => !r.eliminated)?.territoriesNeeded;
-    const hr = g?.house ?? vm.newGame.house;
-    const lines: string[] = [];
-    if (needed) lines.push(needed >= 42 ? 'Goal: take every territory.' : `Goal: first to ${needed} territories wins.`);
-    else lines.push(vm.newGame.summary);
-    if (g && /of \d+/.test(g.topBar.round)) lines.push(`${g.topBar.round.replace(/^Round \d+ of /, 'Game ends after round ')} · most territories wins.`);
-    lines.push(hr.cardBonus === 'progressive' ? 'Card sets: 4, 6, 8, 10, 12, 15, then +5 each.' : 'Card sets: 3 infantry 4 · 3 cavalry 6 · 3 artillery 8 · one of each 10.');
-    lines.push(hr.fortifyRule === 'connected' ? 'Fortify: along any chain of your territories.' : 'Fortify: to a neighbor only.');
+  private renderHouse(lines: string[]): void {
     this.rulesHouse.textContent = '';
     this.rulesHouse.append(h('h2', 'rule-title', 'This game'));
-    for (const l of lines) this.rulesHouse.append(h('p', 'num', l));
+    for (const l of lines) this.rulesHouse.append(h('p', 'num', minus(l)));
   }
 }

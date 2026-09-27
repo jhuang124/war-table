@@ -1,12 +1,12 @@
 // The main path, 1 human + 3 normal AIs, from the title with real clicks on the real board and HUD:
-//   title → New game (name, seed) → Start → Quick deal → first reinforce (≤ 20 s)
-//   reinforce: +1, +1, right-click −1, pill `All N` · target-first attack · click the armed target again
-//   (a single roll) · Blitz · occupy by chaining a board click (default count) · Move · Fortify → a
-//   move that ends the turn · AI turns hand control back within budget · later rounds until a card set
-//   is ready → trade chip.
+//   title → New game (name, seed) → Start → Quick deal → first Place (≤ 20 s)
+//   Place: pick, stepper to 2, Place 2, Undo, double-click (all) · target-first attack · click the armed
+//   target again (a single roll) · Blitz · occupy by chaining a board click (default count) · Move ·
+//   Fortify → a move that ends the turn · AI turns hand control back within budget · later rounds until
+//   a card set is ready → the one-button trade.
 // Also checks the §10 feel budgets from __risk.metrics(): roll/blitz/brief timings, AI turn median and
 // p95, forced wait 0, camera never moves during human input and stays ≤ 45°/s, idle board 0 tweens.
-import { ART, check, clearStorage, clickBtn, clickT, finish, idle, open, rendered, state, ui } from './lib';
+import { ART, check, clearStorage, clickBtn, clickT, dblT, finish, idle, open, place, rendered, state, ui } from './lib';
 import { attackTargets, fortifyTargets, TERRITORY_IDS, type GameState, type TerritoryId } from '../../src/engine';
 
 const results: string[] = [];
@@ -22,9 +22,9 @@ await page.evaluate(`(() => {
     const u = window.__risk.ui();
     if (u.screen !== 'game') return;
     window.__l1.samples++;
-    if (!u.actionBarText) window.__l1.empty++;
+    if (!u.line) window.__l1.empty++;
     window.__l1.maxBanners = Math.max(window.__l1.maxBanners, u.banners.length);
-    window.__l1.maxToasts = Math.max(window.__l1.maxToasts, u.toasts.length);
+    window.__l1.maxToasts = Math.max(window.__l1.maxToasts, u.buttons.length);
   }, 50);
 })()`);
 
@@ -79,29 +79,37 @@ await page.screenshot({ path: `${ART}/game-reinforce-start.png` });
 const f = front(s!)!;
 const toPlace = (s!.phase as { remaining: number }).remaining;
 const before = s!.territories[f.from].armies;
-await clickT(page, f.from);
-await clickT(page, f.from);
-await clickT(page, f.from, { button: 'right' });
-let st = (await state(page))!;
-check(st.territories[f.from].armies === before + 1, `+1, +1, right-click −1 → ${f.from} ${st.territories[f.from].armies} (was ${before})`, results);
-await page.locator('[data-testid="pill-all"]').click();
-st = (await state(page))!;
-check((st.phase as { remaining: number }).remaining === 0 && st.territories[f.from].armies === before + toPlace, `pill All → all ${toPlace} on ${f.from}`, results);
 let u = await ui(page);
-check(u.actionBarText === 'All placed · click an enemy to attack', `line 1: ${u.actionBarText}`, results);
+check(u.step === 'Place' && new RegExp(`^Place ${toPlace} arm(y|ies) · click a territory$`).test(u.line), `[${u.step}] ${u.line}`, results);
+await place(page, f.from, 2);
+let st = (await state(page))!;
+check(st.territories[f.from].armies === before + 2, `pick, stepper 2, Place 2 → ${f.from} ${st.territories[f.from].armies} (was ${before})`, results);
+await clickBtn(page, 'btn-undo');
+await idle(page);
+st = (await state(page))!;
+check(st.territories[f.from].armies === before, `Undo → ${f.from} ${st.territories[f.from].armies}`, results);
+await dblT(page, f.from);
+await idle(page);
+st = (await state(page))!;
+check((st.phase as { remaining: number }).remaining === 0 && st.territories[f.from].armies === before + toPlace, `double-click → all ${toPlace} on ${f.from}`, results);
+u = await ui(page);
+check(u.line === 'All placed · attack next' && u.primary === 'Attack →', `the line: ${u.line} · ${u.primary}`, results);
 
 // Target-first: click the enemy (implicit exit from reinforce), then the armed target again = Roll.
 await clickT(page, f.to);
 u = await ui(page);
-check(u.primary === 'Blitz' && !!u.battle && /^Attack /.test(u.actionBarText), `armed target-first: "${u.actionBarText}" · ${u.battle?.odds}`, results);
+check(u.primary === 'Blitz' && !!u.battle && /^Attack .+ · \d+%$/.test(u.line) && u.step === 'Attack', `armed target-first: "${u.line}" · tray ${u.battle?.header}`, results);
 await page.screenshot({ path: `${ART}/game-armed.png` });
+const pre = (await state(page))!;
+const sum0 = pre.territories[f.from].armies + pre.territories[f.to].armies;
 await clickT(page, f.to);
 await page.waitForTimeout(700);
 await page.screenshot({ path: `${ART}/game-roll.png` });
 await idle(page);
 st = (await state(page))!;
 u = await ui(page);
-check(!!u.battle?.result, `single roll result: ${u.battle?.result}`, results);
+const lost = sum0 - (st.territories[f.from].armies + (st.territories[f.to].owner === 0 ? 0 : st.territories[f.to].armies));
+check(lost >= 1 && lost <= 3, `clicking the armed target rolled once (${lost} armies lost in the fight)`, results);
 let conquests = 0;
 // Blitz until it falls (or we run dry).
 for (let guard = 0; guard < 3 && st.phase.kind === 'attack' && st.territories[f.to].owner !== 0 && st.territories[f.from].armies > 1; guard++) {
@@ -122,7 +130,7 @@ if (st.phase.kind === 'occupy') {
     st = (await state(page))!;
     u = await ui(page);
     check(st.phase.kind === 'attack' && st.territories[f.to].armies >= 1, `chain click confirmed the occupy (${f.to} ${st.territories[f.to].armies})`, results);
-    check(/^Attack /.test(u.actionBarText), `chained: ${u.actionBarText}`, results);
+    check(/^Attack /.test(u.line), `chained: ${u.line}`, results);
     if (u.primary === 'Blitz') {
       await clickBtn(page, 'btn-blitz');
       await idle(page);
@@ -139,10 +147,15 @@ if (st.phase.kind === 'occupy') {
 }
 st = (await state(page))!;
 u = await ui(page);
-check(u.buttons.some((b) => b.label === 'End turn · draw a card'), `card earned: exits ${u.buttons.filter((b) => /End turn/.test(b.label)).map((b) => b.label)}`, results);
+if (!u.buttons.includes('End turn')) {
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  u = await ui(page);
+}
+check(u.buttons.join(' / ') === 'Fortify → / End turn', `nothing armed: ${u.buttons.join(' / ')} (no card copy)`, results);
 
-// Fortify: Fortify → , pick a source and a destination, Move N · ends turn.
-await clickBtn(page, 'btn-fortifyNext');
+// Fortify: Fortify → , pick a source and a destination, Move N · end turn.
+await clickBtn(page, 'btn-fortify');
 await idle(page);
 st = (await state(page))!;
 check(st.phase.kind === 'fortify', 'Fortify → reaches the fortify step', results);
@@ -152,7 +165,7 @@ if (src) {
   await clickT(page, src);
   await clickT(page, dst);
   u = await ui(page);
-  check(/^Move \d+ · ends turn$/.test(u.primary ?? ''), `fortify primary: ${u.primary}`, results);
+  check(/^Move \d+ · end turn$/.test(u.primary ?? '') && u.count?.control === 'slider', `fortify primary: ${u.primary} with a slider`, results);
   const moved = st.territories[src].armies - 1;
   await clickBtn(page, 'btn-move');
   await page.waitForFunction((p) => window.__risk.getState()!.currentPlayer !== p, 0, { timeout: 10_000 });
@@ -168,31 +181,38 @@ let round = 1;
 for (; round < 12 && !traded; round++) {
   s = await myTurn(120_000);
   if (!s) break;
-  if (round === 4) await clickBtn(page, 'ai-fast'); // the watch-speed budget sample is rounds 1–3
+  if (round === 4) {
+    // The watch-speed budget sample is rounds 1–3; AI speed lives in Settings now.
+    await clickBtn(page, 'menu');
+    await clickBtn(page, 'pause-settings');
+    await clickBtn(page, 'ai-fast');
+    await clickBtn(page, 'settings-done');
+    await clickBtn(page, 'pause-resume');
+    await page.waitForFunction(() => !document.querySelector('[data-testid="pause"]'));
+  }
   u = await ui(page);
-  const tradeChip = page.locator('[data-testid="chip-trade"]');
-  if ((await tradeChip.count()) > 0 || u.primary?.startsWith('Trade for')) {
+  if (u.primary?.startsWith('Trade cards +')) {
     const r0 = (s.phase as { remaining: number }).remaining;
-    if (await tradeChip.count()) await tradeChip.click();
-    else await clickBtn(page, 'btn-trade');
+    const label = u.primary;
+    await clickBtn(page, 'btn-trade');
     await idle(page);
     st = (await state(page))!;
-    const chip = await page.locator('[data-testid="chip-receiptCards"]').textContent().catch(() => null);
-    check((st.phase as { remaining: number }).remaining > r0 && /^Cards \+\d+$/.test(chip ?? ''), `traded a set: ${r0} → ${(st.phase as { remaining: number }).remaining} to place, chip "${chip}"`, results);
+    const gained = (st.phase as { remaining: number }).remaining - r0;
+    check(gained >= Number(label.replace(/\D+/g, '')), `traded a set with one button ("${label}"): ${r0} → ${(st.phase as { remaining: number }).remaining} to place`, results);
     traded = true;
     s = st;
   }
   const fr = front(s);
   if (!fr) break;
-  await clickT(page, fr.from);
-  await page.locator('[data-testid="pill-all"]').click();
+  await dblT(page, fr.from);
+  await idle(page);
   await clickT(page, fr.to);
   u = await ui(page);
   if (u.primary !== 'Blitz') {
     const dbg = await page.evaluate((t) => {
       const p = window.__risk.screenPos(t as never);
       const el = p ? document.elementFromPoint(p.x, p.y) : null;
-      return { ex: window.__risk.explain(t as never), p, hit: el ? el.className || el.tagName : null, line: window.__risk.ui().actionBarText };
+      return { ex: window.__risk.explain(t as never), p, hit: el ? el.className || el.tagName : null, line: window.__risk.ui().line };
     }, fr.to);
     console.log('   target click did not arm:', fr.from, '→', fr.to, JSON.stringify(dbg));
   }
@@ -208,12 +228,14 @@ for (; round < 12 && !traded; round++) {
   st = (await state(page))!;
   if (st.phase.kind === 'game-over') break;
   if (st.phase.kind !== 'attack' && st.phase.kind !== 'fortify') {
-    console.log('   unexpected step before End turn:', JSON.stringify(st.phase), (await ui(page)).actionBarText);
+    console.log('   unexpected step before End turn:', JSON.stringify(st.phase), (await ui(page)).line);
     await page.screenshot({ path: `${ART}/game-unexpected.png` });
   }
+  if (!(await ui(page)).buttons.includes('End turn')) await page.keyboard.press('Escape');
+  if (!(await ui(page)).buttons.includes('End turn')) await page.keyboard.press('Escape');
   await clickBtn(page, 'btn-endTurn');
 }
-check(traded, `a card set came up and was traded by the chip (round ${round})`, results);
+check(traded, `a card set came up and was traded with one button (round ${round})`, results);
 
 // --- Budgets -----------------------------------------------------------------------------------------
 const m = await page.evaluate(() => window.__risk.metrics());
@@ -226,7 +248,7 @@ check(watchAi.length >= 4 && med <= 6000, `AI turn median ${med} ms (≤ 6 s, ${
 check(p95 <= 12_000, `AI turn p95 ${p95} ms (≤ 12 s)`, results);
 const humans = m.turns.filter((t) => t.kind === 'human');
 console.log('   human turns:', humans.map((t) => `${t.clicks} clicks/${t.ms} ms`).join(', '));
-check(humans.length > 0 && humans[0].clicks <= 16, `turn 1 (reinforce with an undo, roll, blitz, chain, fortify) took ${humans[0]?.clicks} clicks`, results);
+check(humans.length > 0 && humans[0].clicks <= 22, `turn 1 (place with a stepper and an Undo, roll, blitz, chain, fortify) took ${humans[0]?.clicks} clicks`, results);
 check(humans.every((t) => t.forcedWaitMs === 0), `human forced wait: ${humans.map((t) => t.forcedWaitMs).join(', ')} ms`, results);
 const full1 = m.rolls.filter((r) => r.style === 'full' && !r.blitz && r.count === 1).map((r) => r.ms);
 const blitz = m.rolls.filter((r) => r.blitz && r.style === 'full').map((r) => r.ms);
@@ -240,8 +262,8 @@ check(m.cameraMovesDuringHumanInput === 0, `cameraMovesDuringHumanInput ${m.came
 check(m.maxCameraDegPerSec <= 45, `automatic camera peak ${m.maxCameraDegPerSec}°/s (≤ 45)`, results);
 check(m.inputDropped === 0, `inputDropped ${m.inputDropped}`, results);
 const l1 = (await page.evaluate('window.__l1')) as { samples: number; empty: number; maxBanners: number; maxToasts: number };
-check(l1.samples > 200 && l1.empty === 0, `line 1 never empty (${l1.empty} of ${l1.samples} samples)`, results);
-check(l1.maxBanners <= 1 && l1.maxToasts <= 2, `≤ 1 banner (max ${l1.maxBanners}), ≤ 2 toasts (max ${l1.maxToasts})`, results);
+check(l1.samples > 200 && l1.empty === 0, `the line is never empty (${l1.empty} of ${l1.samples} samples)`, results);
+check(l1.maxBanners <= 1 && l1.maxToasts <= 2, `≤ 1 banner (max ${l1.maxBanners}), ≤ 2 strip buttons (max ${l1.maxToasts})`, results);
 await page.screenshot({ path: `${ART}/game-end.png` });
 await browser.close();
 finish(results, errors);

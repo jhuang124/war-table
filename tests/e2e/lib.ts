@@ -39,13 +39,39 @@ export async function clearStorage(page: Page): Promise<void> {
   await page.evaluate(() => localStorage.clear());
 }
 
-/** Real pointer click at a territory's badge anchor. */
-export async function clickT(page: Page, t: string, opts: { button?: 'left' | 'right'; modifiers?: ('Shift' | 'Alt')[] } = {}): Promise<void> {
+/** Real pointer click at a territory's army token. (Two on the same tile within 400 ms = a double-click.) */
+export async function clickT(page: Page, t: string): Promise<void> {
   const pos = await page.evaluate((id) => window.__risk.screenPos(id as never), t);
   if (!pos) throw new Error(`no screen position for ${t}`);
-  for (const m of opts.modifiers ?? []) await page.keyboard.down(m);
-  await page.mouse.click(pos.x, pos.y, { button: opts.button ?? 'left' });
-  for (const m of opts.modifiers ?? []) await page.keyboard.up(m);
+  await page.mouse.click(pos.x, pos.y);
+}
+
+/** Double-click a territory: in Place, it places everything left there. */
+export async function dblT(page: Page, t: string): Promise<void> {
+  const pos = await page.evaluate((id) => window.__risk.screenPos(id as never), t);
+  if (!pos) throw new Error(`no screen position for ${t}`);
+  await page.mouse.click(pos.x, pos.y);
+  await page.mouse.click(pos.x, pos.y);
+}
+
+/** Place: pick `t`, set the stepper to `n` (default: all), press Place. */
+export async function place(page: Page, t: string, n?: number): Promise<void> {
+  await clickT(page, t);
+  await page.waitForFunction(() => window.__risk.ui().count?.control === 'stepper', null, { timeout: 3000 });
+  if (n !== undefined) {
+    let v = (await ui(page)).count!.value;
+    while (v > n) {
+      await clickBtn(page, 'count-dec');
+      v--;
+    }
+    while (v < n) {
+      await clickBtn(page, 'count-inc');
+      v++;
+    }
+  }
+  await clickBtn(page, 'btn-place');
+  // Let the next click on the same tile count as a new click, not a double-click.
+  await page.waitForTimeout(420);
 }
 
 export async function clickBtn(page: Page, testid: string): Promise<void> {
@@ -156,7 +182,7 @@ export async function rendered(page: Page): Promise<void> {
   await page.waitForFunction(() => {
     const hud = document.querySelector('[data-hud="debug"]');
     if (!hud) return !!document.querySelector('#ui *:not(#boot-splash)');
-    return !!document.querySelector('[data-testid="actionbar"]');
+    return !!document.querySelector('[data-testid="strip"]');
   });
   // The real board eases from the attract orbit to the home view on Continue/Start; board events wait
   // for that move, so let it land before a flow starts timing things.

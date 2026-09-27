@@ -1,10 +1,9 @@
 // Controller wiring: settings reach the board and audio, controller-owned SFX, the ViewModel is built at
-// most once per frame with unchanged subtrees kept, the last setup is remembered, banners merge.
+// most once per frame with unchanged subtrees kept, the last setup is remembered, the banner rules.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AudioEngine } from '../../src/audio/types';
 import type { BoardView, TerritoryPointerInfo } from '../../src/render/BoardView';
 import { createController } from '../../src/game/controller';
-import { mergeBannerTitle } from '../../src/game/copy';
 import { memoryKV, SAVE_KEY } from '../../src/game/storage';
 import type { TerritoryId } from '../../src/engine';
 import type { ViewModel } from '../../src/game/viewModel';
@@ -170,18 +169,21 @@ describe('ViewModel cadence and identity', () => {
     const c = createController({ board: rb.b, audio: spyAudio().a, storage: kv, clock, dom: false });
     c.intent({ type: 'continue' });
     await vi.advanceTimersByTimeAsync(3000);
+    rb.click('ural');
+    await vi.advanceTimersByTimeAsync(500);
     const seen: ViewModel[] = [];
     c.subscribe((vm) => seen.push(vm));
     const before = c.getViewModel();
-    c.intent({ type: 'toggleHints' });
-    c.intent({ type: 'toggleHints' });
-    c.intent({ type: 'toggleHints' });
+    c.intent({ type: 'setCount', value: 2 });
+    c.intent({ type: 'setCount', value: 3 });
+    c.intent({ type: 'setCount', value: 4 });
     await vi.advanceTimersByTimeAsync(20);
     expect(seen.length).toBe(1);
     const after = seen[0];
-    expect(after.game!.actionBar).not.toBe(before.game!.actionBar);
-    expect(after.game!.roster).toBe(before.game!.roster);
-    expect(after.game!.topBar).toBe(before.game!.topBar);
+    expect(after.game!.strip).not.toBe(before.game!.strip);
+    expect(after.game!.strip.count?.value).toBe(4);
+    expect(after.game!.seats).toBe(before.game!.seats);
+    expect(after.game!.log).toBe(before.game!.log);
     expect(after.newGame).toBe(before.newGame);
     expect(after.settings).toBe(before.settings);
     // Nothing changed → no notification at all.
@@ -207,15 +209,32 @@ describe('new game screen memory', () => {
   });
 });
 
-describe('banner merging (UX.md §5.2)', () => {
-  it('same subject → "· AND …"; different subjects join', () => {
-    expect(mergeBannerTitle([
-      { subject: 'COBALT', predicate: 'HOLDS ASIA' },
-      { subject: 'COBALT', predicate: 'BREAKS YOUR AUSTRALIA' },
-    ])).toBe('COBALT HOLDS ASIA · AND BREAKS YOUR AUSTRALIA');
-    expect(mergeBannerTitle([
-      { subject: 'COBALT', predicate: 'HOLDS ASIA' },
-      { subject: 'SAM', predicate: 'HOLDS SIBERIA' },
-    ])).toBe('COBALT HOLDS ASIA · SAM HOLDS SIBERIA');
+describe('banners (docs/SIMPLIFY.md §5)', () => {
+  it("a human's continent capture: 'JOHN HOLDS AUSTRALIA · +2'; the turn banner reads '+N armies'", async () => {
+    const kv = memoryKV();
+    const s = fixture({ indonesia: [0, 2], new_guinea: [0, 12], western_australia: [0, 2] }, { kind: 'attack' });
+    s.territories.eastern_australia = { owner: 2, armies: 1 };
+    kv.set(SAVE_KEY, JSON.stringify({ v: 1, savedAt: 0, state: s }));
+    const rb = recordingBoard();
+    const c = createController({ board: rb.b, audio: spyAudio().a, storage: kv, clock, dom: false });
+    c.intent({ type: 'continue' });
+    await vi.advanceTimersByTimeAsync(50);
+    // Resumed mid-attack: the turn banner names the seat, no stale army count.
+    expect(c.getViewModel().game!.banner).toMatchObject({ kind: 'turn', title: "JOHN'S TURN", sub: '' });
+    await vi.advanceTimersByTimeAsync(2000);
+    const titles = new Set<string>();
+    c.hooks.dispatch({ type: 'blitz', player: 0, from: 'new_guinea', to: 'eastern_australia', stopAt: 1 });
+    await vi.advanceTimersByTimeAsync(4000);
+    // The continent changes hands when the armies move in.
+    const ph = c.hooks.getState()!.phase;
+    if (ph.kind === 'occupy') c.hooks.dispatch({ type: 'occupy', player: 0, count: ph.min });
+    for (let t = 0; t < 3000; t += 50) {
+      const b = c.getViewModel().game?.banner;
+      if (b) titles.add(b.title);
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    expect(c.hooks.getState()!.territories.eastern_australia.owner).toBe(0);
+    expect([...titles]).toContain('JOHN HOLDS AUSTRALIA · +2');
+    c.dispose();
   });
 });

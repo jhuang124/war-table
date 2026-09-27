@@ -1,6 +1,7 @@
-// Pause → End game now → confirm → Victory (called in round N) with award cards, the territories chart
-// and standings → Rematch (same seats, new seed, one click). The game is played by the AIs for a few
-// rounds first (autoplay at fast) so the award ledgers have something to say.
+// The menu (Esc / ≡): Resume · Rules · Settings · Log · Save & quit · End game now · Restart. The Log is
+// read-only, newest first; AI speed lives in Settings. Then End game now → confirm → Victory (called in
+// round N) with award cards, the territories chart and standings → Rematch (same seats, new seed, one
+// click). The AIs play a few rounds first (autoplay at fast) so the ledgers have something to say.
 import { ART, check, clearStorage, clickBtn, finish, open, rendered, state, ui } from './lib';
 
 const results: string[] = [];
@@ -37,11 +38,26 @@ const s0 = (await state(page))!;
 const round = s0.round;
 if (!early) {
   await rendered(page);
-  // Esc opens the pause menu (nothing is selected at turn start).
+  // Esc opens the menu (nothing is selected at turn start).
   await page.keyboard.press('Escape');
   await page.waitForSelector('[data-testid="pause"]', { timeout: 3000 });
-  check(true, 'Esc → pause menu', results);
+  const items = await page.locator('[data-testid="pause"] .menu-item .btn-label').allTextContents();
+  check(items.join(' · ') === 'Resume · Rules · Settings · Log · Save & quit · End game now · Restart', `Esc → the menu: ${items.join(' · ')}`, results);
   await page.screenshot({ path: `${ART}/endgame-pause.png` });
+  // Log: read-only, newest first.
+  await clickBtn(page, 'pause-log');
+  await page.waitForSelector('[data-testid="log"]', { timeout: 3000 });
+  const rounds = await page.locator('[data-testid="log"] .log-round').allTextContents();
+  const nums = rounds.filter(Boolean).map((r) => Number(r.slice(1)));
+  check(nums.length > 5 && nums.every((n, i) => i === 0 || n <= nums[i - 1]), `log: ${nums.length} lines, newest first (R${nums[0]} … R${nums[nums.length - 1]})`, results);
+  const clickable = await page.locator('[data-testid="log"] button:not([data-testid="log-close"])').count();
+  check(clickable === 0, 'log lines are read-only', results);
+  await page.keyboard.press('Escape');
+  // Settings has AI speed.
+  await clickBtn(page, 'pause-settings');
+  check((await page.locator('[data-testid="settings"] [data-testid="ai-watch"]').count()) === 1, 'AI speed lives in Settings', results);
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('[data-testid="pause"]', { timeout: 3000 });
   await clickBtn(page, 'pause-endgame');
   await page.waitForSelector('[data-testid="confirm-yes"]', { state: 'visible', timeout: 3000 });
   const text = await page.locator('.confirm-text').textContent();

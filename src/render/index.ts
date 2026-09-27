@@ -14,13 +14,14 @@ import type {
   ViewportInsets,
 } from './BoardView';
 import type { GameEvent, GameState, PlayerId, TerritoryId } from '../engine/types';
-import { TERRITORIES, TERRITORY_IDS } from '../engine/mapData';
+import { TERRITORY_IDS } from '../engine/mapData';
 import type { AudioEngine, PlayOptions, SfxName } from '../audio/types';
 import { PLAYER_COLORS, type PlayerPalette } from '../shared/palette';
 import { Animator, ease, clamp, type Run } from './anim';
 import { buildScene } from './scene';
 import { TileSet, type Tile, type RimMode } from './tiles';
-import { FIGURE_H, FORMATION_D, FORMATION_W, PieceSystem } from './pieces';
+import { TokenSystem } from './tokens';
+import { trayGeometry } from '../shared/tray';
 import { Overlay } from './overlay';
 import { Continents } from './continents';
 import { AttackArrow, FortifyRoute, Particles, Ripples, SeaLanes } from './fx';
@@ -111,8 +112,9 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   const grain = paintGrainTexture();
   const tiles = new TileSet(G, grain);
   scene.add(tiles.group);
-  const pieces = new PieceSystem(anim, tiles);
-  scene.add(pieces.group);
+  const tokens = new TokenSystem(anim, tiles);
+  scene.add(tokens.group);
+  tokens.reduced = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)').matches : false;
   const continents = new Continents(G, anim);
   scene.add(continents.group);
   const lanes = new SeaLanes(G);
@@ -125,11 +127,13 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   scene.add(particles.points);
   const ripples = new Ripples(anim);
   scene.add(ripples.group);
-  const overlay = new Overlay(container, G, tiles, anim);
+  const overlay = new Overlay(container, G, tiles, tokens, anim);
   const tray = new DiceTray(anim, parts.envTexture, parts.walnut);
   const rig = new CameraRig(G.width, G.height);
   // The home view fits the land (not the frame) inside the HUD-free region.
   rig.landHull = convexHull(TERRITORY_IDS.flatMap((id) => G.territories[id].polygons.flatMap((p) => p.outer)));
+  // Token anchors: the home view keeps tokens clear of the dice tray's footprint where it can.
+  rig.keepPoints = TERRITORY_IDS.map((id) => G.territories[id].anchor);
   const camera = rig.camera;
 
   // --- displayed board state --------------------------------------------------
@@ -146,6 +150,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   let audio: AudioEngine | null = null;
   let autoCamera = true;
   let uiScale = 1;
+  /** Effective insets: `bottom` = the bottom strip only, `trayBand` = the band above it (0 = default). */
   let insets: ViewportInsets = { top: 0, right: 0, bottom: 0, left: 0, trayBand: 0 };
   let W = 1;
   let H = 1;
@@ -223,7 +228,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     const t = tiles.get(id);
     t.rgb = tileRgb(lastState, owner);
     t.dirty = true;
-    pieces.setColor(id, t.rgb);
+    tokens.setColor(id, t.rgb);
   };
 
   const refreshBadge = (id: TerritoryId, pop = false) => {
@@ -276,6 +281,11 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     updateCursor();
     // pending ghosts
     for (const id of TERRITORY_IDS) overlay.setGhost(id, Math.max(0, h.pending?.[id] ?? 0));
+    // names: the picked source and the armed target show theirs (the hovered tile's is set on hover)
+    const named: TerritoryId[] = [];
+    if (sel) named.push(sel);
+    if (h.arrow) named.push(h.arrow.from, h.arrow.to);
+    overlay.setFocus(named);
     // arrow / route
     const a = h.arrow ?? null;
     if (a && a.kind === 'attack') {
@@ -383,6 +393,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     if (id === hovered) return;
     const prev = hovered;
     hovered = id;
+    overlay.setHover(id);
     if (prev) setHoverLook(prev, false);
     if (id && clickable.has(id)) setHoverLook(id, true);
     updateCursor();
@@ -547,13 +558,11 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     list.forEach((p, i) => {
       const go = () => {
         if (p.count > 0) {
-          pieces.setArmies(p.id, armies[p.id], 'drop');
-          if (anim.instant) {
-            refreshBadge(p.id, false);
-            playPlace(p.id, p.vol * 0.8);
-          }
+          // The token hops (or drops in, on an empty tile); dust, pop and sound land on touchdown.
+          tokens.setArmies(p.id, armies[p.id], 'drop');
+          if (anim.instant) refreshBadge(p.id, false);
         } else {
-          pieces.setArmies(p.id, armies[p.id], 'lift');
+          tokens.setArmies(p.id, armies[p.id], 'lift');
           overlay.pop(p.id);
           sfx('unplace', { volume: p.vol, pan: panOf(p.id) });
         }
@@ -562,12 +571,12 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       else void anim.wait(stagger * i, null, true).then(go);
     });
   };
-  pieces.onContact = (id) => {
-    overlay.pop(id);
+  tokens.onContact = (id) => {
+    tokens.pop(id, 0.1);
     const pv = new THREE.Vector3();
-    pieces.dustPoint(id, pv);
-    if (!reduced) particles.burst(pv, 5);
-    playPlace(id, isHuman(owners[id]) ? 1 : 0.6);
+    tokens.dustPoint(id, pv);
+    if (!reduced && !anim.instant) particles.burst(pv, 5);
+    playPlace(id, (isHuman(owners[id]) ? 1 : 0.6) * (anim.instant ? 0.8 : 1));
   };
 
   // --- flips (deal / claim) -------------------------------------------------------------
@@ -578,7 +587,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       owners[id] = owner;
       setOwnerLook(id, owner);
       if (armies[id] < 1) armies[id] = 1;
-      pieces.setArmies(id, armies[id], 'snap');
+      tokens.setArmies(id, armies[id], 'snap');
       refreshBadge(id, true);
       if (vol > 0) sfx('place', { volume: 0.35 * vol, pan: panOf(id) });
     };
@@ -721,14 +730,14 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     armies[e.from] = fromN;
     armies[e.to] = toN;
     if (e.attackerLosses > 0) {
-      pieces.setArmies(e.from, fromN, 'topple');
+      tokens.setArmies(e.from, fromN, 'hit');
       refreshBadge(e.from, true);
       if (chips) overlay.lossChip(e.from, e.attackerLosses, -1);
       const t = tiles.get(e.from);
       hitFlash(t);
     }
     if (e.defenderLosses > 0) {
-      pieces.setArmies(e.to, toN, 'topple');
+      tokens.setArmies(e.to, toN, 'hit');
       refreshBadge(e.to, true);
       if (chips) overlay.lossChip(e.to, e.defenderLosses, 1);
       hitFlash(tiles.get(e.to));
@@ -911,8 +920,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         owners[to] = e.player;
         armies[to] = 0;
         overlay.hideBadge(to);
-        pieces.setArmies(to, 0, 'snap');
-        pieces.setColor(to, tileRgb(lastState, e.player));
+        tokens.setArmies(to, 0, 'out');
+        tokens.setColor(to, tileRgb(lastState, e.player));
         const somber = isHuman(prevOwner) && isAi(e.player);
         sfx('conquer', { volume: isHuman(e.player) || isHuman(prevOwner) ? 1 : 0.6, pan: panOf(to), variant: somber ? 'somber' : undefined });
         const ms = style === 'brief' ? 250 : 600;
@@ -924,7 +933,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
           ripples.ring(new THREE.Vector3(t.anchorW.x, TILE_TOP + 0.03, t.anchorW.z), Math.min(3.2, t.clearance * 1.6 + 0.8), IVORY_RGB, 500);
         }
         // The march starts +150 ms into the flood (full) / +100 ms into the flip (brief); the rest of
-        // the color change keeps running while the pieces move.
+        // the color change keeps running while the token moves.
         void f;
         await anim.wait(style === 'brief' ? 100 : 150, run);
         return;
@@ -952,20 +961,22 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         }
         // lift-off
         armies[from] = fromN;
-        pieces.setArmies(from, fromN, 'lift', run);
-        refreshBadge(from, true);
+        tokens.setArmies(from, fromN, 'lift', run);
+        refreshBadge(from, false);
         sfx('march', { volume: vol, duration: anim.scale(ms) / 1000, pan: panOf(from) });
         if (!owners[to] || owners[to] !== e.player) {
           owners[to] = e.player;
           setOwnerLook(to, e.player);
         }
-        await pieces.march(from, to, count, color, ms, run, via, e.reason === 'fortify' ? 0.6 : 1.1);
+        // A token carrying the count glides along the arc; the destination's number updates on landing.
+        const ink = pal(e.player)?.ink ?? IVORY;
+        await tokens.march(from, to, count, color, ink, ms, run, via, e.reason === 'fortify' ? 0.7 : 1.3);
         if (gen === syncGen) {
           armies[to] = toN;
-          pieces.setArmies(to, toN, 'snap');
-          refreshBadge(to, true);
+          tokens.setArmies(to, toN, 'land', run);
+          refreshBadge(to, false);
           const pv = new THREE.Vector3();
-          pieces.dustPoint(to, pv);
+          tokens.dustPoint(to, pv);
           if (!reduced && !anim.instant) particles.burst(pv, 6);
         }
         if (e.reason === 'occupy' && arrowSource === 'event') {
@@ -1059,7 +1070,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       }
       if (armies[id] !== ts.armies) {
         armies[id] = ts.armies;
-        pieces.setArmies(id, ts.armies, 'snap');
+        tokens.setArmies(id, ts.armies, 'snap');
         changed = true;
       }
       refreshBadge(id, false);
@@ -1102,126 +1113,29 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     for (const m of lanes.mats) m.resolution.set(W, H);
     for (const m of route.mats) m.resolution.set(W, H);
     particles.setViewportHeight(H * renderer.getPixelRatio(), camera.fov);
+    keepBand = insets.trayBand;
     layoutTray();
-    placeFormations();
   };
+  /** The dice tray's own band height when the HUD doesn't report one (tray + a little air). */
+  const nominalBand = () => trayGeometry(W, H, 1e9, uiScale).trayH + 12;
+  /** Largest band the HUD has reported (sticky): the home view's tray keep-out follows it. */
+  let keepBand = 0;
   const layoutTray = () => {
-    let bandTop = H - insets.bottom;
-    let bandH = insets.trayBand;
-    if (!(bandH > 0)) {
-      bandH = 150;
-      bandTop = H - insets.bottom - bandH - 8;
-    }
-    tray.layout(W, H, bandTop, bandH, uiScale);
-  };
-  // --- formations beside their badges ------------------------------------------------------------
-  // Decided at the home view (where the room reads the board): each formation stands north of its
-  // badge, or to one side, wherever it covers the fewest other badges and names and stays on its tile.
-  const placeFormations = () => {
-    const cam = rig.homeCamera();
-    const v = new THREE.Vector3();
-    const proj = (x: number, y: number, z: number): [number, number] => {
-      v.set(x, y, z).project(cam);
-      return [(v.x * 0.5 + 0.5) * W, (-v.y * 0.5 + 0.5) * H];
-    };
-    const bw = 46 * uiScale;
-    const bh = 22 * uiScale;
-    type Box = [number, number, number, number];
-    const badgeBox = new Map<TerritoryId, Box>();
-    const labelBox = new Map<TerritoryId, Box>();
-    for (const t of tiles.list) {
-      const [x, y] = proj(t.anchorW.x, TILE_TOP, t.anchorW.z + t.badgeDz);
-      badgeBox.set(t.id, [x - bw / 2, y - bh / 2, x + bw / 2, y + bh / 2]);
-      const name = TERRITORIES[t.id].name;
-      const lines = name.length > 13 && name.includes(' ') ? 2 : 1;
-      const lw = Math.min(13, Math.ceil(name.length / lines)) * 6.4 * uiScale;
-      labelBox.set(t.id, [x - lw / 2, y + bh / 2 + 2, x + lw / 2, y + bh / 2 + 2 + lines * 10 * uiScale]);
-    }
-    const overlap = (a: Box, b: Box) =>
-      Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) * Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
-    const footprint = (cx: number, cz: number): Box => {
-      let x0 = Infinity;
-      let y0 = Infinity;
-      let x1 = -Infinity;
-      let y1 = -Infinity;
-      const hw = FORMATION_W / 2;
-      const hd = FORMATION_D / 2;
-      for (const [dx, dz, y] of [
-        [-hw, -hd, TILE_TOP + FIGURE_H],
-        [hw, -hd, TILE_TOP + FIGURE_H],
-        [-hw, hd, TILE_TOP],
-        [hw, hd, TILE_TOP],
-      ]) {
-        const [px, py] = proj(cx + dx, y, cz + dz);
-        x0 = Math.min(x0, px);
-        x1 = Math.max(x1, px);
-        y0 = Math.min(y0, py);
-        y1 = Math.max(y1, py);
-      }
-      return [x0, y0, x1, y1];
-    };
-    const placed: Box[] = [];
-    // Small tiles first: they have the fewest good spots.
-    const order = [...tiles.list].sort((a, b) => a.clearance - b.clearance);
-    for (const t of order) {
-      const a = t.anchorW;
-      const bz = a.z + t.badgeDz;
-      const [, y0] = proj(a.x, TILE_TOP, bz);
-      const [, y1] = proj(a.x, TILE_TOP, bz - 1);
-      const [x1] = proj(a.x + 1, TILE_TOP, bz);
-      const pxZ = Math.max(1e-3, y0 - y1);
-      const pxX = Math.max(1e-3, x1 - proj(a.x, TILE_TOP, bz)[0]);
-      // North: the front bases tuck behind the badge's top edge, the bodies stand clear above it.
-      // Owner colour on the wrong tile misreads as ownership, so staying on the own tile outranks
-      // everything but covering another badge; names are DOM and stay legible over pieces.
-      const northZ = (tuck: number) => bz - (bh / 2 - tuck * uiScale) / pxZ - FORMATION_D / 2;
-      const sideX = (bw / 2 + 2) / pxX + FORMATION_W / 2;
-      const sideZ = bz - FORMATION_D * 0.3;
-      const cands: [number, number, number][] = [
-        [0, northZ(3), 0],
-        [0, northZ(9), 25],
-        [-0.4 * bw / pxX, northZ(3), 30],
-        [0.4 * bw / pxX, northZ(3), 30],
-        [-0.4 * bw / pxX, northZ(9), 50],
-        [0.4 * bw / pxX, northZ(9), 50],
-        [-sideX, sideZ, 120],
-        [sideX, sideZ, 200], // east is where the +N ghost chip hangs
-      ];
-      const own = badgeBox.get(t.id)!;
-      let best = cands[0];
-      let bestScore = Infinity;
-      const S = [-0.5, 0, 0.5];
-      for (const c of cands) {
-        const cx = a.x + c[0];
-        const cz = c[1];
-        const box = footprint(cx, cz);
-        let score = c[2];
-        score += overlap(box, own) * 1.5;
-        for (const o of tiles.list) {
-          if (o.id === t.id) continue;
-          score += overlap(box, badgeBox.get(o.id)!) * 3;
-          if (overlay.labelsOn) score += overlap(box, labelBox.get(o.id)!) * 0.4;
-        }
-        for (const p of placed) score += overlap(box, p) * 1.5;
-        // stay on your own tile: sample a 3 × 3 grid over the footprint
-        const area = (box[2] - box[0]) * (box[3] - box[1]);
-        let off = 0;
-        for (const fx of S)
-          for (const fz of S) {
-            const [bx, by] = toBoard(cx + fx * FORMATION_W, cz + fz * FORMATION_D);
-            if (!t.rings.some((r) => pointInRing(bx, by, r))) off++;
-          }
-        score += (off / 9) * area * 3;
-        if (score < bestScore) {
-          bestScore = score;
-          best = c;
-        }
-      }
-      t.formDx = best[0];
-      t.formDz = a.z - best[1];
-      placed.push(footprint(a.x + best[0], best[1]));
-    }
-    pieces.markDirty();
+    const band = insets.trayBand > 0 ? insets.trayBand : nominalBand();
+    // The band sits just above the bottom strip; the tray is centred in it.
+    tray.layout(W, H, H - insets.bottom - band, band, uiScale);
+    // The home view keeps tokens clear of the tray's footprint where it can (camera.ts). The band it
+    // assumes only ever grows, so a HUD that reports the band only during fights never moves the camera
+    // mid-game (it re-homes once, the first time).
+    keepBand = Math.max(keepBand, insets.trayBand);
+    const kb = keepBand > 0 ? keepBand : nominalBand();
+    const g = trayGeometry(W, H, kb, uiScale);
+    // A token centre stays above the tray's top by its radius and a little air. (The HUD's header line
+    // is centred and short; the southern tokens near the tray's ends sit beside it, not under it.)
+    const clear = (16 + 10) * uiScale;
+    rig.trayKeepOut = { x0: W / 2 - g.trayW / 2 - 16, x1: W / 2 + g.trayW / 2 + 16, y0: H - insets.bottom - kb + (kb - g.trayH) / 2 - clear };
+    rig.recomputeHome();
+    continents.fitLabels(rig.homeCamera(), W);
   };
 
   const ro = new ResizeObserver(() => resize());
@@ -1266,18 +1180,26 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         moved = true;
       }
     });
-    if (moved) pieces.markDirty();
-    const piecesMoving = pieces.animating;
-    pieces.update();
+    const tokensMoving = tokens.animating;
+    tokens.update();
     particles.update(Math.min(rawDt, 50) / 1000);
     tray.tick(now);
     parts.oceanUniforms.uTime.value = now / 1000;
     overlay.zoomScale = clamp(Math.pow(rig.zoom, 0.3), 0.85, 1.3);
+    // Numbers and names under the dice tray hide while it shows (the tray is drawn after the board).
+    const oc = overlay.occluder;
+    oc.on = tray.visible;
+    if (oc.on) {
+      oc.x0 = tray.cx - tray.trayW / 2;
+      oc.x1 = tray.cx + tray.trayW / 2;
+      oc.y0 = tray.cy - tray.trayH / 2 - 4;
+      oc.y1 = tray.cy + tray.trayH / 2 + 4;
+    }
     overlay.update(camera, rect0);
 
     renderer.info.reset();
     renderer.clear();
-    if (moved || piecesMoving || anim.active > 0 || needShadow) {
+    if (moved || tokensMoving || anim.active > 0 || needShadow) {
       renderer.shadowMap.needsUpdate = true;
       needShadow = false;
     }
@@ -1302,6 +1224,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     const tmpR = ripples;
     void tmpR;
     particles.burst(new THREE.Vector3(0, 1, 0), 2);
+    tokens.setArmies('ural', 1, 'snap');
+    tokens.update();
     // compile() only walks visible objects: expose one rim pair and the ripple rings for it.
     t0.rimIvory.visible = t0.rimUnder.visible = true;
     t0.rimIvoryMat.opacity = t0.rimUnderMat.opacity = 0.01;
@@ -1322,13 +1246,14 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     arrow.hide(true);
     route.hide();
     anim.skipAll();
-    pieces.markDirty();
+    tokens.setArmies('ural', 0, 'snap');
+    tokens.markDirty();
     // The warm-up frame baked the arrow/route into the shadow map: re-render it clean.
     needShadow = true;
   }
   lastT = performance.now();
   raf = requestAnimationFrame(frame);
-  // The DOM overlay (badges, names) fades in with the canvas, so names never float over a black board.
+  // The DOM overlay (numbers, names) fades in with the canvas, so text never floats over a black board.
   overlay.root.style.opacity = '0';
   requestAnimationFrame(() => {
     canvas.style.opacity = '1';
@@ -1388,22 +1313,29 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     },
     setShowLabels(on: boolean) {
       overlay.setShowLabels(on);
-      placeFormations();
     },
     setViewportInsets(i: ViewportInsets) {
-      insets = { ...i };
+      // `bottom` is the bottom strip; `trayBand` the band above it. A HUD that folds the band into
+      // `bottom` (the round-1 convention) is recognised, so the home view never reserves the band.
+      let bottom = i.bottom;
+      const band = i.trayBand > 0 ? i.trayBand : 0;
+      if (band > 0 && bottom >= band + 40) bottom -= band;
+      insets = { top: i.top, right: i.right, left: i.left, bottom, trayBand: band };
       rig.setInsets(insets);
       layoutTray();
-      placeFormations();
     },
     setUiScale(scale: number) {
       uiScale = clamp(scale || 1, 0.75, 2);
       overlay.uiScale = uiScale;
+      // Bigger numbers need a bigger disc (softened, so tokens still leave their tiles showing).
+      tokens.sizeScale = 1 + (uiScale - 1) * 0.6;
+      tokens.markDirty();
+      keepBand = insets.trayBand;
       layoutTray();
-      placeFormations();
     },
     setReducedMotion(on: boolean) {
       reduced = on;
+      tokens.reduced = on;
       continents.reducedMotion = on;
       if (on && rig.attract) rig.setAttract(false, false);
       applyHighlights(lastHl, lastHl);
@@ -1448,7 +1380,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       container.removeEventListener('contextmenu', onContext);
       for (const w of camWaiters.splice(0)) w.resolve();
       tiles.dispose();
-      pieces.dispose();
+      tokens.dispose();
       continents.dispose();
       lanes.dispose();
       arrow.dispose();
@@ -1479,6 +1411,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     armies,
     tiles,
     renderer,
+    tokens,
     get hovered() {
       return hovered;
     },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { attackStakes, autoChain, autoSource, bestSet, noSetStatus, occupyDefault, oddsLabel, oddsWord } from '../../src/game/helpers';
+import { autoChain, autoSource, bestSet, noSetStatus, occupyDefault, oddsWord } from '../../src/game/helpers';
 import { pct } from '../../src/game/copy';
 import { board, card } from './fixtures';
 
@@ -19,8 +19,6 @@ describe('oddsWord', () => {
     expect(pct(0.9996)).toBe(99);
     expect(pct(1)).toBe(100);
     expect(pct(0.0004)).toBe(1);
-    expect(oddsLabel(0.82, true)).toBe('Blitz · 82% · likely');
-    expect(oddsLabel(0.82, false)).toBe('Blitz · likely');
   });
 });
 
@@ -48,30 +46,24 @@ describe('autoSource', () => {
 });
 
 describe('occupyDefault', () => {
-  it('to borders enemies, from does not → max, front moves forward', () => {
+  it('to borders enemies, from does not → max (the front moves forward)', () => {
     // From alaska (owned neighbors only) into kamchatka (borders enemies).
     const s = board({ alaska: [0, 8], northwest_territory: [0, 1], alberta: [0, 1], kamchatka: [0, 0] }, { kind: 'occupy', from: 'alaska', to: 'kamchatka', min: 3, max: 7 });
-    expect(occupyDefault(s, 'alaska', 'kamchatka', 3, 7)).toEqual({ count: 7, note: 'Front moves forward' });
+    expect(occupyDefault(s, 'alaska', 'kamchatka', 3, 7)).toBe(7);
   });
-  it('to safe, from borders enemies → min', () => {
+  it('to safe, from borders enemies → min (the stack stays home)', () => {
     // Australia pocket: western_australia conquered; its neighbors all John's.
     const s = board(
       { indonesia: [0, 9], new_guinea: [0, 1], eastern_australia: [0, 1], western_australia: [0, 0] },
       { kind: 'occupy', from: 'indonesia', to: 'western_australia', min: 2, max: 8 },
     );
-    expect(occupyDefault(s, 'indonesia', 'western_australia', 2, 8)).toEqual({
-      count: 2,
-      note: 'Western Australia is safe · keeping your stack in Indonesia',
-    });
+    expect(occupyDefault(s, 'indonesia', 'western_australia', 2, 8)).toBe(2);
   });
-  it('both border enemies → max with the named threat', () => {
+  it('both border enemies → max', () => {
     const s = board({ ural: [0, 8], siberia: [0, 0] }, { kind: 'occupy', from: 'ural', to: 'siberia', min: 3, max: 7 });
-    s.territories.afghanistan.armies = 6; // the biggest enemy next to Ural
-    const d = occupyDefault(s, 'ural', 'siberia', 3, 7);
-    expect(d.count).toBe(7);
-    expect(d.note).toBe('Ural keeps 1 · still borders Afghanistan');
+    expect(occupyDefault(s, 'ural', 'siberia', 3, 7)).toBe(7);
   });
-  it('neither borders enemies → max, no note', () => {
+  it('neither borders enemies → max', () => {
     const s = board({
       indonesia: [0, 9],
       new_guinea: [0, 1],
@@ -79,7 +71,7 @@ describe('occupyDefault', () => {
       western_australia: [0, 0],
       siam: [0, 1],
     });
-    expect(occupyDefault(s, 'indonesia', 'western_australia', 2, 8)).toEqual({ count: 8, note: null });
+    expect(occupyDefault(s, 'indonesia', 'western_australia', 2, 8)).toBe(8);
   });
 });
 
@@ -91,48 +83,6 @@ describe('autoChain', () => {
     expect(autoChain(b, 'ural', 'siberia')).toBe('ural');
     const c = board({ ural: [0, 1], siberia: [0, 1] });
     expect(autoChain(c, 'ural', 'siberia')).toBeNull();
-  });
-});
-
-describe('attackStakes', () => {
-  it('wins the game when the conquest reaches the goal', () => {
-    // 70% → 30 territories; John owns 29 + attacks one more.
-    const own: Record<string, [number, number]> = {};
-    const ids = ['alaska', 'northwest_territory', 'greenland', 'alberta', 'ontario', 'quebec', 'western_us', 'eastern_us', 'central_america', 'venezuela', 'peru', 'brazil', 'argentina', 'iceland', 'scandinavia', 'great_britain', 'northern_europe', 'western_europe', 'southern_europe', 'ukraine', 'north_africa', 'egypt', 'east_africa', 'congo', 'south_africa', 'madagascar', 'ural', 'siberia', 'yakutsk'];
-    for (const t of ids) own[t] = [0, 3];
-    const s = board(own as never);
-    s.config = { ...s.config, dominationPercent: 70 };
-    const st = attackStakes(s, 'yakutsk', 'kamchatka');
-    expect(st[0]).toEqual({ text: 'WINS THE GAME', priority: true });
-  });
-  it('knocks out a player and names their cards', () => {
-    const s = board({ ural: [0, 5] });
-    // Sam owns only Siberia and holds 4 cards.
-    s.territories.siberia = { owner: 1, armies: 2 };
-    s.players[1].cards = [card(1, 'infantry'), card(2, 'cavalry'), card(3, 'artillery'), card(4, 'infantry')];
-    const st = attackStakes(s, 'ural', 'siberia');
-    expect(st[0]).toEqual({ text: 'KNOCKS OUT SAM · takes their 4 cards', priority: true });
-  });
-  it('completes and breaks continents, then the first-conquest card, max 2 lines', () => {
-    const s = board({ venezuela: [0, 4], peru: [0, 1], argentina: [0, 1], central_america: [0, 1] });
-    const st = attackStakes(s, 'venezuela', 'brazil');
-    expect(st).toEqual([
-      { text: 'COMPLETES SOUTH AMERICA · +2 a turn', priority: false },
-      { text: 'First conquest this turn · earns a card', priority: false },
-    ]);
-    const s2 = board({ north_africa: [0, 6] });
-    for (const t of ['iceland', 'scandinavia', 'great_britain', 'northern_europe', 'western_europe', 'southern_europe', 'ukraine'] as const) {
-      s2.territories[t] = { owner: 1, armies: 2 };
-    }
-    s2.conqueredThisTurn = true;
-    expect(attackStakes(s2, 'north_africa', 'western_europe')).toEqual([
-      { text: "BREAKS SAM'S EUROPE · −5 a turn for Sam", priority: false },
-    ]);
-  });
-  it('never pads: no stakes → empty', () => {
-    const s = board({ ural: [0, 5] });
-    s.conqueredThisTurn = true;
-    expect(attackStakes(s, 'ural', 'siberia')).toEqual([]);
   });
 });
 

@@ -11,7 +11,6 @@
 
 import {
   CONTINENTS,
-  TERRITORIES,
   TERRITORY_IDS,
   UNCLAIMED,
   applyAction,
@@ -19,20 +18,16 @@ import {
   attackTargets,
   chooseAiAction,
   cloneState,
-  continentsOwned,
   createGame,
   fallbackAction,
   fortifyPath,
   fortifySources,
   fortifyTargets,
-  isValidSetSymbols,
   maxAttackDice,
   reinforcementsFor,
-  setValue,
   territoriesNeeded,
   territoryCount,
   totalArmies,
-  upcomingSetValues,
   validateConfig,
   winProbability,
   type Action,
@@ -44,16 +39,15 @@ import {
   type PlayerConfig,
   type PlayerKind,
   type PlayerId,
-  type ReinforcementBreakdown,
   type TerritoryId,
 } from '../engine';
 import type { AudioEngine, PlayOptions, SfxName } from '../audio/types';
 import type { BoardHighlights, BoardView, PlayEventOptions, TerritoryPointerInfo, ViewportInsets } from '../render/BoardView';
-import { baseReceipt, buildActionBar, dealingLine, emptySel, selectionTargets, stagedTotal, type Sel } from './actionBar';
-import { CONTINENT_ABBR, MINUS, SEP, cName, mergeBannerTitle, pName, pct, poss, seatRef, tName, upper } from './copy';
+import { buildStrip, emptySel, placeLeft, placeValue, selectionTargets, stagedTotal, type Placement, type Sel } from './strip';
+import { SEP, cName, pName, pct, poss, seatRef, tName, upper } from './copy';
 import { applyEventToDisplay, isBlocking } from './display';
-import { clickableTerritories, explainTerritory, type ClickPlan, type ExplainUi, type Explanation } from './explain';
-import { attackStakes, autoChain, bestSet, noSetStatus, occupyDefault, oddsLabel, oddsWord } from './helpers';
+import { explainTerritory, type ClickPlan, type ExplainUi, type Explanation } from './explain';
+import { autoChain, bestSet, noSetStatus, occupyDefault } from './helpers';
 import {
   addSeat,
   buildNewGameVM,
@@ -67,15 +61,7 @@ import {
 } from './presets';
 import { reconcile } from './reconcile';
 import { effectiveUiScale } from '../ui/uiScale';
-import {
-  buildAwards,
-  buildRecap,
-  emptyAwards,
-  recordAward,
-  recordRecap,
-  type AwardLedger,
-  type RecapLedger,
-} from './recap';
+import { buildAwards, buildRecap, emptyAwards, recordAward, recordRecap, type AwardLedger, type RecapLedger } from './recap';
 import {
   DEFAULT_SETTINGS,
   SAVE_KEY,
@@ -101,15 +87,10 @@ import type {
   GameVM,
   LogLineVM,
   Overlay,
-  PillsVM,
-  RosterRowVM,
   Screen,
-  SeatRef,
+  SeatChipVM,
   Settings,
-  ToastVM,
-  TooltipVM,
-  TopBarVM,
-  TurnBannerVM,
+  StripVM,
   UiIntent,
   ViewModel,
   VictoryVM,
@@ -168,16 +149,24 @@ export interface Metrics {
 
 export interface UiSnapshot {
   screen: string;
-  actionBarText: string;
-  actionBarSub: string;
+  /** 'Place' | 'Attack' | 'Fortify' | 'Setup' | "Cobalt's turn". */
+  step: string;
+  /** The bottom strip's one line. */
+  line: string;
+  lineKind: string;
+  /** The brass button's label. */
   primary: string | null;
-  buttons: { label: string; enabled: boolean; why?: string }[];
+  /** Every strip button label, in reading order. */
+  buttons: string[];
+  count: { control: string; value: number; min: number; max: number } | null;
+  /** The banner on screen: its title (and sub line). */
   banners: string[];
-  toasts: string[];
-  battle: { header: string; odds: string | null; stakes: string[]; result: string | null } | null;
-  recap: string[];
-  tooltip: string | null;
-  hints: boolean;
+  recap: string | null;
+  /** The dice tray header: 'URAL 12 vs SIBERIA 5'. */
+  battle: { header: string } | null;
+  /** Top strip chips: 'John 14', 'Cobalt 11 · 3 cards'. */
+  seats: string[];
+  cardsOpen: boolean;
 }
 
 export interface RiskHooks {
@@ -200,7 +189,7 @@ export interface GameController extends ControllerApi {
   hooks: RiskHooks;
   dispose(): void;
   /** The in-game key handler without a DOM (unit tests); the browser path goes through keydown. */
-  handleKey(key: string, shift?: boolean, repeat?: boolean): boolean;
+  handleKey(key: string, repeat?: boolean): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,20 +229,15 @@ interface Engagement {
   startedAt: number;
   lastRollEnd: number;
   logId: number;
-  lastResult: string | null;
-  tie: boolean;
   endedAt: number | null;
   turn: number;
-  details: string[];
-  /** An AI-vs-AI upset: no banner, a note on the log line instead. */
+  /** An upset: a note on the log line (and an award entry), never a banner. */
   upset?: string | null;
 }
 
 interface BannerItem {
   vm: BannerVM;
   createdAt: number;
-  aiTurn: number | null;
-  parts: { subject: string; predicate: string }[] | null;
   sound?: { name: SfxName; opts?: PlayOptions };
 }
 
@@ -277,19 +261,15 @@ interface AiTurnCtx {
 
 interface GameMeta {
   id: string;
-  hints: Record<number, boolean>;
-  setHintSeen: number[];
   recap: RecapLedger;
   awards: AwardLedger;
   log: LogLineVM[];
   logId: number;
+  /** Seats already logged as within 5 of victory. */
   nearGoal: number[];
   finalRoundShown: boolean;
-  elimRound: Record<number, number>;
   sel: Sel;
   lastTurnKind: 'human' | 'ai' | null;
-  tradedThisTurn: number;
-  knockout: { by: PlayerId; victim: string; cards: number } | null;
 }
 
 interface UiFile {
@@ -326,27 +306,59 @@ const AI_FULL_FIGHTS_PER_TURN = 2;
 const AI_OPENING_CAP_MS = 5_000;
 const TELEGRAPH_MS = 400;
 const PLAY_SAFETY_MS = 15_000;
+/** A refused click's reason holds the line this long. */
+const REJECT_MS = 2000;
 const LOG_CAP = 300;
 
-function freshMeta(id: string, s: GameState): GameMeta {
-  const hints: Record<number, boolean> = {};
-  for (const p of s.players) hints[p.id] = true;
+function freshMeta(id: string): GameMeta {
   return {
     id,
-    hints,
-    setHintSeen: [],
     recap: {},
     awards: emptyAwards(),
     log: [],
     logId: 1,
     nearGoal: [],
     finalRoundShown: false,
-    elimRound: {},
     sel: emptySel(),
     lastTurnKind: null,
-    tradedThisTurn: 0,
-    knockout: null,
   };
+}
+
+/** A saved meta from this or an older build: keep the fields that still exist and are well-formed. */
+function restoreMeta(id: string, saved: Partial<GameMeta> | undefined): GameMeta {
+  const m = freshMeta(id);
+  if (!saved || saved.id !== id) return m;
+  if (saved.recap && typeof saved.recap === 'object') {
+    for (const [k, v] of Object.entries(saved.recap)) if (v && typeof v === 'object' && v.lost && typeof v.lost === 'object') m.recap[Number(k)] = { lost: v.lost };
+  }
+  if (saved.awards && typeof saved.awards === 'object') m.awards = { ...m.awards, ...saved.awards };
+  if (Array.isArray(saved.log)) m.log = saved.log.map((l) => ({ id: l.id, round: l.round, seat: l.seat, kind: l.kind, text: l.text }));
+  if (typeof saved.logId === 'number') m.logId = saved.logId;
+  if (Array.isArray(saved.nearGoal)) m.nearGoal = saved.nearGoal;
+  m.finalRoundShown = !!saved.finalRoundShown;
+  m.lastTurnKind = saved.lastTurnKind ?? null;
+  m.sel = restoreSel(saved.sel);
+  return m;
+}
+
+function restoreSel(x: unknown): Sel {
+  const sel = emptySel();
+  if (!x || typeof x !== 'object') return sel;
+  const o = x as Partial<Sel>;
+  const tid = (t: unknown): TerritoryId | null => (typeof t === 'string' && (TERRITORY_IDS as readonly string[]).includes(t) ? (t as TerritoryId) : null);
+  const num = (n: unknown): number | null => (typeof n === 'number' && Number.isFinite(n) ? n : null);
+  sel.selected = tid(o.selected);
+  sel.target = tid(o.target);
+  sel.placeCount = num(o.placeCount);
+  sel.occupyCount = num(o.occupyCount);
+  sel.fortifyCount = num(o.fortifyCount);
+  if (o.staged && typeof o.staged === 'object') {
+    for (const [t, n] of Object.entries(o.staged)) if (tid(t) && typeof n === 'number' && n > 0) sel.staged[t as TerritoryId] = n;
+  }
+  if (Array.isArray(o.placements)) {
+    sel.placements = o.placements.filter((p): p is Placement => !!p && typeof p === 'object' && !!tid(p.t) && typeof p.n === 'number' && p.n > 0);
+  }
+  return sel;
 }
 
 function isAttackAction(a: Action): a is Extract<Action, { type: 'attack' | 'blitz' }> {
@@ -386,9 +398,11 @@ class Controller {
   private confirm: GameVM['confirm'] = null;
   private allHumansOut = false;
   private allHumansOutDismissed = false;
-  private seatHighlight: PlayerId | null = null;
   private cardsOpen = false;
-  private logOpen = false;
+  /** Last Place pick, for the double-click (place all) accelerator. */
+  private lastPick: { t: TerritoryId; at: number } | null = null;
+  /** The last conquest on the displayed board: a continent banner needs a human in it. */
+  private lastConquest: { attacker: PlayerId; victim: PlayerId } | null = null;
 
   // Queue
   private queue: Entry[] = [];
@@ -423,19 +437,11 @@ class Controller {
   private bannerQueue: BannerItem[] = [];
   private bannerNextAt = 0;
   private bannerTimer: unknown = null;
-  private toasts: { vm: ToastVM; until: number }[] = [];
-  private toastQueue: ToastVM[] = [];
-  private turnBanner: TurnBannerVM | null = null;
+  private turnBanner: BannerVM | null = null;
   private turnBannerTimer: unknown = null;
   private idSeq = 1;
   private rejection: { text: string; key: number; until: number; code: string } | null = null;
-  private rejectCounts = new Map<string, number>();
   private lineKey = 0;
-  private hover: { t: TerritoryId; x: number; y: number; visible: boolean } | null = null;
-  private hoverTimer: unknown = null;
-  private kbFocus: TerritoryId | null = null;
-  private nextSetValue = 0;
-  private nextSetPulse = 0;
   private lastHighlightsKey = '';
   private insets: ViewportInsets = { top: 0, right: 0, bottom: 0, left: 0, trayBand: 0 };
 
@@ -446,7 +452,7 @@ class Controller {
   /**
    * A board click that also swapped the primary (a chain click during occupy, or an enemy click that
    * ends reinforce) arms a new fight: Enter/Space are ignored briefly so a key meant for the old
-   * primary ('Move 9', 'Begin attack') never fires a Blitz the player hasn't seen.
+   * primary ('Move 9', 'Attack →') never fires a Blitz the player hasn't seen.
    */
   private commitGuardUntil = 0;
 
@@ -489,7 +495,8 @@ class Controller {
     this.refreshSaveSummary();
 
     this.board.onTerritoryClick((info) => this.onBoardClick(info));
-    this.board.onTerritoryHover((info) => this.onBoardHover(info));
+    // Only to tell an ocean click from a click on land (the board names hovered tiles itself).
+    this.board.onTerritoryHover((info) => (this.overTile = info?.territory ?? null));
     this.applySettingsToBoard();
     this.board.setAttractMode(true);
     this.vm = this.buildVM();
@@ -634,8 +641,8 @@ class Controller {
   }
 
   private setSettings(patch: Partial<Settings>): void {
-    this.settings = sanitizeSettings({ ...this.settings, ...patch });
-    writeJson(this.kv, SETTINGS_KEY, this.settings);
+    this.settings = sanitizeSettings({ ...this.settings, ...patch, v: 2 });
+    writeJson(this.kv, SETTINGS_KEY, { ...this.settings, v: 2 });
     if (patch.aiSpeed) this.sessionAiSpeed = null;
     this.applySettingsToBoard();
     this.invalidate();
@@ -678,13 +685,13 @@ class Controller {
   startGame(config: GameConfig): void {
     const problem = validateConfig(config);
     if (problem) {
-      this.toast(problem);
+      console.warn('[risk] new game refused:', problem);
       return;
     }
     const { state, events } = createGame(config);
     this.resetGameLocals();
     this.state = state;
-    this.meta = freshMeta(state.id, state);
+    this.meta = freshMeta(state.id);
     // The deal plays from an empty board.
     const blank = cloneState(state);
     for (const t of TERRITORY_IDS) blank.territories[t] = { owner: UNCLAIMED, armies: 0 };
@@ -719,11 +726,8 @@ class Controller {
     this.eng = null;
     this.banner = null;
     this.bannerQueue = [];
-    this.toasts = [];
-    this.toastQueue = [];
     this.turnBanner = null;
     this.rejection = null;
-    this.rejectCounts.clear();
     this.handoff = null;
     this.aiCtx = null;
     this.aiHighlights = null;
@@ -732,11 +736,11 @@ class Controller {
     this.confirm = null;
     this.allHumansOut = false;
     this.allHumansOutDismissed = false;
-    this.seatHighlight = null;
+    this.cardsOpen = false;
+    this.lastPick = null;
+    this.lastConquest = null;
     this.sessionAiSpeed = null;
     this.curTurn = null;
-    this.kbFocus = null;
-    this.nextSetValue = 0;
     this.lastBoardSpeed = -1;
   }
 
@@ -748,11 +752,11 @@ class Controller {
     this.state = s;
     this.disp = cloneState(s);
     const ui = readJson<UiFile>(this.kv, UI_KEY);
-    this.meta = ui?.game && ui.game.id === s.id ? { ...freshMeta(s.id, s), ...ui.game } : freshMeta(s.id, s);
-    this.sel = { ...emptySel(), ...(this.meta.sel ?? {}) };
+    this.meta = restoreMeta(s.id, ui?.game);
+    this.sel = this.meta.sel;
     this.validateSel();
     if (s.phase.kind === 'occupy' && this.sel.occupyCount === null) {
-      this.sel.occupyCount = occupyDefault(s, s.phase.from, s.phase.to, s.phase.min, s.phase.max).count;
+      this.sel.occupyCount = occupyDefault(s, s.phase.from, s.phase.to, s.phase.min, s.phase.max);
     }
     this.board.setAttractMode(false);
     this.board.syncState(s);
@@ -761,12 +765,11 @@ class Controller {
     this.victory = null;
     this.applyBoardSpeed();
     this.humanHasPlayed = s.round > 1 || !!this.meta.lastTurnKind;
-    // A fresh turn banner so the room knows whose turn it is (the receipt only when it's still true).
-    if (s.round > 0) {
+    // A fresh turn banner so the room knows whose turn it is (the army count only when it's still true).
+    if (s.round > 0 && !this.isAiDriven(s.currentPlayer)) {
       const ph = s.phase;
       const fresh = ph.kind === 'reinforce' && !ph.midTurn && Object.keys(ph.placed).length === 0;
-      const step = ph.kind === 'reinforce' ? 'reinforcing' : ph.kind === 'fortify' ? 'fortifying' : 'attacking';
-      this.showTurnBanner(s.currentPlayer, reinforcementsFor(s, s.currentPlayer), [], s, fresh ? null : `Round ${s.round}${SEP}back to ${step}`);
+      this.showTurnBanner(s.currentPlayer, fresh ? reinforcementsFor(s, s.currentPlayer).total : null, null, s);
     }
     if (s.round > 0) this.openTurnMetric(s.currentPlayer);
     this.invalidate();
@@ -780,15 +783,23 @@ class Controller {
     if (!s) return;
     const me = s.currentPlayer;
     const sel = this.sel;
+    const ph = s.phase;
     const own = (t: TerritoryId | null) => !!t && s.territories[t]?.owner === me;
     if (sel.selected && !own(sel.selected)) sel.selected = null;
-    if (s.phase.kind === 'attack' && sel.target && (!sel.selected || s.territories[sel.target].owner === me)) sel.target = null;
-    if (s.phase.kind === 'fortify' && sel.target && (!sel.selected || !own(sel.target))) sel.target = null;
-    if (s.phase.kind !== 'setup-place') sel.staged = {};
-    if (s.phase.kind !== 'reinforce' && s.phase.kind !== 'setup-place') sel.lastPlaced = null;
-    if (s.phase.kind === 'setup-place') {
+    if (ph.kind === 'attack' && sel.target && (!sel.selected || s.territories[sel.target].owner === me)) sel.target = null;
+    if (ph.kind === 'fortify' && sel.target && (!sel.selected || !own(sel.target))) sel.target = null;
+    if (ph.kind !== 'attack' && ph.kind !== 'fortify') sel.target = null;
+    if (ph.kind === 'setup-place') {
       for (const [t, n] of Object.entries(sel.staged)) if (!own(t as TerritoryId) || !n) delete sel.staged[t as TerritoryId];
-    }
+      if (stagedTotal(sel) > ph.toPlace) {
+        sel.staged = {};
+        sel.placements = [];
+      }
+      sel.placements = sel.placements.filter((p) => (sel.staged[p.t] ?? 0) > 0);
+    } else sel.staged = {};
+    if (ph.kind === 'reinforce') sel.placements = sel.placements.filter((p) => (ph.placed[p.t] ?? 0) > 0);
+    else if (ph.kind !== 'setup-place') sel.placements = [];
+    if (ph.kind !== 'reinforce' && ph.kind !== 'setup-place') sel.placeCount = null;
   }
 
   private save(): void {
@@ -870,7 +881,6 @@ class Controller {
     const r = this.applyRaw(action);
     if (!r.ok) {
       console.warn('[risk] refused:', r.error);
-      this.toast(r.error);
       return r;
     }
     if (!this.frozenSel && r.events.some(isBlocking)) this.frozenSel = { ...before, staged: { ...before.staged } };
@@ -1109,25 +1119,24 @@ class Controller {
         if (human) this.humanHasPlayed = true;
         const prevKind = this.meta?.lastTurnKind ?? null;
         if (human && prevKind === 'human') this.guardUntil = this.now() + 250;
-        if (this.meta) {
-          this.meta.lastTurnKind = this.isAiDriven(ev.player) ? 'ai' : 'human';
-          this.meta.tradedThisTurn = 0;
-        }
+        if (this.meta) this.meta.lastTurnKind = this.isAiDriven(ev.player) ? 'ai' : 'human';
         this.openTurnMetric(ev.player);
         this.sel = emptySel();
         this.frozenSel = null;
-        this.rejectCounts.clear();
+        this.cardsOpen = false;
+        this.lastPick = null;
         this.narration = null;
         this.aiHighlights = null;
         this.aiPreview = null;
-        let recap: string[] = [];
+        let recap: string | null = null;
         if (this.meta && this.isHumanSeat(ev.player) && ev.round >= 2) {
-          recap = buildRecap(this.meta.recap[ev.player], d, ev.player);
+          recap = buildRecap(this.meta.recap[ev.player], d);
           delete this.meta.recap[ev.player];
-          this.log('recap', ev.player, recap.join(SEP), []);
+          if (recap) this.log('recap', ev.player, recap);
         }
-        this.showTurnBanner(ev.player, ev.reinforcements, recap, d);
-        this.log('turn', ev.player, `Round ${ev.round}${SEP}${poss(pName(d, ev.player))} turn${SEP}+${ev.reinforcements.total}`, []);
+        // The turn banner is for the humans at the table; an AI turn is named by the step indicator.
+        if (!this.isAiDriven(ev.player)) this.showTurnBanner(ev.player, ev.reinforcements.total, recap, d);
+        this.log('turn', ev.player, `Round ${ev.round}${SEP}${poss(pName(d, ev.player))} turn${SEP}+${ev.reinforcements.total}`);
         if (human) this.play('turnStart', { variant: prevKind === 'ai' ? 'bright' : undefined });
         // Boards that implement setAutoCamera return home themselves on turnStarted.
         if (this.settings.autoCamera && !skip && !this.board.setAutoCamera) this.board.focusTerritories([]);
@@ -1135,12 +1144,13 @@ class Controller {
         const lim = d.config.turnLimit;
         if (lim && ev.round === lim && this.meta && !this.meta.finalRoundShown) {
           this.meta.finalRoundShown = true;
-          this.announce({ tier: 1, title: 'FINAL ROUND', subline: `Round ${lim} of ${lim}${SEP}most territories wins`, seat: null });
+          this.log('system', null, `Final round${SEP}most territories wins`);
         }
         break;
       }
       case 'setupTurn':
         this.sel = emptySel();
+        this.lastPick = null;
         if (this.isAiDriven(ev.player)) this.narration = `${pName(d, ev.player)} is placing armies`;
         else this.narration = null;
         break;
@@ -1148,40 +1158,29 @@ class Controller {
         this.onRollStart(ev, e);
         break;
       case 'territoryConquered':
+        this.lastConquest = { attacker: ev.player, victim: ev.previousOwner };
         if (this.isAiDriven(ev.player)) this.narration = `${pName(d, ev.player)} takes ${tName(ev.to)}`;
         break;
       case 'continentGained': {
         const name = pName(d, ev.player);
         const c = ev.continent;
-        this.announce({
-          sound: { name: 'continent', opts: { volume: aiVol([ev.player]) } },
-          tier: 1,
-          title: `${upper(name)} HOLDS ${upper(cName(c))}`,
-          subline: `+${CONTINENTS[c].bonus} armies a turn`,
-          seat: seatRef(d, ev.player),
-          parts: [{ subject: upper(name), predicate: `HOLDS ${upper(cName(c))}` }],
-        });
-        this.log('continent', ev.player, `${name} holds ${cName(c)}${SEP}+${CONTINENTS[c].bonus} a turn`, []);
+        const bonus = CONTINENTS[c].bonus;
+        // Human involvement only: a human took it, or took it from a human. AI-vs-AI just flares.
+        const lc = this.lastConquest;
+        const involved = this.isHumanSeat(ev.player) || (!!lc && lc.attacker === ev.player && this.isHumanSeat(lc.victim));
+        if (involved) {
+          this.announce('continent', `${upper(name)} HOLDS ${upper(cName(c))}${SEP}+${bonus}`, ev.player, {
+            name: 'continent',
+            opts: { volume: aiVol([ev.player]) },
+          });
+        } else this.play('continent', { volume: 0.6 });
+        this.log('continent', ev.player, `${name} holds ${cName(c)}${SEP}+${bonus} a turn`);
         break;
       }
       case 'continentLost': {
         const by = pName(d, ev.to);
         const victim = pName(d, ev.player);
-        const c = ev.continent;
-        const soleHuman = this.humanCount(d) === 1 && this.isHumanSeat(ev.player);
-        const whose = soleHuman ? 'YOUR' : upper(poss(victim));
-        this.announce({
-          sound: {
-            name: 'continent',
-            opts: { volume: aiVol([ev.player, ev.to]), variant: this.isHumanSeat(ev.player) ? 'somber' : undefined },
-          },
-          tier: 1,
-          title: `${upper(by)} BREAKS ${whose} ${upper(cName(c))}`,
-          subline: `${MINUS}${CONTINENTS[c].bonus} a turn for ${victim}`,
-          seat: seatRef(d, ev.to),
-          parts: [{ subject: upper(by), predicate: `BREAKS ${whose} ${upper(cName(c))}` }],
-        });
-        this.log('continent', ev.to, `${by} broke ${poss(victim)} ${cName(c)}${SEP}${MINUS}${CONTINENTS[c].bonus} a turn for ${victim}`, []);
+        this.log('continent', ev.to, `${by} broke ${poss(victim)} ${cName(ev.continent)}`);
         break;
       }
       case 'playerEliminated': {
@@ -1221,7 +1220,6 @@ class Controller {
     const ev = e.ev;
     const d = this.disp!;
     const meta = this.meta;
-    let nearNew: PlayerId[] = [];
     switch (ev.type) {
       case 'diceRolled':
         this.onRollEnd(ev);
@@ -1231,90 +1229,47 @@ class Controller {
         if (g && g.from === ev.from && g.to === ev.to) {
           g.conquered = true;
           if (g.winP <= 0.3) {
-            const who = pName(d, ev.player);
-            // Tier 1 only when a human is in the fight; AI-vs-AI upsets go to the log and the awards.
-            if (this.upsetMatters(g)) {
-              this.announce({
-                tier: 1,
-                title: 'AGAINST THE ODDS',
-                subline: `${who} takes ${tName(ev.to)} at ${pct(g.winP)}%`,
-                seat: seatRef(d, ev.player),
-                parts: [{ subject: upper(who), predicate: `TOOK ${upper(tName(ev.to))} AGAINST THE ODDS` }],
-              });
-            } else g.upset = `against the odds (${pct(g.winP)}%)`;
+            g.upset = `against the odds (${pct(g.winP)}%)`;
             meta?.awards.upsets.push({ player: ev.player, kind: 'odds', pct: pct(g.winP), round: d.round });
           }
           this.finishEngagement();
         }
-        nearNew = this.checkNearGoal();
+        this.checkNearGoal();
         break;
       }
       case 'armiesMoved':
-        if (ev.reason === 'fortify') {
-          this.log('system', ev.player, `${pName(d, ev.player)} moved ${ev.count} from ${tName(ev.from)} to ${tName(ev.to)}`, []);
-        }
+        if (ev.reason === 'fortify') this.log('system', ev.player, `${pName(d, ev.player)} moved ${ev.count} from ${tName(ev.from)} to ${tName(ev.to)}`);
         break;
       case 'playerEliminated': {
         const victim = pName(d, ev.player);
-        const by = pName(d, ev.by);
-        if (meta) meta.elimRound[ev.player] = d.round;
-        this.announce({
-          tier: 2,
-          title: `${upper(victim)} IS OUT`,
-          subline: `Knocked out by ${by}${SEP}round ${d.round}`,
-          seat: seatRef(d, ev.by),
-          parts: null,
-          victim: ev.player,
-        });
-        this.log('elimination', ev.by, `${by} knocked out ${victim}`, []);
-        if (meta) meta.knockout = { by: ev.by, victim, cards: 0 };
+        this.announce('elimination', `${upper(victim)} IS OUT`, ev.by);
+        this.log('elimination', ev.by, `${pName(d, ev.by)} knocked out ${victim}`);
         this.checkAllHumansOut();
         break;
       }
       case 'cardsCaptured': {
         const n = ev.cards.length;
-        const from = pName(d, ev.from);
-        const by = pName(d, ev.player);
-        if (meta?.knockout && meta.knockout.by === ev.player) meta.knockout.cards = n;
-        // Fold the card count into the elimination banner's subline.
-        const b = this.banner?.vm.tier === 2 ? this.banner : this.bannerQueue.find((x) => x.vm.tier === 2);
-        if (b) b.vm = { ...b.vm, subline: `${b.vm.subline}${SEP}${n === 1 ? '1 card' : `${n} cards`} taken` };
-        if (this.isHumanSeat(ev.player) || this.isHumanSeat(ev.from)) {
-          this.toast(`${by} takes ${poss(from)} ${n === 1 ? 'card' : `${n} cards`}`, seatRef(d, ev.player));
-        }
-        this.log('card', ev.player, `${by} took ${poss(from)} ${n === 1 ? 'card' : `${n} cards`}`, []);
+        this.log('card', ev.player, `${pName(d, ev.player)} took ${poss(pName(d, ev.from))} ${n === 1 ? 'card' : `${n} cards`}`);
         break;
       }
       case 'cardsTraded': {
         const name = pName(d, ev.player);
-        if (meta && ev.player === d.currentPlayer) meta.tradedThisTurn += ev.armies;
-        this.log('card', ev.player, `${name} traded 3 cards for +${ev.armies}`, []);
-        if (ev.armies >= 10) {
-          const up = upcomingSetValues(d, 1);
-          this.announce({
-            tier: 1,
-            title: `+${ev.armies} ARMIES`,
-            subline: up.length ? `Set #${ev.tradeIndex}${SEP}next set is worth ${up[0]}` : `Set #${ev.tradeIndex}`,
-            seat: seatRef(d, ev.player),
-            parts: [{ subject: upper(name), predicate: `CASHES IN +${ev.armies}` }],
-          });
-        }
-        if (ev.bonusTerritory && this.isHumanSeat(ev.player)) {
-          this.toast(`+2 on ${tName(ev.bonusTerritory)}${SEP}you own a traded card's territory`, seatRef(d, ev.player));
-        }
+        this.log('card', ev.player, `${name} traded 3 cards for +${ev.armies}`);
+        if (ev.bonusTerritory) this.log('card', ev.player, `+2 on ${tName(ev.bonusTerritory)}${SEP}${name} owns a traded card's territory`);
         break;
       }
       case 'cardDrawn':
-        this.log('card', ev.player, `${pName(d, ev.player)} drew a card`, []);
+        this.log('card', ev.player, `${pName(d, ev.player)} drew a card`);
         break;
       case 'gameOver':
         if (!skip) this.board.setAttractMode(true);
         break;
       case 'phaseChanged':
         if (ev.phase === 'fortify' || ev.phase === 'reinforce') this.closeEngagement();
+        if (ev.phase !== 'reinforce') this.cardsOpen = false;
         if (ev.phase === 'occupy' && this.state?.phase.kind === 'occupy' && this.sel.occupyCount === null) {
           const ph = this.state.phase;
-          this.sel.occupyCount = occupyDefault(this.state, ph.from, ph.to, ph.min, ph.max).count;
+          this.sel.occupyCount = occupyDefault(this.state, ph.from, ph.to, ph.min, ph.max);
         }
         break;
       case 'controllerChanged':
@@ -1325,40 +1280,25 @@ class Controller {
     }
     if (meta) {
       recordAward(meta.awards, d, ev);
-      recordRecap(meta.recap, d, ev, nearNew);
-    }
-    // Next-set chip pulse.
-    const up = upcomingSetValues(d, 1)[0] ?? 0;
-    if (up !== this.nextSetValue) {
-      if (up > this.nextSetValue && this.nextSetValue > 0) this.nextSetPulse++;
-      this.nextSetValue = up;
+      recordRecap(meta.recap, d, ev);
     }
     if (e.end && meta && ev.type !== 'gameOver') this.saveMeta();
   }
 
-  private checkNearGoal(): PlayerId[] {
+  /** Within 5 of the goal, once per seat: a log line (no banner). */
+  private checkNearGoal(): void {
     const d = this.disp!;
     const meta = this.meta;
-    if (!meta) return [];
+    if (!meta) return;
     const need = territoriesNeeded(d);
-    const out: PlayerId[] = [];
     for (const p of d.players) {
       if (p.eliminated || meta.nearGoal.includes(p.id)) continue;
-      const n = territoryCount(d, p.id);
-      const left = need - n;
+      const left = need - territoryCount(d, p.id);
       if (left > 0 && left <= 5) {
         meta.nearGoal.push(p.id);
-        out.push(p.id);
-        this.announce({
-          tier: 1,
-          title: `${upper(p.name)} IS ${left} FROM VICTORY`,
-          subline: `${n} of ${need} territories`,
-          seat: seatRef(d, p.id),
-          parts: [{ subject: upper(p.name), predicate: `IS ${left} FROM VICTORY` }],
-        });
+        this.log('system', p.id, `${p.name} is ${left} from victory`);
       }
     }
-    return out;
   }
 
   private checkAllHumansOut(): void {
@@ -1395,11 +1335,8 @@ class Controller {
         startedAt: this.now(),
         lastRollEnd: this.now(),
         logId: 0,
-        lastResult: null,
-        tie: false,
         endedAt: null,
         turn: d.turn,
-        details: [],
       };
     }
     if (ev.blitz && this.eng) this.eng.blitz = true;
@@ -1413,16 +1350,6 @@ class Controller {
     g.attLost += ev.attackerLosses;
     g.defLost += ev.defenderLosses;
     g.lastRollEnd = this.now();
-    const A = pName(d, ev.player);
-    const D = pName(d, ev.defender);
-    g.lastResult =
-      ev.attackerLosses > 0 && ev.defenderLosses > 0
-        ? `Each loses ${Math.min(ev.attackerLosses, ev.defenderLosses)}`
-        : ev.defenderLosses > 0
-          ? `${D} loses ${ev.defenderLosses}`
-          : `${A} loses ${ev.attackerLosses}`;
-    g.tie = ev.attackDice.some((v, i) => i < ev.defendDice.length && v === ev.defendDice[i]);
-    g.details.push(`${ev.attackDice.join(' ')} vs ${ev.defendDice.join(' ')} → ${g.lastResult}`);
     this.writeEngagementLog(false);
     // Blitz stopped without taking it, or the source is down to 1: the engagement is over.
     if (d.territories[ev.to].armies > 0 && d.territories[ev.from].armies < 2) this.finishEngagement();
@@ -1449,12 +1376,12 @@ class Controller {
       const i = meta.log.findIndex((l) => l.id === g.logId);
       if (i >= 0) {
         // Immutable update: the HUD short-circuits on the lines array's identity.
-        meta.log = meta.log.map((l, j) => (j === i ? { ...l, text, detail: [...g.details] } : l));
+        meta.log = meta.log.map((l, j) => (j === i ? { ...l, text } : l));
         this.invalidate();
         return;
       }
     }
-    g.logId = this.log('engagement', g.attacker, text, [...g.details]);
+    g.logId = this.log('engagement', g.attacker, text);
   }
 
   /** The engagement is decided (conquest, or the attacker stopped): log, upsets, metrics. */
@@ -1464,30 +1391,12 @@ class Controller {
     g.endedAt = this.now();
     const d = this.disp!;
     if (!g.conquered && g.winP >= 0.75 && g.rolls > 0) {
-      const D = pName(d, g.defender);
-      const A = pName(d, g.attacker);
-      // Tier 1 only when a human is in the fight; AI-vs-AI upsets go to the log and the awards.
-      if (this.upsetMatters(g)) {
-        this.announce({
-          tier: 1,
-          title: 'HELD!',
-          subline: `${D} holds ${tName(g.to)}${SEP}${A} had ${pct(g.winP)}%`,
-          seat: seatRef(d, g.defender),
-          // Past tense: merged with a continent line it must not read as a continent capture.
-          parts: [{ subject: upper(D), predicate: `HELD ${upper(tName(g.to))}` }],
-        });
-        if (this.isAiDriven(g.attacker)) this.narration = `${D} holds ${tName(g.to)}`;
-      } else g.upset = `an upset (${A} had ${pct(g.winP)}%)`;
+      g.upset = `an upset (${pName(d, g.attacker)} had ${pct(g.winP)}%)`;
       this.meta?.awards.upsets.push({ player: g.defender, kind: 'held', pct: pct(g.winP), round: d.round });
     }
     this.writeEngagementLog(true);
     this.metricRolls.push({ blitz: g.blitz, count: g.rolls, ms: Math.round(g.lastRollEnd - g.startedAt), style: g.style });
     this.timer(() => this.invalidate(), 2600);
-  }
-
-  /** Upset banners are for fights a human is in (UX.md §5.2 tier 1); AI-vs-AI ones stay in the log. */
-  private upsetMatters(g: Engagement): boolean {
-    return this.isHumanSeat(g.attacker) || this.isHumanSeat(g.defender);
   }
 
   private closeEngagement(): void {
@@ -1505,43 +1414,18 @@ class Controller {
   }
 
   // =========================================================================
-  // Announcements (UX.md §5.2)
+  // Banners (docs/SIMPLIFY.md §5): the turn banner, continent captured, elimination. One at a time.
   // =========================================================================
 
-  private announce(b: {
-    tier: 1 | 2 | 3;
-    title: string;
-    subline: string;
-    seat: SeatRef | null;
-    parts?: { subject: string; predicate: string }[] | null;
-    victim?: PlayerId;
-    sound?: { name: SfxName; opts?: PlayOptions };
-  }): void {
-    const now = this.now();
-    const s = this.disp;
-    const aiTurn = s && this.isAiDriven(s.currentPlayer) ? s.turn : null;
-    const holdMs = b.tier === 2 ? 1600 : 1200;
+  private announce(kind: 'continent' | 'elimination', title: string, seat: PlayerId, sound?: { name: SfxName; opts?: PlayOptions }): void {
+    const d = this.disp;
     const item: BannerItem = {
-      vm: { id: this.idSeq++, tier: b.tier, title: b.title, subline: b.subline, seat: b.seat, holdMs },
-      createdAt: now,
-      aiTurn,
-      parts: b.parts ?? null,
-      sound: b.sound ?? (b.tier === 1 ? { name: 'continent', opts: { volume: 0.7 } } : undefined),
+      vm: { id: this.idSeq++, kind, title, sub: '', recap: null, seat: d?.players[seat] ? seatRef(d, seat) : null, holdMs: kind === 'elimination' ? 1600 : 1200 },
+      createdAt: this.now(),
+      sound,
     };
-    // AI-turn tier-1 banners within 2 s merge into one line.
-    if (b.tier === 1 && aiTurn !== null) {
-      const target = [...this.bannerQueue].reverse().find((x) => x.vm.tier === 1 && x.aiTurn === aiTurn && now - x.createdAt < 2000)
-        ?? (this.banner && this.banner.vm.tier === 1 && this.banner.aiTurn === aiTurn && now - this.banner.createdAt < 2000 ? this.banner : null);
-      if (target && (target.parts?.length ?? 0) < 3) {
-        const parts = [...(target.parts ?? [{ subject: target.vm.title, predicate: '' }]), ...(item.parts ?? [{ subject: b.title, predicate: '' }])];
-        const title = mergeBannerTitle(parts);
-        target.parts = parts;
-        target.vm = { ...target.vm, title, subline: `${target.vm.subline}${SEP}${b.subline}` };
-        this.invalidate();
-        return;
-      }
-    }
-    if (b.tier === 2) this.bannerQueue.unshift(item);
+    // An elimination keeps its moment: it jumps the queue.
+    if (kind === 'elimination') this.bannerQueue.unshift(item);
     else this.bannerQueue.push(item);
     this.tickBanners();
   }
@@ -1561,14 +1445,7 @@ class Controller {
       if (next.sound) this.play(next.sound.name, next.sound.opts);
       this.invalidate();
     }
-    // Toasts
-    this.toasts = this.toasts.filter((t) => t.until > now);
-    while (this.toasts.length < 2 && this.toastQueue.length && !this.rolling) {
-      this.toasts.push({ vm: this.toastQueue.shift()!, until: now + 2700 });
-      this.invalidate();
-    }
-    const busy = this.banner || this.bannerQueue.length || this.toasts.length || this.toastQueue.length;
-    if (busy && !this.bannerTimer) {
+    if ((this.banner || this.bannerQueue.length) && !this.bannerTimer) {
       this.bannerTimer = this.timer(() => {
         this.bannerTimer = null;
         this.tickBanners();
@@ -1576,39 +1453,39 @@ class Controller {
     }
   }
 
-  private toast(text: string, seat: SeatRef | null = null): void {
-    this.toastQueue.push({ id: this.idSeq++, text, seat });
-    this.tickBanners();
-  }
-
-  private showTurnBanner(player: PlayerId, r: ReinforcementBreakdown, recap: string[], s: GameState, receiptOverride: string | null = null): void {
+  /** "JOHN'S TURN" + '+9 armies' (null = a resumed mid-turn: no count), and the one recap line. */
+  private showTurnBanner(player: PlayerId, armiesIn: number | null, recap: string | null, s: GameState): void {
     const name = pName(s, player);
-    const base = baseReceipt(r.territoryCount, r.base);
-    const receipt =
-      receiptOverride ?? [`+${r.total} armies`, base, ...r.continents.map((c) => `${cName(c.continent)} +${c.bonus}`)].join(SEP);
-    const instant = this.isAiDriven(player) ? this.aiSpeed() === 'instant' : this.settings.animationSpeed === 0;
-    const holdMs = instant ? 500 : recap.length ? 1900 : 1100;
-    // An elimination banner (tier 2) keeps its moment: the turn banner waits for it to leave, so the
-    // room never sees two banners at once (SPEC §10).
-    if (this.banner && this.banner.vm.tier >= 2) {
+    const instant = this.settings.animationSpeed === 0;
+    const holdMs = instant ? 500 : recap ? 1200 : 1000;
+    // An elimination banner keeps its moment: the turn banner waits for it to leave, so the room never
+    // sees two banners at once.
+    if (this.banner && this.banner.vm.kind === 'elimination') {
       const wait = Math.max(0, this.banner.createdAt + 240 + this.banner.vm.holdMs + 200 - this.now());
       const turn = s.turn;
       if (this.turnBannerTimer) this.clock.clearTimeout(this.turnBannerTimer);
       this.turnBannerTimer = this.timer(() => {
         this.turnBannerTimer = null;
-        if (this.disp && this.disp.turn === turn && this.screen === 'game') this.showTurnBanner(player, r, recap, s, receiptOverride);
+        if (this.disp && this.disp.turn === turn && this.screen === 'game') this.showTurnBanner(player, armiesIn, recap, s);
       }, wait + 10);
       return;
     }
-    // The turn banner takes the banner slot: a tier-1 banner still showing bows out.
-    if (this.banner && this.banner.vm.tier === 1) {
+    // The turn banner takes the slot: a continent banner still showing bows out, and the ones still
+    // queued from the turns before are stale news (the recap carries what matters).
+    if (this.banner) {
       this.banner = null;
       this.bannerNextAt = this.now() + 200;
     }
-    // A human's turn starts clean: tier-1 banners still queued from the AI turns before it would replay
-    // stale news after the turn banner leaves. The recap already carries what matters (R1-08).
-    if (!this.isAiDriven(player)) this.bannerQueue = this.bannerQueue.filter((x) => !(x.vm.tier === 1 && x.aiTurn !== null));
-    this.turnBanner = { id: this.idSeq++, seat: seatRef(s, player), title: `${upper(poss(name))} TURN`, receipt, recap, holdMs };
+    this.bannerQueue = this.bannerQueue.filter((x) => x.vm.kind === 'elimination');
+    this.turnBanner = {
+      id: this.idSeq++,
+      kind: 'turn',
+      title: `${upper(poss(name))} TURN`,
+      sub: armiesIn === null ? '' : `+${armiesIn} ${armiesIn === 1 ? 'army' : 'armies'}`,
+      recap,
+      seat: seatRef(s, player),
+      holdMs,
+    };
     if (this.turnBannerTimer) this.clock.clearTimeout(this.turnBannerTimer);
     const id = this.turnBanner.id;
     this.turnBannerTimer = this.timer(() => {
@@ -1624,13 +1501,13 @@ class Controller {
     this.tickBanners();
   }
 
-  private log(kind: LogLineVM['kind'], player: PlayerId | null, text: string, detail: string[]): number {
+  private log(kind: LogLineVM['kind'], player: PlayerId | null, text: string): number {
     const meta = this.meta;
     const d = this.disp;
     if (!meta || !d) return 0;
     const id = meta.logId++;
     // A new array every time: the HUD short-circuits on the lines array's identity.
-    const next = [...meta.log, { id, round: d.round, seat: player !== null && d.players[player] ? seatRef(d, player) : null, kind, text, detail }];
+    const next = [...meta.log, { id, round: d.round, seat: player !== null && d.players[player] ? seatRef(d, player) : null, kind, text }];
     meta.log = next.length > LOG_CAP ? next.slice(next.length - LOG_CAP) : next;
     this.invalidate();
     return id;
@@ -1666,13 +1543,14 @@ class Controller {
     return explainTerritory(s, this.explainUi(), t);
   }
 
+  /** Territory clicks seen (the ocean-click detector compares it across a press). */
+  private boardClicks = 0;
+  /** The territory under the pointer, or null over ocean and table. */
+  private overTile: TerritoryId | null = null;
+
   private onBoardClick(info: TerritoryPointerInfo): void {
-    this.kbFocus = null;
+    this.boardClicks++;
     if (this.turnBanner) this.dismissTurnBanner();
-    if (this.seatHighlight !== null) {
-      this.seatHighlight = null;
-      this.invalidate();
-    }
     const s = this.state;
     if (!s || this.screen !== 'game' || this.overlay || this.confirm) return;
     if (this.now() < this.holdUntil) {
@@ -1687,6 +1565,7 @@ class Controller {
       this.inputDropped++;
       return;
     }
+    if (info.button !== 0) return;
     if (this.busyBlocking()) {
       this.clickThrough(() => this.handleClick(info));
       return;
@@ -1698,10 +1577,6 @@ class Controller {
     const s = this.state;
     if (!s || !this.interactive()) return;
     const t = info.territory;
-    if (info.button === 2) {
-      this.rightClick(t);
-      return;
-    }
     const ex = explainTerritory(s, this.explainUi(), t);
     if (!ex.ok || !ex.plan) {
       if (ex.code) this.reject(ex.code, ex.text);
@@ -1709,17 +1584,28 @@ class Controller {
     }
     this.clearRejection();
     if ((ex.plan.kind === 'occupyThen' && ex.plan.then) || ex.plan.kind === 'exitReinforce') this.commitGuardUntil = this.now() + 300;
-    this.runPlan(ex.plan, { shift: info.shiftKey, alt: info.altKey });
+    // Double-click on a territory places everything left there (an invisible accelerator).
+    if (ex.plan.kind === 'pick') {
+      const now = this.now();
+      const dbl = !!this.lastPick && this.lastPick.t === t && now - this.lastPick.at < 400;
+      this.lastPick = dbl ? null : { t, at: now };
+      if (dbl) {
+        this.sel.selected = t;
+        this.sel.placeCount = null;
+        this.placeNow();
+        this.saveMeta();
+        this.invalidate();
+        return;
+      }
+    }
+    this.runPlan(ex.plan);
     this.invalidate();
   }
 
+  /** A refused click: its plain reason replaces the line for 2 s, with a soft tick. */
   private reject(code: string, text: string): void {
-    const n = (this.rejectCounts.get(code + text) ?? 0) + 1;
-    this.rejectCounts.set(code + text, n);
-    const hold = n >= 3 ? 4000 : 2200;
-    const full = n >= 3 ? `${text}. Glowing territories are the ones you can use.` : text;
     this.lineKey++;
-    this.rejection = { text: full, key: this.lineKey, until: this.now() + hold, code };
+    this.rejection = { text, key: this.lineKey, until: this.now() + REJECT_MS, code };
     if (this.curTurn) this.curTurn.rejected++;
     this.play('uiError', { volume: 0.25 });
     const key = this.lineKey;
@@ -1729,82 +1615,32 @@ class Controller {
         this.lineKey++;
         this.invalidate();
       }
-    }, hold);
+    }, REJECT_MS);
     this.invalidate();
   }
 
-  /** A successful input changes the state line 1 describes: a pending rejection no longer applies. */
+  /** A successful input changes the state the line describes: a pending rejection no longer applies. */
   private clearRejection(): void {
     if (!this.rejection) return;
     this.rejection = null;
     this.lineKey++;
   }
 
-  private rightClick(t: TerritoryId): void {
+  private runPlan(plan: ClickPlan): void {
     const s = this.state!;
     const me = s.currentPlayer;
-    const ph = s.phase;
-    if (ph.kind === 'setup-place') {
-      const n = this.sel.staged[t] ?? 0;
-      if (n > 0) {
-        if (n === 1) delete this.sel.staged[t];
-        else this.sel.staged[t] = n - 1;
-        const i = this.sel.order.lastIndexOf(t);
-        if (i >= 0) this.sel.order.splice(i, 1);
-        this.clearRejection();
-        this.play('unplace', { volume: 0.7 });
-        this.saveMeta();
-        this.invalidate();
-      }
-      return;
-    }
-    if (ph.kind === 'reinforce' && (ph.placed[t] ?? 0) > 0) {
-      const r = this.act({ type: 'unreinforce', player: me, territory: t, count: 1 });
-      if (r.ok) {
-        const i = this.sel.order.lastIndexOf(t);
-        if (i >= 0) this.sel.order.splice(i, 1);
-        this.sel.lastPlaced = t;
-        this.clearRejection();
-      }
-      this.invalidate();
-    }
-  }
-
-  private runPlan(plan: ClickPlan, mods: { shift?: boolean; alt?: boolean } = {}): void {
-    const s = this.state!;
-    const me = s.currentPlayer;
-    const sel = this.sel;
     switch (plan.kind) {
       case 'claim':
         this.act({ type: 'claim', player: me, territory: plan.t });
         break;
-      case 'stage': {
-        if (s.phase.kind !== 'setup-place') break;
-        const left = s.phase.toPlace - stagedTotal(sel);
-        const n = Math.max(1, Math.min(left, mods.alt ? left : mods.shift ? 5 : 1));
-        sel.staged[plan.t] = (sel.staged[plan.t] ?? 0) + n;
-        for (let i = 0; i < n; i++) sel.order.push(plan.t);
-        sel.lastPlaced = plan.t;
-        this.play('place', { volume: 0.8, rate: 1 + Math.min(0.15, 0.03 * sel.order.length) });
-        this.saveMeta();
+      case 'pick':
+        if (this.sel.selected !== plan.t) this.sel = { ...this.sel, selected: plan.t, placeCount: null };
         break;
-      }
-      case 'reinforce': {
-        if (s.phase.kind !== 'reinforce') break;
-        const left = s.phase.remaining;
-        const n = Math.max(1, Math.min(left, mods.alt ? left : mods.shift ? 5 : 1));
-        const r = this.act({ type: 'reinforce', player: me, territory: plan.t, count: n });
-        if (r.ok) {
-          for (let i = 0; i < n; i++) sel.order.push(plan.t);
-          sel.lastPlaced = plan.t;
-        }
-        break;
-      }
       case 'exitReinforce': {
         const r = this.act({ type: 'endReinforce', player: me });
         if (r.ok) {
-          this.sel = { ...emptySel() };
-          this.runPlan(plan.then, mods);
+          this.sel = emptySel();
+          this.runPlan(plan.then);
         }
         break;
       }
@@ -1815,7 +1651,7 @@ class Controller {
         this.sel = { ...emptySel() };
         break;
       case 'arm':
-        this.sel = { ...emptySel(), selected: plan.from, target: plan.to, auto: plan.auto };
+        this.sel = { ...emptySel(), selected: plan.from, target: plan.to };
         break;
       case 'roll':
         this.doAttack(false);
@@ -1832,7 +1668,7 @@ class Controller {
         const r = this.act({ type: 'occupy', player: me, count: plan.count });
         if (!r.ok) break;
         this.sel = { ...emptySel(), selected: plan.select };
-        if (plan.then) this.runPlan(plan.then, mods);
+        if (plan.then) this.runPlan(plan.then);
         break;
       }
     }
@@ -1840,21 +1676,76 @@ class Controller {
     this.invalidate();
   }
 
+  /**
+   * `Place N` on the picked territory: reinforce commits to the engine (Undo = unreinforce); setup
+   * stages locally until Done. The pick stays while armies are left; the stepper resets to all.
+   */
+  private placeNow(): void {
+    const s = this.state!;
+    const me = s.currentPlayer;
+    const sel = this.sel;
+    const t = sel.selected;
+    if (!t || s.territories[t].owner !== me) return;
+    const left = placeLeft(s, sel);
+    if (left <= 0) return;
+    const n = placeValue(s, sel);
+    if (s.phase.kind === 'reinforce') {
+      const r = this.act({ type: 'reinforce', player: me, territory: t, count: n });
+      if (!r.ok) return;
+    } else if (s.phase.kind === 'setup-place') {
+      sel.staged[t] = (sel.staged[t] ?? 0) + n;
+      this.play('place', { volume: 0.8 });
+    } else return;
+    sel.placements.push({ t, n });
+    sel.placeCount = null;
+    if (n >= left) sel.selected = null;
+  }
+
+  /** Undo takes back the last placement, whole. */
+  private undoPlacement(): void {
+    const s = this.state!;
+    const me = s.currentPlayer;
+    const ph = s.phase;
+    const sel = this.sel;
+    if (ph.kind === 'setup-place') {
+      const last = sel.placements.pop();
+      if (!last) return;
+      const have = sel.staged[last.t] ?? 0;
+      const n = Math.min(have, last.n);
+      if (have - n > 0) sel.staged[last.t] = have - n;
+      else delete sel.staged[last.t];
+      this.play('unplace', { volume: 0.7 });
+    } else if (ph.kind === 'reinforce') {
+      let last: Placement | undefined;
+      while (sel.placements.length && !last) {
+        const c = sel.placements.pop()!;
+        if ((ph.placed[c.t] ?? 0) > 0) last = c;
+      }
+      // A save from before placements were tracked: take back a whole tile.
+      if (!last) {
+        const t = TERRITORY_IDS.find((x) => (ph.placed[x] ?? 0) > 0);
+        if (t) last = { t, n: ph.placed[t]! };
+      }
+      if (!last) return;
+      this.act({ type: 'unreinforce', player: me, territory: last.t, count: Math.min(last.n, ph.placed[last.t] ?? 0) });
+    }
+    sel.placeCount = null;
+  }
+
   private doAttack(blitz: boolean): void {
     const s = this.state!;
     const me = s.currentPlayer;
     const { selected: from, target: to } = this.sel;
     if (!from || !to || s.phase.kind !== 'attack') return;
-    const max = maxAttackDice(s, from);
-    if (max < 1) return;
-    const dice = Math.min(max, this.sel.dice ?? max) as 1 | 2 | 3;
-    const r = this.act(blitz ? { type: 'blitz', player: me, from, to, stopAt: 1 } : { type: 'attack', player: me, from, to, dice });
+    const dice = maxAttackDice(s, from);
+    if (dice < 1) return;
+    // Always the most dice you can roll.
+    const r = this.act(blitz ? { type: 'blitz', player: me, from, to, stopAt: 1 } : { type: 'attack', player: me, from, to, dice: dice as 1 | 2 | 3 });
     if (!r.ok) return;
     const after = this.state!;
-    this.sel.auto = false;
     if (after.phase.kind === 'occupy') {
       const ph = after.phase;
-      this.sel.occupyCount = occupyDefault(after, ph.from, ph.to, ph.min, ph.max).count;
+      this.sel.occupyCount = occupyDefault(after, ph.from, ph.to, ph.min, ph.max);
       return;
     }
     if (after.phase.kind !== 'attack') {
@@ -1867,7 +1758,6 @@ class Controller {
       return;
     }
     if (after.territories[from].armies < 2) this.sel = emptySel();
-    else if (this.sel.dice && this.sel.dice > maxAttackDice(after, from)) this.sel.dice = null;
   }
 
   private doOccupy(): void {
@@ -1881,41 +1771,31 @@ class Controller {
     this.sel = after.phase.kind === 'attack' ? { ...emptySel(), selected: autoChain(after, ph.from, ph.to) } : emptySel();
   }
 
-  private onBoardHover(info: TerritoryPointerInfo | null): void {
-    if (this.hoverTimer) {
-      this.clock.clearTimeout(this.hoverTimer);
-      this.hoverTimer = null;
-    }
-    if (!info) {
-      this.hoverTimer = this.timer(() => {
-        this.hover = null;
-        this.invalidate();
-      }, 120);
-      return;
-    }
-    const wasVisible = !!this.hover?.visible;
-    this.hover = { t: info.territory, x: info.clientX, y: info.clientY, visible: wasVisible };
-    if (!wasVisible) {
-      this.hoverTimer = this.timer(() => {
-        if (this.hover) this.hover.visible = true;
-        this.invalidate();
-      }, 350);
-    }
-    this.invalidate();
-  }
-
   // =========================================================================
   // Buttons, keyboard, intents
   // =========================================================================
 
-  private currentBar(): GameVM['actionBar'] | null {
-    return this.getViewModel().game?.actionBar ?? null;
+  private currentStrip(): StripVM | null {
+    return this.getViewModel().game?.strip ?? null;
   }
 
   pressButton(id: ButtonId): void {
     if (this.turnBanner) this.dismissTurnBanner();
     const s = this.state;
     if (!s || this.screen !== 'game') return;
+    // All humans out: the strip offers these during AI turns.
+    if (id === 'watchAis' || id === 'callGame') {
+      if (!this.allHumansOut) return;
+      if (id === 'callGame') this.endGameNow();
+      else {
+        this.sessionAiSpeed = 'instant';
+        this.allHumansOut = false;
+        this.allHumansOutDismissed = true;
+        this.applyBoardSpeed();
+      }
+      this.invalidate();
+      return;
+    }
     if (this.now() < this.holdUntil) {
       this.inputDropped++;
       return;
@@ -1928,14 +1808,10 @@ class Controller {
       this.clickThrough(() => this.pressButton(id));
       return;
     }
-    const bar = this.currentBar();
-    const b = bar?.buttons.find((x) => x.id === id);
-    const isChipTrade = id === 'trade' && bar?.chips.some((c) => c.id === 'trade');
-    if (!b && !isChipTrade) return;
-    if (b && !b.enabled) {
-      if (b.why) this.reject('button_disabled', b.why);
-      return;
-    }
+    const strip = this.currentStrip();
+    // The Cards sheet's own Trade button works whenever the sheet offers it.
+    const fromSheet = id === 'trade' && !!this.getViewModel().game?.cards?.trade;
+    if (!strip?.buttons.some((b) => b.id === id) && !fromSheet) return;
     this.clearRejection();
     this.runButton(id);
     this.saveMeta();
@@ -1948,82 +1824,28 @@ class Controller {
     const ph = s.phase;
     const sel = this.sel;
     switch (id) {
-      case 'undo': {
-        if (ph.kind === 'setup-place') {
-          const t = sel.order.pop() ?? (Object.keys(sel.staged)[0] as TerritoryId | undefined);
-          if (t && sel.staged[t]) {
-            if (sel.staged[t] === 1) delete sel.staged[t];
-            else sel.staged[t] = sel.staged[t]! - 1;
-            this.play('unplace', { volume: 0.7 });
-          }
-        } else if (ph.kind === 'reinforce') {
-          let t: TerritoryId | undefined;
-          while (sel.order.length && !t) {
-            const c = sel.order.pop()!;
-            if ((ph.placed[c] ?? 0) > 0) t = c;
-          }
-          t ??= TERRITORY_IDS.find((x) => (ph.placed[x] ?? 0) > 0);
-          if (t) this.act({ type: 'unreinforce', player: me, territory: t, count: 1 });
-        }
+      case 'place':
+        this.placeNow();
         break;
-      }
+      case 'undo':
+        this.undoPlacement();
+        break;
       case 'trade': {
         if (ph.kind !== 'reinforce') break;
-        const hand = s.players[me].cards;
-        const pick =
-          sel.cardSel.length === 3 && isValidSetSymbols(sel.cardSel.map((id) => hand.find((c) => c.id === id)?.symbol ?? 'wild'))
-            ? (sel.cardSel as [number, number, number])
-            : bestSet(s, me)?.cardIds;
-        if (pick) {
-          const r = this.act({ type: 'trade', player: me, cardIds: pick });
-          if (r.ok) {
-            sel.cardSel = [];
-            if (this.meta && !this.meta.setHintSeen.includes(me)) this.meta.setHintSeen.push(me);
-          }
+        const best = bestSet(s, me);
+        if (best && this.act({ type: 'trade', player: me, cardIds: best.cardIds }).ok) {
+          sel.placeCount = null;
+          this.cardsOpen = false;
         }
         break;
       }
-      case 'chooseCards':
+      case 'cards':
         this.cardsOpen = !this.cardsOpen;
-        if (this.meta && !this.meta.setHintSeen.includes(me)) this.meta.setHintSeen.push(me);
         break;
-      case 'beginAttack':
-        if (ph.kind === 'reinforce') {
-          const r = this.act({ type: 'endReinforce', player: me });
-          if (r.ok) this.sel = emptySel();
-        }
+      case 'attack':
+        if (ph.kind === 'reinforce' && this.act({ type: 'endReinforce', player: me }).ok) this.sel = emptySel();
         break;
-      case 'roll':
-        this.doAttack(false);
-        break;
-      case 'blitz':
-        this.doAttack(true);
-        break;
-      case 'fortifyNext': {
-        const r = this.act({ type: 'endAttack', player: me });
-        if (r.ok) this.sel = emptySel();
-        break;
-      }
-      case 'endTurn': {
-        if (ph.kind === 'reinforce') break;
-        this.act({ type: 'endTurn', player: me });
-        break;
-      }
-      case 'move':
-        if (ph.kind === 'occupy') this.doOccupy();
-        else if (ph.kind === 'fortify' && sel.selected && sel.target) {
-          const max = Math.max(1, s.territories[sel.selected].armies - 1);
-          const count = Math.min(max, Math.max(1, sel.fortifyCount ?? max));
-          this.act({ type: 'fortify', player: me, from: sel.selected, to: sel.target, count });
-        }
-        break;
-      case 'min':
-      case 'max':
-      case 'dec':
-      case 'inc':
-        this.stepCounter(id);
-        break;
-      case 'confirmPlacement': {
+      case 'done': {
         if (ph.kind !== 'setup-place') break;
         const staged = { ...sel.staged };
         this.sel = emptySel();
@@ -2033,130 +1855,104 @@ class Controller {
         }
         break;
       }
-      case 'cancel':
-        this.backOut();
+      case 'roll':
+        this.doAttack(false);
+        break;
+      case 'blitz':
+        this.doAttack(true);
+        break;
+      case 'fortify':
+        if (this.act({ type: 'endAttack', player: me }).ok) this.sel = emptySel();
+        break;
+      case 'endTurn':
+        if (ph.kind === 'attack' || ph.kind === 'fortify') this.act({ type: 'endTurn', player: me });
+        break;
+      case 'move':
+        if (ph.kind === 'occupy') this.doOccupy();
+        else if (ph.kind === 'fortify' && sel.selected && sel.target) {
+          const max = Math.max(1, s.territories[sel.selected].armies - 1);
+          const count = Math.min(max, Math.max(1, sel.fortifyCount ?? max));
+          this.act({ type: 'fortify', player: me, from: sel.selected, to: sel.target, count });
+        }
+        break;
+      case 'watchAis':
+      case 'callGame':
         break;
     }
   }
 
-  private counterRange(): { min: number; max: number; value: number } | null {
+  /** The one count control's range for the current step. */
+  private countRange(): { min: number; max: number; value: number; set: (v: number) => void } | null {
     const s = this.state!;
     const ph = s.phase;
-    if (ph.kind === 'occupy') {
-      const v = this.sel.occupyCount ?? ph.max;
-      return { min: ph.min, max: ph.max, value: v };
+    const sel = this.sel;
+    if ((ph.kind === 'reinforce' || ph.kind === 'setup-place') && sel.selected) {
+      const left = placeLeft(s, sel);
+      if (left < 1) return null;
+      return { min: 1, max: left, value: placeValue(s, sel), set: (v) => (sel.placeCount = v) };
     }
-    if (ph.kind === 'fortify' && this.sel.selected && this.sel.target) {
-      const max = Math.max(1, s.territories[this.sel.selected].armies - 1);
-      return { min: 1, max, value: this.sel.fortifyCount ?? max };
+    if (ph.kind === 'occupy') return { min: ph.min, max: ph.max, value: sel.occupyCount ?? ph.max, set: (v) => (sel.occupyCount = v) };
+    if (ph.kind === 'fortify' && sel.selected && sel.target) {
+      const max = Math.max(1, s.territories[sel.selected].armies - 1);
+      return { min: 1, max, value: sel.fortifyCount ?? max, set: (v) => (sel.fortifyCount = v) };
     }
     return null;
   }
 
   private setCount(v: number): void {
-    const r = this.counterRange();
+    if (!this.state || !this.interactive()) return;
+    const r = this.countRange();
     if (!r) return;
     const value = Math.min(r.max, Math.max(r.min, Math.round(v)));
     if (value !== r.value) this.clearRejection();
-    if (this.state!.phase.kind === 'occupy') this.sel.occupyCount = value;
-    else this.sel.fortifyCount = value;
+    r.set(value);
     this.invalidate();
   }
 
-  private stepCounter(id: 'min' | 'max' | 'dec' | 'inc'): void {
-    const r = this.counterRange();
-    if (!r) return;
-    const v = id === 'min' ? r.min : id === 'max' ? r.max : id === 'dec' ? r.value - 1 : r.value + 1;
-    this.setCount(v);
-  }
-
-  private pill(id: 'plus5' | 'all'): void {
-    const s = this.state;
-    if (!s || !this.interactive()) return;
-    if (this.busyBlocking()) {
-      this.clickThrough(() => this.pill(id));
-      return;
-    }
-    const t = this.sel.lastPlaced;
-    if (!t) return;
-    const ph = s.phase;
-    if (ph.kind === 'reinforce' && !ph.mustTrade && ph.remaining > 0) {
-      const n = id === 'all' ? ph.remaining : Math.min(5, ph.remaining);
-      const r = this.act({ type: 'reinforce', player: s.currentPlayer, territory: t, count: n });
-      if (r.ok) {
-        for (let i = 0; i < n; i++) this.sel.order.push(t);
-        this.clearRejection();
-      }
-    } else if (ph.kind === 'setup-place') {
-      const left = ph.toPlace - stagedTotal(this.sel);
-      if (left <= 0) return;
-      const n = id === 'all' ? left : Math.min(5, left);
-      this.sel.staged[t] = (this.sel.staged[t] ?? 0) + n;
-      for (let i = 0; i < n; i++) this.sel.order.push(t);
-      this.clearRejection();
-      this.play('place', { volume: 0.8 });
-      this.saveMeta();
-    }
-    this.invalidate();
-  }
-
-  /** Esc / Back: one level at a time, then the pause menu. */
+  /** Esc / ocean: one level at a time (the cards sheet, the target, the pick). False = nothing to back out of. */
   private backOut(): boolean {
-    const sel = this.sel;
-    const ph = this.state?.phase.kind;
-    if (ph === 'fortify' && sel.target) {
-      this.sel = { ...emptySel(), selected: sel.selected };
+    if (this.cardsOpen) {
+      this.cardsOpen = false;
       return true;
     }
+    const sel = this.sel;
     if (sel.target) {
-      this.sel = { ...emptySel(), selected: sel.selected };
+      this.sel = { ...sel, target: null, fortifyCount: null };
       return true;
     }
     if (sel.selected) {
-      this.sel = emptySel();
+      this.sel = { ...sel, selected: null, placeCount: null };
       return true;
     }
     return false;
   }
 
   private primaryButton(): ButtonVM | null {
-    const bar = this.currentBar();
-    return bar?.buttons.find((b) => b.brass && b.enabled) ?? null;
+    return this.currentStrip()?.buttons.find((b) => b.primary) ?? null;
   }
 
   private onKey(e: KeyboardEvent): void {
     const tgt = e.target as HTMLElement | null;
     if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.tagName === 'SELECT' || tgt.isContentEditable)) return;
-    if (e.metaKey || e.ctrlKey || e.defaultPrevented) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
     const key = e.key;
-    // A keyboard-focused HUD button gets its own Enter/Space.
+    // A keyboard-focused HUD control gets its own Enter/Space.
     const active = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
-    if ((key === 'Enter' || key === ' ') && active && active !== document.body && (active.tagName === 'BUTTON' || active.getAttribute('role') === 'button')) return;
-    const handled = this.handleKey(key, e.shiftKey, e.repeat);
-    if (handled) {
+    if ((key === 'Enter' || key === ' ') && active && active !== document.body && (active.tagName === 'BUTTON' || active.getAttribute('role') === 'button' || active.getAttribute('role') === 'slider')) return;
+    if (this.handleKey(key, e.repeat)) {
       e.preventDefault();
       e.stopPropagation();
     }
   }
 
-  /** Returns true when the key was consumed. Exposed for tests via the hooks-free path. */
-  handleKey(key: string, shift = false, repeat = false): boolean {
-    // Global toggles.
-    if (key === 'm' || key === 'M') {
-      this.setSettings({ muted: !this.settings.muted });
-      return true;
-    }
-    if (key === 'l' || key === 'L') {
-      this.setSettings({ showLabels: !this.settings.showLabels });
-      return true;
-    }
+  /**
+   * The hidden keyboard accelerators: Enter = the brass primary, Space = Blitz / confirm (never a phase
+   * exit), Esc = back one level, then the menu. Returns true when the key was consumed.
+   */
+  handleKey(key: string, repeat = false): boolean {
     if (!this.menuKeys && (this.confirm || this.overlay || this.screen !== 'game' || this.handoff)) {
       // src/ui owns keys on menus, overlays, confirms and the hand-off cover.
       return false;
-    }
-    if (key === '?') {
-      this.setOverlay(this.overlay === 'rules' ? this.overlayReturn : 'rules');
-      return true;
     }
     if (key === 'Escape') {
       if (this.confirm) {
@@ -2174,12 +1970,6 @@ class Controller {
         return true;
       }
       if (this.screen !== 'game') return false;
-      if (this.cardsOpen || this.logOpen) {
-        this.cardsOpen = false;
-        this.logOpen = false;
-        this.invalidate();
-        return true;
-      }
       if (this.interactive() && this.backOut()) {
         this.clearRejection();
         this.invalidate();
@@ -2196,113 +1986,59 @@ class Controller {
       return false;
     }
     if (this.screen !== 'game' || this.overlay || this.confirm) return false;
-    const s = this.state;
-    if (!s) return false;
-
-    if (key === 'Enter' || key === ' ') {
-      if (repeat) return true;
-      if (this.turnBanner) this.dismissTurnBanner();
-      if (this.handoff) {
-        this.intent({ type: 'handoffAccept' });
+    if (!this.state || (key !== 'Enter' && key !== ' ')) return false;
+    if (repeat) return true;
+    if (this.turnBanner) this.dismissTurnBanner();
+    if (this.handoff) {
+      this.intent({ type: 'handoffAccept' });
+      return true;
+    }
+    if (!this.interactive()) {
+      this.skipWatched();
+      return true;
+    }
+    if (this.now() < this.commitGuardUntil) return true;
+    if (key === ' ') {
+      if (this.now() < this.spaceGuardUntil) return true;
+      if (this.busyBlocking()) {
+        // Space skips; it never also commits.
+        this.skipAll = true;
+        this.board.skipAnimations();
+        this.wakeAll();
+        this.spaceGuardUntil = this.now() + 300;
         return true;
       }
-      if (!this.interactive()) {
-        this.skipWatched();
-        return true;
-      }
-      if (this.now() < this.commitGuardUntil && !this.kbFocus) return true;
-      if (key === ' ') {
-        if (this.now() < this.spaceGuardUntil) return true;
-        if (this.busyBlocking()) {
-          // Space skips; it never also commits (UX.md §8.1).
-          this.skipAll = true;
-          this.board.skipAnimations();
-          this.wakeAll();
-          this.spaceGuardUntil = this.now() + 300;
-          return true;
-        }
-        const commit = this.commitButton();
-        if (commit) this.pressButton(commit);
-        return true;
-      }
-      // Enter: a keyboard-focused tile, else the brass primary.
-      if (this.kbFocus) {
-        const t = this.kbFocus;
-        this.kbFocus = null;
-        this.onBoardClick({ territory: t, clientX: 0, clientY: 0, shiftKey: false, altKey: false, metaKey: false, button: 0 });
-        return true;
-      }
-      // Enter means the primary the player is looking at now. If a click-through changes it before the
-      // key runs (a chain click turned 'Move 9' into 'Blitz'), the key is spent, not redirected.
-      const seen = this.primaryButton()?.id ?? null;
-      const run = () => {
-        const p = this.primaryButton();
-        if (p && p.id === seen) this.pressButton(p.id);
-      };
-      if (this.busyBlocking()) this.clickThrough(run);
-      else run();
+      const commit = this.commitButton();
+      if (commit) this.pressButton(commit);
       return true;
     }
-    if (!this.interactive()) return false;
-    const lower = key.toLowerCase();
-    if (lower === 'e') {
-      const bar = this.currentBar();
-      const ph = s.phase.kind;
-      const want: ButtonId = ph === 'attack' ? 'fortifyNext' : ph === 'fortify' ? 'endTurn' : 'beginAttack';
-      if (bar?.buttons.some((b) => b.id === want)) this.pressButton(want);
-      return true;
-    }
-    if (lower === 'b') {
-      if (s.phase.kind === 'attack' && this.sel.selected && this.sel.target) this.pressButton('blitz');
-      return true;
-    }
-    if (key === '1' || key === '2' || key === '3') {
-      this.setDice(Number(key) as 1 | 2 | 3);
-      return true;
-    }
-    if (key === 'Tab') {
-      const list = clickableTerritories(s, this.explainUi(), TERRITORY_IDS);
-      if (!list.length) return true;
-      const i = this.kbFocus ? list.indexOf(this.kbFocus) : -1;
-      const n = list.length;
-      this.kbFocus = list[(((shift ? i - 1 : i + 1) % n) + n) % n];
-      this.invalidate();
-      return true;
-    }
-    if (lower === 'f') {
-      const ids = [this.sel.selected, this.sel.target, this.kbFocus].filter(Boolean) as TerritoryId[];
-      this.board.focusTerritories(ids);
-      return true;
-    }
-    return false;
+    // Enter means the primary the player is looking at now. If a click-through changes it before the
+    // key runs (a chain click turned 'Move 9' into 'Blitz'), the key is spent, not redirected.
+    const seen = this.primaryButton()?.id ?? null;
+    const run = () => {
+      const p = this.primaryButton();
+      if (p && p.id === seen) this.pressButton(p.id);
+    };
+    if (this.busyBlocking()) this.clickThrough(run);
+    else run();
+    return true;
   }
 
-  /** The button Space commits (Blitz, confirm occupy/move/trade/placement); never a phase exit. */
+  /** The button Space commits (Blitz, Place, Move, a forced trade, Done); never a phase exit. */
   private commitButton(): ButtonId | null {
-    const s = this.state!;
-    const ph = s.phase;
-    const bar = this.currentBar();
-    const has = (id: ButtonId) => bar?.buttons.some((b) => b.id === id && b.enabled);
-    if (ph.kind === 'attack' && this.sel.selected && this.sel.target && has('blitz')) return 'blitz';
-    if (ph.kind === 'occupy') return 'move';
-    if (ph.kind === 'fortify' && has('move')) return 'move';
-    if (ph.kind === 'reinforce' && ph.mustTrade && has('trade')) return 'trade';
-    if (ph.kind === 'setup-place' && has('confirmPlacement')) return 'confirmPlacement';
+    const ids = new Set(this.currentStrip()?.buttons.map((b) => b.id) ?? []);
+    for (const id of ['blitz', 'place', 'move', 'done'] as const) if (ids.has(id)) return id;
+    const ph = this.state!.phase;
+    if (ph.kind === 'reinforce' && ph.mustTrade && ids.has('trade')) return 'trade';
     return null;
   }
 
-  private setDice(v: 1 | 2 | 3): void {
-    const s = this.state;
-    if (!s || !this.sel.selected || s.phase.kind !== 'attack') return;
-    const max = maxAttackDice(s, this.sel.selected);
-    this.sel.dice = Math.max(1, Math.min(max, v)) as 1 | 2 | 3;
-    this.invalidate();
-  }
-
   private setOverlay(o: Overlay): void {
-    if (o === 'rules' || o === 'settings') this.overlayReturn = this.overlay === 'rules' || this.overlay === 'settings' ? this.overlayReturn : this.overlay;
-    else this.overlayReturn = null;
+    if (o === 'rules' || o === 'settings' || o === 'log') {
+      this.overlayReturn = this.overlay === 'rules' || this.overlay === 'settings' || this.overlay === 'log' ? this.overlayReturn : this.overlay;
+    } else this.overlayReturn = null;
     this.overlay = o;
+    if (o) this.cardsOpen = false;
     this.invalidate();
     if (!o) this.scheduleAi();
   }
@@ -2319,7 +2055,10 @@ class Controller {
         this.setOverlay(i.overlay);
         break;
       case 'continue':
-        if (!this.loadSave()) this.toast("That save couldn't be loaded");
+        if (!this.loadSave()) {
+          console.warn("[risk] that save couldn't be loaded");
+          this.refreshSaveSummary();
+        }
         break;
       case 'seat':
         this.draft = patchSeat(this.draft, i.index, i.patch);
@@ -2355,48 +2094,11 @@ class Controller {
       case 'button':
         this.pressButton(i.id);
         break;
-      case 'pill':
-        this.pill(i.id);
-        break;
       case 'setCount':
         this.setCount(i.value);
         break;
-      case 'setDice':
-        this.setDice(i.value);
-        break;
-      case 'toggleCard': {
-        const cs = this.sel.cardSel;
-        const at = cs.indexOf(i.id);
-        if (at >= 0) cs.splice(at, 1);
-        else {
-          if (cs.length >= 3) cs.shift();
-          cs.push(i.id);
-        }
-        break;
-      }
       case 'cardsPanel':
-        this.cardsOpen = i.open;
-        if (i.open && this.meta && this.state && !this.meta.setHintSeen.includes(this.state.currentPlayer) && this.interactive()) {
-          this.meta.setHintSeen.push(this.state.currentPlayer);
-        }
-        break;
-      case 'logPanel':
-        this.logOpen = i.open;
-        break;
-      case 'toggleHints': {
-        const s = this.state;
-        if (s && this.meta) {
-          const p = s.currentPlayer;
-          this.meta.hints[p] = !(this.meta.hints[p] ?? true);
-          this.saveMeta();
-        }
-        break;
-      }
-      case 'aiSpeed':
-        this.setSettings({ aiSpeed: i.value });
-        break;
-      case 'highlightSeat':
-        this.seatHighlight = this.seatHighlight === i.player ? null : i.player;
+        this.cardsOpen = i.open && !!this.state && this.interactive() && this.state.phase.kind === 'reinforce';
         break;
       case 'handoffAccept':
         if (this.handoff) {
@@ -2406,12 +2108,6 @@ class Controller {
         break;
       case 'dismissTurnBanner':
         this.dismissTurnBanner();
-        break;
-      case 'watchAisFinish':
-        this.sessionAiSpeed = 'instant';
-        this.allHumansOut = false;
-        this.allHumansOutDismissed = true;
-        this.applyBoardSpeed();
         break;
       case 'endGameNow':
         if (this.allHumansOut) {
@@ -2427,7 +2123,7 @@ class Controller {
         const c = this.confirm;
         this.confirm = null;
         if (c && i.yes) {
-          // Both leave the paused game behind: close the pause menu they were opened from.
+          // Both leave the paused game behind: close the menu they were opened from.
           this.overlay = null;
           if (c.kind === 'endGame') this.endGameNow();
           else this.restart();
@@ -2479,7 +2175,7 @@ class Controller {
       }
       const r = this.applyRaw({ type: 'setController', player, kind, ...(kind === 'ai' ? { difficulty: difficulty ?? 'normal' } : {}) });
       if (!r.ok) {
-        this.toast(r.error);
+        console.warn('[risk] seat change refused:', r.error);
         return;
       }
       if (player === s.currentPlayer) {
@@ -2490,7 +2186,7 @@ class Controller {
       }
       this.enqueue(r.events.map((ev, i) => ({ ev, after: r.state, end: i === r.events.length - 1 })), { ai: false });
       const name = p.name;
-      this.log('system', player, kind === 'ai' ? `The AI plays ${name}'s seat` : `${name} takes the seat back`, []);
+      this.log('system', player, kind === 'ai' ? `The AI plays ${name}'s seat` : `${name} takes the seat back`);
       this.applyBoardSpeed();
       this.invalidate();
       this.scheduleAi();
@@ -2679,7 +2375,7 @@ class Controller {
         ph === 'setup-place'
           ? `${name} places ${placed === 1 ? '1 army' : `${placed} armies`}`
           : traded
-            ? `${name} trades cards and reinforces`
+            ? `${name} trades cards`
             : `${name} is reinforcing`;
       const drops = collected.filter((x) => x.ev.type === 'armiesPlaced').length;
       const budget = ph === 'setup-place' ? 800 : 1000;
@@ -2813,7 +2509,7 @@ class Controller {
     }
     const d = this.disp!;
     const planned = this.state;
-    this.narration = `${pName(d, p)} attacks ${tName(to)} from ${tName(from)}${SEP}${pName(d, defender)} defends`;
+    this.narration = `${pName(d, p)} attacks ${tName(to)}`;
     // Camera: frame the fight once if it's off-screen, before the arrow (UX.md §8.3).
     if (!this.onScreenForAi(from) || !this.onScreenForAi(to)) {
       this.board.focusTerritories([from, to]);
@@ -2898,6 +2594,7 @@ class Controller {
       newGame: buildNewGameVM(this.draft),
       game: this.buildGame(),
       victory: this.victory,
+      rulesNotes: this.rulesNotes(),
     };
   }
 
@@ -2905,34 +2602,21 @@ class Controller {
     const d = this.disp;
     const s = this.state;
     if (!d || !s || !this.meta) return null;
-    const now = this.now();
-    if (this.rejection && this.rejection.until <= now) this.rejection = null;
-    const cur = d.currentPlayer;
+    if (this.rejection && this.rejection.until <= this.now()) this.rejection = null;
     const interactive = this.interactive() && d.currentPlayer === s.currentPlayer;
     const sel = this.viewSel();
+    const banner = this.banner?.vm.kind === 'elimination' ? this.banner.vm : (this.turnBanner ?? this.banner?.vm ?? null);
     return {
-      topBar: this.buildTopBar(d),
-      roster: this.buildRoster(d),
-      actionBar: this.buildBar(d, sel, interactive),
+      seats: this.buildSeats(d),
+      strip: this.buildStripVM(d, sel, interactive),
       battle: this.buildBattle(d, sel, interactive),
       cards: this.buildCards(d, interactive),
-      log: { open: this.logOpen, lines: this.meta.log },
-      banner: this.banner ? this.banner.vm : null,
-      toasts: this.toasts.map((t) => t.vm),
-      turnBanner: this.turnBanner,
-      tooltip: this.buildTooltip(d),
-      pills: this.buildPills(d, sel, interactive),
-      handoff: this.handoff
-        ? {
-            seat: seatRef(d, this.handoff.player),
-            subline: this.handoffSubline(this.handoff.player),
-          }
-        : null,
-      allHumansOut: this.allHumansOut,
+      log: this.meta.log,
+      banner,
+      handoff: this.handoff ? { seat: seatRef(d, this.handoff.player), subline: this.handoffSubline(this.handoff.player) } : null,
       confirm: this.confirm,
-      house: { cardBonus: s.config.cardBonus, fortifyRule: s.config.fortifyRule },
+      seatActions: this.buildSeatActions(d),
     };
-    void cur;
   }
 
   private handoffSubline(p: PlayerId): string {
@@ -2944,95 +2628,59 @@ class Controller {
     return parts.join(SEP);
   }
 
-  private buildTopBar(d: GameState): TopBarVM {
-    const lim = d.config.turnLimit;
-    const setup = d.round === 0;
-    const finalRound = !!lim && d.round >= lim && !setup;
-    const round = setup ? 'Setup' : finalRound ? 'Final round' : lim ? `Round ${d.round} of ${lim}` : `Round ${d.round}`;
-    const k = d.phase.kind;
-    const step =
-      k === 'setup-claim' || k === 'setup-place'
-        ? 'setup'
-        : k === 'reinforce'
-          ? 'reinforce'
-          : k === 'attack' || k === 'occupy'
-            ? 'attack'
-            : k === 'fortify'
-              ? 'fortify'
-              : null;
-    const up = upcomingSetValues(d, 1);
-    const nextSet =
-      d.config.cardBonus === 'fixed' ? { label: 'Sets 4–10', pulseKey: 0 } : up.length ? { label: `Next set +${up[0]}`, pulseKey: this.nextSetPulse } : null;
-    const aiAlive = d.players.some((p) => !p.eliminated && (p.kind === 'ai' || this.autoplayOn));
-    return {
-      player: seatRef(d, d.currentPlayer),
-      round,
-      finalRound,
-      step,
-      nextSet,
-      aiSpeed: aiAlive ? this.aiSpeed() : null,
-    };
+  /** Rules sheet, 'This game': this game's rules, or the New game draft's before a game starts. */
+  private rulesNotes(): string[] {
+    const s = this.state;
+    const lines: string[] = [];
+    const house = s ? s.config : this.draft.house;
+    if (s) {
+      const need = territoriesNeeded(s);
+      lines.push(need >= 42 ? 'Goal: take every territory.' : `Goal: first to ${need} territories wins.`);
+      if (s.config.turnLimit) lines.push(`Game ends after round ${s.config.turnLimit}${SEP}most territories wins.`);
+    } else lines.push(buildNewGameVM(this.draft).summary);
+    lines.push(
+      house.cardBonus === 'progressive'
+        ? 'Card sets: 4, 6, 8, 10, 12, 15, then +5 each.'
+        : 'Card sets: 3 infantry 4 · 3 cavalry 6 · 3 artillery 8 · one of each 10.',
+    );
+    lines.push(house.fortifyRule === 'connected' ? 'Fortify: along any chain of your territories.' : 'Fortify: to a neighbor only.');
+    return lines;
   }
 
-  private buildRoster(d: GameState): RosterRowVM[] {
-    const need = territoriesNeeded(d);
-    const underAttack =
-      this.eng && !this.eng.endedAt && this.eng.style === 'full' && this.isAiDriven(this.eng.attacker) && this.isHumanSeat(this.eng.defender)
-        ? this.eng.defender
-        : this.aiPreview
-          ? d.territories[this.aiPreview.to].owner
-          : null;
-    return d.players.map((p) => {
-      const cards = p.cards.length;
-      const elimRound = this.meta?.elimRound[p.id];
-      const by = p.eliminatedBy !== undefined ? pName(d, p.eliminatedBy) : null;
-      return {
-        seat: seatRef(d, p.id),
-        current: p.id === d.currentPlayer && d.phase.kind !== 'game-over',
-        eliminated: p.eliminated,
-        epitaph: p.eliminated
-          ? `${upper(p.name)}${SEP}out in round ${elimRound ?? Math.max(1, d.round)}${by ? `${SEP}by ${by}` : ''}`
-          : null,
-        territories: territoryCount(d, p.id),
-        territoriesNeeded: need,
-        armies: totalArmies(d, p.id),
-        income: p.eliminated || d.round === 0 ? 0 : reinforcementsFor(d, p.id).total,
-        continents: continentsOwned(d, p.id).map((c) => CONTINENT_ABBR[c]),
-        cards,
-        cardState: cards >= 5 ? 'mustTrade' : cards === 4 ? 'warn' : 'normal',
-        underAttack: underAttack === p.id && p.kind === 'human',
-        highlighted: this.seatHighlight === p.id,
-        seatAction: this.seatActionFor(d, p.id),
-      };
-    });
+  private buildSeats(d: GameState): SeatChipVM[] {
+    return d.players.map((p) => ({
+      seat: seatRef(d, p.id),
+      current: p.id === d.currentPlayer && d.phase.kind !== 'game-over',
+      eliminated: p.eliminated,
+      territories: territoryCount(d, p.id),
+      cards: p.cards.length >= 3 && !p.eliminated ? p.cards.length : null,
+    }));
   }
 
-  /** Pause → Seats (R1-22): hand a human seat to the AI, or give a seat that started human back. */
-  private seatActionFor(d: GameState, id: PlayerId): RosterRowVM['seatAction'] {
-    const p = d.players[id];
-    if (!p || p.eliminated || d.phase.kind === 'game-over' || this.autoplayOn) return null;
-    const startedHuman = d.config.players[id]?.kind === 'human';
-    if (p.kind === 'human') {
-      return { label: `Let the AI play ${p.name}${SEP}Normal`, intent: { type: 'setController', player: id, kind: 'ai', difficulty: 'normal' } };
+  /** Settings → Seats: hand a human seat to the AI, or give a seat that started human back. */
+  private buildSeatActions(d: GameState): GameVM['seatActions'] {
+    if (d.phase.kind === 'game-over' || this.autoplayOn) return [];
+    const out: GameVM['seatActions'] = [];
+    for (const p of d.players) {
+      if (p.eliminated) continue;
+      const startedHuman = d.config.players[p.id]?.kind === 'human';
+      if (p.kind === 'human') {
+        out.push({ seat: seatRef(d, p.id), label: `Let the AI play ${p.name}`, intent: { type: 'setController', player: p.id, kind: 'ai', difficulty: 'normal' } });
+      } else if (startedHuman) {
+        out.push({ seat: seatRef(d, p.id), label: `${p.name} takes the seat back`, intent: { type: 'setController', player: p.id, kind: 'human' } });
+      }
     }
-    if (startedHuman) return { label: `${p.name} takes the seat back`, intent: { type: 'setController', player: id, kind: 'human' } };
-    return null;
+    return out;
   }
 
-  private buildBar(d: GameState, sel: Sel, interactive: boolean): GameVM['actionBar'] {
+  private buildStripVM(d: GameState, sel: Sel, interactive: boolean): StripVM {
     const me = d.currentPlayer;
-    const meta = this.meta!;
-    const hintsOn = interactive && (meta.hints[me] ?? true);
     let narration: string | null = null;
     let idle: string | null = null;
     if (!interactive) {
-      if (d.phase.kind === 'game-over') {
-        idle = `${pName(d, d.phase.winner)} wins`;
-      } else if (this.handoff) {
-        narration = `Pass to ${pName(d, this.handoff.player)}`;
-      } else if (this.screen === 'victory') {
-        idle = 'The game is over';
-      } else {
+      if (d.phase.kind === 'game-over') idle = `${pName(d, d.phase.winner)} wins`;
+      else if (this.screen === 'victory') idle = 'The game is over';
+      else if (!this.handoff) {
         const name = pName(d, me);
         narration =
           this.narration ??
@@ -3043,42 +2691,37 @@ class Controller {
               : d.phase.kind === 'setup-claim'
                 ? d.config.setupMode === 'draft'
                   ? `${name} is claiming`
-                  : dealingLine(d)
+                  : 'Dealing territories'
                 : d.phase.kind === 'fortify'
                   ? `${name} is fortifying`
                   : `${name} is attacking`);
       }
     }
-    const knock = meta.knockout && meta.knockout.by === me ? { victim: meta.knockout.victim, cards: meta.knockout.cards } : null;
     // The armed target has fallen on the displayed board while the conquest still plays: the frozen
-    // selection would describe a half-moved board ('Attacking from New Guinea (1)').
+    // selection would describe a half-moved board.
     const took =
       interactive && this.frozenSel && sel === this.frozenSel && d.phase.kind === 'attack' && sel.selected && sel.target &&
       d.territories[sel.selected].owner === me && d.territories[sel.target].owner === me
         ? sel.target
         : null;
-    const bar = buildActionBar({
+    const strip = buildStrip({
       s: d,
       sel,
-      accent: d.players[me].color,
       interactive,
       narration,
-      hintsOn,
-      hintsToggleable: interactive,
+      handoff: this.handoff ? this.handoff.player : null,
+      humansOut: this.allHumansOut,
+      idleLine: idle,
       rejection: interactive && this.rejection ? { text: this.rejection.text, key: this.rejection.key } : null,
       showWinChance: this.settings.showWinChance,
-      firstSetHint: interactive && !meta.setHintSeen.includes(me),
-      tradedThisTurn: meta.tradedThisTurn,
-      midTurn: knock,
-      idleLine: idle,
       lineKey: this.lineKey,
       took,
     });
-    if (this.now() < this.holdUntil && bar.buttons.length) {
-      bar.buttons = bar.buttons.map((b) => (b.brass ? { ...b, busy: true } : b));
+    if (this.now() < this.holdUntil && strip.buttons.length) {
+      strip.buttons = strip.buttons.map((b) => (b.primary ? { ...b, busy: true } : b));
       this.timer(() => this.invalidate(), this.holdUntil - this.now() + 10);
     }
-    return bar;
+    return strip;
   }
 
   private buildBattle(d: GameState, sel: Sel, interactive: boolean): BattleVM | null {
@@ -3095,8 +2738,9 @@ class Controller {
       interactive && d.phase.kind === 'attack' && sel.selected && sel.target && d.territories[sel.selected].owner === d.currentPlayer
         ? { from: sel.selected, to: sel.target }
         : null;
-    // A decided full fight lingers 2.5 s, only inside the turn it was fought in.
-    const lingering = !!g && !!g.endedAt && g.style === 'full' && g.turn === d.turn && now - g.endedAt < 2500;
+    // A decided full fight lingers 2.5 s, only inside the attack step it was fought in.
+    const inFight = d.phase.kind === 'attack' || d.phase.kind === 'occupy';
+    const lingering = !!g && !!g.endedAt && g.style === 'full' && g.turn === d.turn && inFight && now - g.endedAt < 2500;
     const preview = this.aiPreview;
     const previewIsEng = !!preview && !!g && g.from === preview.from && g.to === preview.to && g.turn === d.turn && (!!g.endedAt || g.conquered);
     if (g && !g.endedAt && g.style === 'full' && g.turn === d.turn) {
@@ -3121,186 +2765,89 @@ class Controller {
     const decided = useEng && !!g && (!!g.endedAt || g.conquered);
     const a = decided ? g!.startA - g!.attLost : d.territories[from].armies;
     const def = decided ? Math.max(0, g!.startD - g!.defLost) : d.territories[to].owner === defender ? d.territories[to].armies : 0;
-    const live = !decided && def > 0 && a >= 2 && d.territories[to].owner !== attacker;
-    const p = live ? winProbability(a, def) : null;
-    const hintsOn = this.meta?.hints[d.currentPlayer] ?? true;
-    const tally =
-      // Only once a roll has landed: 'URAL 8 → 8 · SIBERIA 3 → 3' before any loss reads as noise.
-      useEng && g && (g.blitz || g.rolls >= 2) && (a !== g.startA || def !== g.startD)
-        ? `${upper(tName(from))} ${g.startA} → ${a}${SEP}${upper(tName(to))} ${g.startD} → ${def}${p !== null && this.settings.showWinChance ? `${SEP}${pct(p)}%` : ''}`
-        : null;
     return {
       attacker: { seat: seatRef(d, attacker), territory: tName(from), armies: a },
       defender: { seat: seatRef(d, defender), territory: tName(to), armies: def },
-      odds:
-        p !== null
-          ? { percent: this.settings.showWinChance ? pct(p) : null, word: oddsWord(p), label: oddsLabel(p, this.settings.showWinChance) }
-          : null,
-      stakes: live ? attackStakes(d, from, to) : [],
-      result: useEng && g ? g.lastResult : null,
-      tally,
       rolling: this.rolling && useEng,
-      tieHint: hintsOn && useEng && !!g?.tie,
     };
   }
 
-  private cardViewer(d: GameState, interactive: boolean): PlayerId | null {
-    if (this.handoff) return null;
-    if (interactive) return d.currentPlayer;
-    const humans = d.players.filter((p) => p.kind === 'human' && !p.eliminated);
-    return humans.length === 1 && !this.autoplayOn ? humans[0].id : null;
-  }
-
-  private buildCards(d: GameState, interactive: boolean): CardsVM {
-    const viewer = this.cardViewer(d, interactive);
-    const up = upcomingSetValues(d, 2);
-    const header = d.config.cardBonus === 'fixed' ? 'Sets 4 · 6 · 8 · 10' : `Next set +${up[0]}${SEP}then +${up[1]}`;
-    const hints = this.meta?.hints[d.currentPlayer] ?? true;
-    if (viewer === null) {
-      return {
-        open: this.cardsOpen,
-        hand: null,
-        count: d.players[d.currentPlayer].cards.length,
-        header,
-        status: '',
-        coach: null,
-        selectionValue: null,
-        canTrade: false,
-        mustTrade: false,
-        railBadge: null,
-      };
-    }
-    const hand = d.players[viewer].cards;
-    const best = bestSet(d, viewer);
-    const cs = this.sel.cardSel.filter((id) => hand.some((c) => c.id === id));
-    const csValid = cs.length === 3 && isValidSetSymbols(cs.map((id) => hand.find((c) => c.id === id)!.symbol));
-    const ph = d.phase;
-    const myReinforce = interactive && ph.kind === 'reinforce' && viewer === d.currentPlayer;
+  /** The read-only hand sheet: only for the seat placing now (never behind the hand-off cover). */
+  private buildCards(d: GameState, interactive: boolean): CardsVM | null {
+    if (!interactive || d.phase.kind !== 'reinforce') return null;
+    const me = d.currentPlayer;
+    const hand = d.players[me].cards;
+    const best = bestSet(d, me);
     return {
       open: this.cardsOpen,
       hand: hand.map((c) => ({
         id: c.id,
         symbol: c.symbol,
         territory: c.territory ? tName(c.territory) : null,
-        ownedBonus: !!c.territory && d.territories[c.territory].owner === viewer,
-        selected: cs.includes(c.id),
-        suggested: !!best?.cardIds.includes(c.id),
+        ownedBonus: !!c.territory && d.territories[c.territory].owner === me,
+        inSet: !!best?.cardIds.includes(c.id),
       })),
-      count: hand.length,
-      header,
       status: best ? `Set ready${SEP}+${best.value}` : noSetStatus(hand),
-      coach: hints ? `Sets: 3 alike${SEP}1 of each${SEP}any 2 + wild` : null,
-      selectionValue: csValid ? setValue(d, cs) : null,
-      canTrade: myReinforce && (csValid || !!best),
-      mustTrade: ph.kind === 'reinforce' && ph.mustTrade && viewer === d.currentPlayer,
-      railBadge: best ? `Set ready +${best.value}` : null,
+      trade: best ? { label: `Trade for +${best.value}` } : null,
     };
   }
 
-  private buildTooltip(d: GameState): TooltipVM | null {
-    let t: TerritoryId | null = null;
-    let x = 0;
-    let y = 0;
-    if (this.kbFocus) {
-      t = this.kbFocus;
-      const pos = this.board.getScreenPosition(t);
-      x = pos?.x ?? 0;
-      y = pos?.y ?? 0;
-    } else if (this.hover?.visible) {
-      t = this.hover.t;
-      x = this.hover.x;
-      y = this.hover.y;
-    }
-    if (!t || this.blockingNow || this.screen !== 'game') return null;
-    const s = this.state!;
-    const ts = d.territories[t];
-    const c = TERRITORIES[t].continent;
-    const sel = this.sel;
-    // The selected fortify source is already named by the bar; a tooltip there would sit on the route (R1-18).
-    if (s.phase.kind === 'fortify' && sel.selected === t && this.hover?.visible && !this.kbFocus) return null;
-    const ex = explainTerritory(s, this.explainUi(), t);
-    const avoid = [sel.selected, sel.target].filter((x): x is TerritoryId => !!x && x !== t);
-    return {
-      ...(avoid.length ? { avoid } : {}),
-      x,
-      y,
-      name: tName(t),
-      continent: `${cName(c)}${SEP}+${CONTINENTS[c].bonus}`,
-      owner: ts.owner >= 0 ? seatRef(d, ts.owner) : null,
-      armies: ts.armies,
-      line: ex.text,
-      ok: ex.ok,
-      territory: t,
-    };
-  }
-
-  private buildPills(d: GameState, sel: Sel, interactive: boolean): PillsVM | null {
-    if (!interactive || !sel.lastPlaced) return null;
-    const ph = d.phase;
-    let left = 0;
-    if (ph.kind === 'reinforce' && !ph.mustTrade) left = ph.remaining;
-    else if (ph.kind === 'setup-place') left = ph.toPlace - stagedTotal(sel);
-    if (left <= 0) return null;
-    return {
-      territory: sel.lastPlaced,
-      buttons: [
-        { id: 'plus5', label: `+${Math.min(5, left)}`, enabled: true },
-        { id: 'all', label: `All ${left}`, enabled: true },
-      ],
-    };
+  /** Enemy tiles a target-first click can attack right now. */
+  private attackableTargets(d: GameState, me: PlayerId): TerritoryId[] {
+    const out = new Set<TerritoryId>();
+    for (const src of attackSources(d, me)) for (const t of attackTargets(d, src)) out.add(t);
+    return TERRITORY_IDS.filter((t) => out.has(t));
   }
 
   private buildHighlights(): BoardHighlights {
     const s = this.state;
     const d = this.disp;
     if (!s || !d || this.screen !== 'game') return {};
-    if (this.seatHighlight !== null) {
-      return { selectable: TERRITORY_IDS.filter((t) => d.territories[t].owner === this.seatHighlight), dimOthers: true };
-    }
     const interactive = this.interactive() && d.currentPlayer === s.currentPlayer;
     if (!interactive) return this.aiHighlights ?? {};
     const sel = this.viewSel();
     const me = d.currentPlayer;
     const ph = d.phase;
     const own = () => TERRITORY_IDS.filter((t) => d.territories[t].owner === me);
+    const picked = sel.selected && d.territories[sel.selected].owner === me ? sel.selected : null;
     switch (ph.kind) {
       case 'setup-claim':
         // A random deal is playing: nothing to claim, so nothing glows.
         if (d.config.setupMode !== 'draft') return {};
         return { selectable: TERRITORY_IDS.filter((t) => d.territories[t].owner === UNCLAIMED) };
       case 'setup-place': {
-        const left = ph.toPlace - stagedTotal(sel);
-        return { selectable: left > 0 ? own() : [], pending: { ...sel.staged } };
+        const left = placeLeft(d, sel);
+        const pending = { ...sel.staged };
+        // The staged armies, plus the stepper's count on the pick as a preview.
+        if (picked && left > 0) pending[picked] = (pending[picked] ?? 0) + placeValue(d, sel);
+        return { selectable: left > 0 ? own() : [], selected: left > 0 ? picked : null, pending };
       }
       case 'reinforce': {
-        const pending = { ...ph.placed };
-        if (ph.mustTrade) return { pending };
-        if (ph.remaining > 0) return { selectable: own(), pending };
-        return { selectable: attackSources(d, me), pending };
+        if (ph.mustTrade) return {};
+        if (ph.remaining > 0) return { selectable: own(), selected: picked, pending: picked ? { [picked]: placeValue(d, sel) } : {} };
+        return { selectable: this.attackableTargets(d, me) };
       }
       case 'attack': {
-        if (!sel.selected || d.territories[sel.selected].owner !== me) return { selectable: attackSources(d, me) };
-        const targets = attackTargets(d, sel.selected);
+        if (!picked) return { selectable: this.attackableTargets(d, me) };
+        const targets = attackTargets(d, picked);
         const armed = sel.target && targets.includes(sel.target) ? sel.target : null;
         return {
-          selected: sel.selected,
+          selected: picked,
           targets,
-          arrow: armed ? { from: sel.selected, to: armed, kind: 'attack' } : null,
+          arrow: armed ? { from: picked, to: armed, kind: 'attack' } : null,
           dimOthers: true,
         };
       }
       case 'occupy':
         return { selected: ph.from, targets: [ph.to], arrow: { from: ph.from, to: ph.to, kind: 'attack' } };
       case 'fortify': {
-        if (!sel.selected || d.territories[sel.selected].owner !== me) {
-          return { selectable: fortifySources(d, me).filter((t) => fortifyTargets(d, t).length > 0) };
-        }
+        if (!picked) return { selectable: fortifySources(d, me).filter((t) => fortifyTargets(d, t).length > 0) };
         const targets = selectionTargets(d, sel);
         const dest = sel.target && targets.includes(sel.target) ? sel.target : null;
         return {
-          selected: sel.selected,
+          selected: picked,
           targets,
-          arrow: dest ? { from: sel.selected, to: dest, kind: 'fortify', path: fortifyPath(d, sel.selected, dest) ?? undefined } : null,
+          arrow: dest ? { from: picked, to: dest, kind: 'fortify', path: fortifyPath(d, picked, dest) ?? undefined } : null,
           dimOthers: true,
         };
       }
@@ -3414,6 +2961,22 @@ class Controller {
     const onPointer = () => {
       this.pointerActiveUntil = this.now() + 1000;
     };
+    // Ocean clicks: the board reports territory clicks synchronously from its canvas pointerup, so a
+    // short press on the canvas that produced no territory click by the time it bubbles here missed land.
+    let press: { x: number; y: number; t: number; clicks: number } | null = null;
+    const onBoardDown = (e: PointerEvent) => {
+      const onBoard = e.target instanceof HTMLCanvasElement && !!e.target.closest('#board');
+      press = onBoard && e.button === 0 ? { x: e.clientX, y: e.clientY, t: e.timeStamp, clicks: this.boardClicks } : null;
+    };
+    const onBoardUp = (e: PointerEvent) => {
+      const p = press;
+      press = null;
+      if (!p || e.button !== 0 || this.boardClicks !== p.clicks || this.overTile) return;
+      if (e.timeStamp - p.t > 350 || Math.hypot(e.clientX - p.x, e.clientY - p.y) > 6) return;
+      this.oceanClick();
+    };
+    window.addEventListener('pointerdown', onBoardDown);
+    window.addEventListener('pointerup', onBoardUp);
     window.addEventListener('keydown', onKey, true);
     window.addEventListener('click', onClick, true);
     window.addEventListener('contextmenu', onCtx, true);
@@ -3433,6 +2996,8 @@ class Controller {
       window.removeEventListener('contextmenu', onCtx, true);
       window.removeEventListener('pointerdown', onPointer, true);
       window.removeEventListener('pointerup', onPointer, true);
+      window.removeEventListener('pointerdown', onBoardDown);
+      window.removeEventListener('pointerup', onBoardUp);
       window.removeEventListener('wheel', onPointer, true);
       window.removeEventListener('resize', this.onResizeUiScale);
       mq?.removeEventListener?.('change', onMq);
@@ -3484,30 +3049,26 @@ class Controller {
   uiSnapshot(): UiSnapshot {
     const vm = this.getViewModel();
     const g = vm.game;
-    const bar = g?.actionBar;
-    const battle = g?.battle;
-    const banners: string[] = [];
-    if (g?.banner) banners.push(g.banner.title);
-    if (g?.turnBanner) banners.push(g.turnBanner.title);
+    const strip = g?.strip;
+    const b = g?.battle;
+    const step = !strip
+      ? ''
+      : strip.step.kind === 'turn'
+        ? (strip.step.current ?? '').replace(/^./, (c) => c.toUpperCase())
+        : strip.step.label;
     return {
       screen: vm.screen,
-      actionBarText: bar?.line1 ?? '',
-      actionBarSub: bar?.line2 ?? '',
-      primary: bar?.buttons.find((b) => b.brass)?.label ?? null,
-      buttons: (bar?.buttons ?? []).map((b) => ({ label: b.label, enabled: b.enabled, ...(b.why ? { why: b.why } : {}) })),
-      banners,
-      toasts: (g?.toasts ?? []).map((t) => t.text),
-      battle: battle
-        ? {
-            header: `${upper(battle.attacker.seat.name)} ${upper(battle.attacker.territory)} ${battle.attacker.armies} vs ${upper(battle.defender.seat.name)} ${upper(battle.defender.territory)} ${battle.defender.armies}`,
-            odds: battle.odds?.label ?? null,
-            stakes: battle.stakes.map((x) => x.text),
-            result: battle.result,
-          }
-        : null,
-      recap: g?.turnBanner?.recap ?? [],
-      tooltip: g?.tooltip ? `${g.tooltip.name}${SEP}${g.tooltip.line}` : null,
-      hints: bar?.hints.on ?? false,
+      step,
+      line: strip?.line ?? '',
+      lineKind: strip?.lineKind ?? '',
+      primary: strip?.buttons.find((x) => x.primary)?.label ?? null,
+      buttons: (strip?.buttons ?? []).map((x) => x.label),
+      count: strip?.count ? { ...strip.count } : null,
+      banners: g?.banner ? [g.banner.sub ? `${g.banner.title} · ${g.banner.sub}` : g.banner.title] : [],
+      recap: g?.banner?.recap ?? null,
+      battle: b ? { header: `${upper(b.attacker.territory)} ${b.attacker.armies} vs ${upper(b.defender.territory)} ${b.defender.armies}` } : null,
+      seats: (g?.seats ?? []).map((c) => `${c.seat.name} ${c.territories}${c.cards ? ` · ${c.cards} cards` : ''}`),
+      cardsOpen: !!g?.cards?.open,
     };
   }
 
@@ -3536,7 +3097,7 @@ class Controller {
       this.validateSel();
       const s = this.state!;
       if (s.phase.kind === 'occupy' && this.sel.occupyCount === null) {
-        this.sel.occupyCount = occupyDefault(s, s.phase.from, s.phase.to, s.phase.min, s.phase.max).count;
+        this.sel.occupyCount = occupyDefault(s, s.phase.from, s.phase.to, s.phase.min, s.phase.max);
       }
       this.invalidate();
       return { ok: true };
@@ -3563,6 +3124,16 @@ class Controller {
   setViewportInsets(insets: ViewportInsets): void {
     this.insets = insets;
     this.board.setViewportInsets(insets);
+  }
+
+  /** An empty-ocean (or table) click on your turn backs out one level, like Esc. */
+  private oceanClick(): void {
+    if (this.screen !== 'game' || this.overlay || this.confirm || !this.interactive() || this.busyBlocking()) return;
+    if (this.backOut()) {
+      this.clearRejection();
+      this.saveMeta();
+      this.invalidate();
+    }
   }
 
   screenPos(t: TerritoryId): { x: number; y: number } | null {
@@ -3614,12 +3185,11 @@ export function createController(opts: { board: BoardView; audio: AudioEngine } 
     getViewModel: () => c.getViewModel(),
     subscribe: (fn) => c.subscribe(fn),
     intent: (i) => c.intent(i),
-    screenPos: (t) => c.screenPos(t),
     setViewportInsets: (insets) => c.setViewportInsets(insets),
     audio: c.audio,
     hooks,
     dispose: () => c.dispose(),
-    handleKey: (key, shift, repeat) => c.handleKey(key, shift, repeat),
+    handleKey: (key, repeat) => c.handleKey(key, repeat),
   };
 }
 

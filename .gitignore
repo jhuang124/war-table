@@ -12,3 +12,4 @@ artifacts/e2e/
 artifacts/game/
 artifacts/integration/
 artifacts/review/
+.claude/worktrees/

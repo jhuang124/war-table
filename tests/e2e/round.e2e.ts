@@ -2,7 +2,7 @@
 // board modelling the renderer's 1× durations (?timings). The human plays a short real-click turn each
 // round (reinforce all on one tile, End turn); the AIs run the highlight reel at `watch`.
 // Budgets: AI turn median ≤ 6 s, p95 ≤ 12 s; a round of 3 AI turns ≤ 25 s; Start → first click ≤ 20 s.
-import { check, clearStorage, clickBtn, clickT, finish, open, rendered, state } from './lib';
+import { check, clearStorage, clickBtn, dblT, finish, idle, open, rendered, state } from './lib';
 
 const results: string[] = [];
 const { browser, page, errors } = await open();
@@ -35,9 +35,9 @@ while (Date.now() < deadline && rounds < 3) {
   const mine = (Object.keys(s.territories) as (keyof typeof s.territories)[]).filter((t) => s.territories[t].owner === 0);
   const tile = mine.sort((a, b) => s.territories[b].armies - s.territories[a].armies)[0];
   if (!firstClickAt) firstClickAt = Date.now();
-  await clickT(page, tile);
-  await page.locator('[data-testid="pill-all"]').click().catch(() => undefined);
-  await clickBtn(page, 'btn-beginAttack');
+  await dblT(page, tile);
+  await idle(page);
+  await clickBtn(page, 'btn-attack');
   await clickBtn(page, 'btn-endTurn');
   rounds++;
 }

@@ -20,6 +20,7 @@ import {
   type TerritoryId,
 } from '../engine';
 import { DEFAULT_SEAT_COLORS, PLAYER_COLORS } from '../shared/palette';
+import { trayGeometry } from '../shared/tray';
 import { createAudio } from '../audio';
 
 const NON_BLOCKING = new Set(['armiesPlaced', 'territoryClaimed', 'setupTurn', 'phaseChanged', 'cardDrawn', 'controllerChanged']);
@@ -39,13 +40,17 @@ const log: string[] = [];
 
 const PRESETS: Record<string, (W: number, H: number, s: number) => ViewportInsets> = {
   none: () => ({ top: 0, right: 0, bottom: 0, left: 0, trayBand: 0 }),
+  // docs/SIMPLIFY.md §1: a ~44 px top strip (seat chips) and a one-row ~64 px bottom strip. The tray
+  // band is not reported (the board uses its own nominal band just above the bottom strip).
+  strip: (_W, _H, s) => ({ top: Math.round(44 * s), right: 0, bottom: Math.round(64 * s), left: 0, trayBand: 0 }),
+  // Round-1 HUD (side panels, `bottom` including the tray band): kept to check the legacy convention.
   hud: (W, H, s) => {
     const bar = 84 * s;
     const band = Math.max(128, Math.round(H * 0.17)) * Math.min(1.2, s);
     return { top: 56 * s + 8, left: Math.min(232 * s, W * 0.2), right: 64 * s, bottom: bar + 16 + band, trayBand: band };
   },
 };
-let preset = params.get('insets') ?? 'hud';
+let preset = params.get('insets') ?? 'strip';
 let uiScale = Number(params.get('scale') ?? 1);
 let showHudText = false;
 let hudText: { header: string; result: string } = { header: '', result: '' };
@@ -65,6 +70,22 @@ function applyInsets(): void {
     hud.appendChild(d);
     return d;
   };
+  if (preset === 'strip') {
+    z(0, 0, W, ins.top, 'zone strip');
+    z(0, H - ins.bottom, W, ins.bottom, 'zone strip');
+    if (showHudText && hudText.header) {
+      // The HUD's one header line, just above the tray.
+      const band = trayGeometry(W, H, 1e9, uiScale).trayH + 12;
+      const g = trayGeometry(W, H, band, uiScale);
+      const top = H - ins.bottom - band + (band - g.trayH) / 2;
+      const h = document.createElement('div');
+      h.className = 'txt';
+      h.style.top = `${top - 24}px`;
+      h.textContent = hudText.header;
+      hud.appendChild(h);
+    }
+    return;
+  }
   z(0, 0, W, 56 * uiScale);
   z(8, 56 * uiScale + 8, ins.left - 20, Math.min(H * 0.5, 4 * 76 * uiScale));
   z(W - ins.right + 8, 56 * uiScale + 8, ins.right - 16, 160);
@@ -113,10 +134,15 @@ async function playEvents(events: GameEvent[], after: GameState): Promise<void> 
       if (o.seq.index === 0 && engagementStyle === 'full') {
         const a = after.players[e.player];
         const d = after.players[e.defender];
+        void a;
+        void d;
+        const name = (t: TerritoryId) => t.replace(/_/g, ' ').toUpperCase();
+        const shown = (t: TerritoryId) => (view as unknown as { __debug: { armies: Record<string, number> } }).__debug.armies[t];
         hudText = {
-          header: `${a.name.toUpperCase()} · ${e.from.toUpperCase()}   vs   ${d.name.toUpperCase()} · ${e.to.toUpperCase()}`,
+          header: `${name(e.from)} ${shown(e.from)}   vs   ${name(e.to)} ${shown(e.to)}`,
           result: '',
         };
+        if (showHudText) applyInsets();
       }
       hudText.result =
         e.defenderLosses && e.attackerLosses

@@ -58,11 +58,6 @@ export function setEmblem(s: SVGSVGElement, color: PlayerColorId, tint: 'light' 
   setStyle(s, 'color', PLAYER_COLORS[color][tint]);
 }
 
-/** Signed number with a real minus (U+2212). */
-export function signed(n: number): string {
-  return n < 0 ? `−${-n}` : `+${n}`;
-}
-
 /** Replace ASCII hyphen-minus before a digit with U+2212 (defensive: copy should already use it). */
 export function minus(s: string): string {
   return s.replace(/(^|[\s(])-(?=\d)/g, '$1−');
@@ -70,7 +65,6 @@ export function minus(s: string): string {
 
 export const EASE_OUT_QUART = 'cubic-bezier(0.25, 1, 0.5, 1)';
 export const EASE_IN_QUAD = 'cubic-bezier(0.11, 0, 0.5, 0)';
-export const EASE_OUT_CUBIC = 'cubic-bezier(0.33, 1, 0.68, 1)';
 /** One small overshoot (turn banner spring). */
 export const EASE_SPRING = 'cubic-bezier(0.34, 1.36, 0.64, 1)';
 

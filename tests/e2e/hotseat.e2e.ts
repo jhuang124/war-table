@@ -1,7 +1,7 @@
-// Multi-human paths through real clicks: manual setup ("Place your own") with staged placements and
-// Confirm, the hand-off cover (setting on), forced + mid-turn card trades, the recap, and the
-// all-humans-out card → watch the AIs finish.
-import { check, clearStorage, clickBtn, clickT, finish, idle, loadScenario, open, rendered, scenario, state, ui } from './lib';
+// Multi-human paths through real clicks: manual setup ("Place your own": pick, Place, Undo, Done), the
+// hand-off cover (setting on), forced + mid-turn card trades (one button, the best set), the recap,
+// and all humans out → the strip offers "Watch to the end" → victory → rematch.
+import { check, clearStorage, clickBtn, clickT, dblT, finish, idle, loadScenario, open, place, rendered, scenario, state, ui } from './lib';
 import type { Card, GameState, TerritoryId } from '../../src/engine';
 
 const results: string[] = [];
@@ -42,19 +42,20 @@ for (let guard = 0; guard < 40; guard++) {
   if (await page.locator('[data-testid="handoff"]').count()) sawCoverInSetup = true;
   const toPlace = s.phase.toPlace;
   const u0 = await ui(page);
-  if (humanSetupTurns === 0) check(u0.actionBarText === `Place ${toPlace} armies · ${toPlace} left`, `setup line 1: ${u0.actionBarText}`, results);
+  if (humanSetupTurns === 0) check(u0.line === `Place ${toPlace} armies · click a territory` && u0.step === 'Setup', `setup: [${u0.step}] ${u0.line}`, results);
   const own = (Object.keys(s.territories) as TerritoryId[]).filter((t) => s.territories[t].owner === s.currentPlayer);
-  await clickT(page, own[0]);
-  await clickT(page, own[1]);
-  await clickT(page, own[1], { button: 'right' }); // right-click takes one back
-  await page.locator('[data-testid="pill-all"]').click();
+  await place(page, own[0], 1);
+  await place(page, own[1], 2);
+  await clickBtn(page, 'btn-undo'); // takes the 2 back
+  await dblT(page, own[1]); // everything left on own[1]
+  await page.waitForTimeout(100);
   const u1 = await ui(page);
   if (humanSetupTurns === 0) {
-    check(u1.actionBarText === `All ${toPlace} placed · Confirm placement` && u1.primary === 'Confirm placement', `staged: ${u1.actionBarText} · primary ${u1.primary}`, results);
+    check(u1.line === `All ${toPlace} placed` && u1.primary === 'Done', `staged: ${u1.line} · primary ${u1.primary}`, results);
     const before = await state(page);
-    check(before!.territories[own[0]].armies === s.territories[own[0]].armies, 'staging does not touch the engine until Confirm', results);
+    check(before!.territories[own[0]].armies === s.territories[own[0]].armies, 'staging does not touch the engine until Done', results);
   }
-  await clickBtn(page, 'btn-confirmPlacement');
+  await clickBtn(page, 'btn-done');
   humanSetupTurns++;
 }
 const sMain = await state(page);
@@ -98,16 +99,15 @@ await clickBtn(page, 'btn-endTurn');
 await page.waitForSelector('[data-testid="handoff"]', { timeout: 3000 });
 const cover = await page.locator('[data-testid="handoff"]').textContent();
 check(/Pass to Sam/.test(cover ?? '') && /armies waiting · 2 cards/.test(cover ?? ''), `cover: ${cover?.replace(/\s+/g, ' ').trim()}`, results);
-const handHidden = await page.evaluate(() => window.__risk.ui().actionBarText);
-check(handHidden === 'Pass to Sam', `line 1 under the cover: ${handHidden}`, results);
+const handHidden = await page.evaluate(() => window.__risk.ui().line);
+check(handHidden === 'Pass to Sam', `the line under the cover: ${handHidden}`, results);
 const turnBannerBefore = (await ui(page)).banners.filter((b) => b.endsWith('TURN'));
 check(turnBannerBefore.length === 0 || !turnBannerBefore[0].startsWith('SAM'), 'turnStarted waits for the cover', results);
 await page.keyboard.press('Enter');
 await page.waitForFunction(() => !document.querySelector('[data-testid="handoff"]'));
 await page.waitForTimeout(80);
 const afterCover = await ui(page);
-check(afterCover.banners.includes("SAM'S TURN"), `after the cover: ${afterCover.banners.join(' | ')}`, results);
-check(afterCover.recap.length >= 1, `Sam's recap: ${afterCover.recap.join(' / ')}`, results);
+check(afterCover.banners.some((b) => b.startsWith("SAM'S TURN · +")), `after the cover: ${afterCover.banners.join(' | ')}`, results);
 await page.evaluate(() => {
   const s = JSON.parse(localStorage.getItem('risk3d.settings.v1') ?? '{}');
   localStorage.setItem('risk3d.settings.v1', JSON.stringify({ ...s, hideCardsBetweenTurns: false }));
@@ -123,17 +123,17 @@ const hand5: Card[] = [
 ];
 await loadScenario(page, scenario({ ural: [0, 3], ukraine: [0, 1] }, { kind: 'reinforce', remaining: 3, mustTrade: true, placed: {}, midTurn: false }, { mutate: (s) => void (s.players[0].cards = hand5) }));
 let u = await ui(page);
-check(u.actionBarText === 'Trade a card set first · you hold 5 cards', `forced trade line 1: ${u.actionBarText}`, results);
-check(u.primary === 'Trade for +4' && u.actionBarSub === 'At 5 cards you must trade. Your best set gives +4.', `primary ${u.primary} · ${u.actionBarSub}`, results);
+check(u.line === 'Trade cards first · you hold 5', `forced trade: ${u.line}`, results);
+check(u.primary === 'Trade cards +4' && u.buttons.length === 1, `the only button: ${u.buttons.join(' / ')}`, results);
 await page.keyboard.press('Enter');
 await idle(page);
 let s = await state(page);
 u = await ui(page);
 check(s!.players[0].cards.length === 2 && (s!.phase as { remaining: number }).remaining === 7, `traded: 2 cards left, 7 to place`, results);
 check(s!.territories.ural.armies === 5, '+2 landed on Ural (a traded card shows it)', results);
-check(u.toasts.some((t) => t.startsWith('+2 on Ural')), `toast: ${u.toasts.join(' | ')}`, results);
-const chips = await page.locator('[data-testid="chip-receiptCards"]').textContent();
-check(chips === 'Cards +4', `receipt chip: ${chips}`, results);
+const log = await page.evaluate(() => ((JSON.parse(localStorage.getItem('risk3d.ui.v1') ?? '{}').game?.log ?? []) as { text: string }[]).map((l) => l.text));
+check(log.some((t) => t.startsWith('+2 on Ural')), 'the +2 is in the log (no toast)', results);
+check(u.line === 'Place 7 armies · click a territory' && u.buttons.join(' / ') === 'Cards 2', `after the trade: ${u.line} · ${u.buttons.join(' / ')}`, results);
 
 // --- Mid-turn trade after a knockout ------------------------------------------------------------------
 await loadScenario(
@@ -149,8 +149,6 @@ await loadScenario(
   }),
 );
 await clickT(page, 'siberia');
-u = await ui(page);
-check(u.battle?.stakes[0] === 'KNOCKS OUT SAM · takes their 4 cards', `stakes: ${u.battle?.stakes.join(' / ')}`, results);
 await clickBtn(page, 'btn-blitz');
 await idle(page);
 s = await state(page);
@@ -161,17 +159,17 @@ if (s!.phase.kind === 'occupy') {
 }
 u = await ui(page);
 check(s!.phase.kind === 'reinforce' && (s!.phase as { midTurn: boolean }).midTurn, 'mid-turn reinforce after the knockout', results);
-check(u.actionBarText === 'You knocked out Sam and took 4 cards · trade down to 4, then keep attacking', `line 1: ${u.actionBarText}`, results);
+check(u.line === 'Trade cards first · you hold 6' && u.step === 'Place', `[${u.step}] ${u.line}`, results);
 await clickBtn(page, 'btn-trade');
 await idle(page);
 s = await state(page);
 u = await ui(page);
-check(s!.players[0].cards.length === 3 && (s!.phase as { remaining: number }).remaining > 0, `after the trade: ${u.actionBarText}`, results);
+check(s!.players[0].cards.length === 3 && (s!.phase as { remaining: number }).remaining > 0, `after the trade: ${u.line}`, results);
 const own = (Object.keys(s!.territories) as TerritoryId[]).find((t) => s!.territories[t].owner === 0)!;
-await clickT(page, own);
-await page.locator('[data-testid="pill-all"]').click();
+await dblT(page, own);
+await page.waitForTimeout(100);
 u = await ui(page);
-check(u.buttons.some((b) => b.label === 'Keep attacking →' && b.enabled), `exit: ${u.primary}`, results);
+check(u.line === 'All placed · keep attacking' && u.primary === 'Attack →', `exit: ${u.line} · ${u.primary}`, results);
 const gotBanner = await page.evaluate(() => window.__risk.getState()!.players[1].eliminated);
 check(gotBanner, 'Sam is out', results);
 
@@ -188,9 +186,10 @@ await loadScenario(
   }),
   { waitIdle: false },
 );
-await page.waitForSelector('[data-testid="humans-out"]', { timeout: 60_000 });
-check(true, 'the “All humans are out.” card appears', results);
-await clickBtn(page, 'watch-ais');
+await page.waitForFunction(() => window.__risk.ui().line === 'All humans are out', null, { timeout: 60_000 });
+const ho = await ui(page);
+check(ho.buttons.join(' / ') === 'End game / Watch to the end', `all humans out: ${ho.buttons.join(' / ')}`, results);
+await clickBtn(page, 'btn-watchAis');
 {
   // Poll with a progress trail, so a stall shows where it happened.
   const t0 = Date.now();
@@ -201,7 +200,7 @@ await clickBtn(page, 'watch-ais');
     const r = await page.evaluate(() => {
       const s = window.__risk.getState();
       const u = window.__risk.ui();
-      return { screen: u.screen, key: `${s?.round}/${s?.turn}/${s?.currentPlayer}/${s?.phase.kind}`, line: u.actionBarText, idle: window.__risk.isIdle() };
+      return { screen: u.screen, key: `${s?.round}/${s?.turn}/${s?.currentPlayer}/${s?.phase.kind}`, line: u.line, idle: window.__risk.isIdle() };
     });
     if (r.screen === 'victory') {
       done = true;

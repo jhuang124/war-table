@@ -1,5 +1,5 @@
-// Review round 1, verifier: the cross-area requests applied at integration (seat hand-off R1-22,
-// tooltip avoid R1-18, occupy card chip R1-09), on the fake board + modelled 1× durations.
+// Review round 1, verifier, carried through the simplify pass: the seat hand-off (R1-22, now in
+// Settings → Seats), Esc backing out one level at a time, and the occupy strip.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GameEvent, GameState, TerritoryId } from '../../src/engine';
@@ -14,7 +14,6 @@ function fakeBoard() {
   let speed = 1;
   const pending = new Set<() => void>();
   let click: ((i: TerritoryPointerInfo) => void) | null = null;
-  let hover: ((i: TerritoryPointerInfo | null) => void) | null = null;
   const b: BoardView = {
     syncState: () => undefined,
     playEvent(ev: GameEvent, _after: GameState, opts?: PlayEventOptions) {
@@ -36,7 +35,7 @@ function fakeBoard() {
     },
     setHighlights: () => undefined,
     onTerritoryClick: (cb) => void (click = cb),
-    onTerritoryHover: (cb) => void (hover = cb as typeof hover),
+    onTerritoryHover: () => undefined,
     focusTerritories: () => undefined,
     resetCamera: () => undefined,
     setAttractMode: () => undefined,
@@ -51,7 +50,6 @@ function fakeBoard() {
     board: b,
     click: (t: TerritoryId, button = 0) =>
       click!({ territory: t, clientX: 0, clientY: 0, shiftKey: false, altKey: false, metaKey: false, button }),
-    hover: (t: TerritoryId) => hover!({ territory: t, clientX: 300, clientY: 300, shiftKey: false, altKey: false, metaKey: false, button: 0 }),
   };
 }
 
@@ -102,50 +100,59 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('R1-22 seat hand-off (Pause → Seats)', () => {
+describe('R1-22 seat hand-off (Settings → Seats)', () => {
   it('offers a human seat to the AI, plays it, and gives it back', async () => {
     const s = fixture({ ural: [0, 5], ukraine: [0, 3], alaska: [1, 2] }, { kind: 'attack' });
     const { c } = await resume(s);
-    const row = (id: number) => c.getViewModel().game!.roster.find((r) => r.seat.id === id)!;
-    expect(row(0).seatAction?.label).toBe('Let the AI play John · Normal');
-    expect(row(2).seatAction ?? null).toBeNull(); // started as AI
-    c.intent({ type: 'overlay', overlay: 'pause' });
-    c.intent(row(0).seatAction!.intent);
+    const action = (id: number) => c.getViewModel().game!.seatActions.find((a) => a.seat.id === id) ?? null;
+    expect(action(0)?.label).toBe('Let the AI play John');
+    expect(action(2)).toBeNull(); // started as AI
+    c.intent({ type: 'overlay', overlay: 'settings' });
+    c.intent(action(0)!.intent);
     await vi.advanceTimersByTimeAsync(100);
     expect(c.hooks.getState()!.players[0].kind).toBe('ai');
-    expect(row(0).seatAction?.label).toBe('John takes the seat back');
-    // Paused: the AI waits. Unpause and it plays John's turn to the next seat.
+    expect(action(0)?.label).toBe('John takes the seat back');
+    // A sheet is open: the AI waits. Close it and it plays John's turn to the next seat.
     expect(c.hooks.getState()!.currentPlayer).toBe(0);
     c.intent({ type: 'overlay', overlay: null });
     expect(await until(() => c.hooks.getState()!.currentPlayer !== 0, 30000)).toBe(true);
-    c.intent(row(0).seatAction!.intent);
+    c.intent(action(0)!.intent);
     await until(() => c.hooks.getState()!.players[0].kind === 'human', 30000);
     expect(c.hooks.getState()!.players[0].kind).toBe('human');
     c.dispose();
   });
 });
 
-describe('R1-18 tooltip avoids the armed pair', () => {
-  it('names the selected source and armed target', async () => {
-    const s = fixture({ ural: [0, 5] }, { kind: 'attack' });
+describe('Esc backs out one level at a time, then opens the menu', () => {
+  it('target → source → nothing → menu', async () => {
+    const s = fixture({ ural: [0, 5], ukraine: [0, 1] }, { kind: 'attack' });
     const { c, fb } = await resume(s);
-    fb.click('siberia'); // target-first arm from Ural
+    fb.click('siberia'); // target-first: armed from Ural
     await vi.advanceTimersByTimeAsync(30);
-    fb.hover('china');
-    await vi.advanceTimersByTimeAsync(1200);
-    const tip = c.getViewModel().game!.tooltip;
-    expect(tip?.name).toBe('China');
-    expect(new Set(tip!.avoid)).toEqual(new Set(['ural', 'siberia']));
+    expect(c.hooks.ui().buttons).toEqual(['Roll', 'Blitz']);
+    c.handleKey('Escape');
+    expect(c.hooks.ui().line).toBe('Attack from Ural · click an enemy');
+    c.handleKey('Escape');
+    expect(c.hooks.ui().line).toBe('Click an enemy territory to attack');
+    expect(c.hooks.ui().buttons).toEqual(['Fortify →', 'End turn']);
+    c.handleKey('Escape');
+    expect(c.getViewModel().overlay).toBe('pause');
     c.dispose();
   });
 });
 
-describe('R1-09 occupy keeps the card status', () => {
-  it('shows Card earned in occupy', async () => {
+describe('occupy: one slider and Move N, nothing else', () => {
+  it('the strip has the slider, the one button, no card copy', async () => {
     const s = fixture({ greenland: [0, 10], ontario: [0, 0] }, { kind: 'occupy', from: 'greenland', to: 'ontario', min: 3, max: 9, previousOwner: 2 });
     s.conqueredThisTurn = true;
     const { c } = await resume(s);
-    expect(c.getViewModel().game!.actionBar.chips.map((x) => x.label)).toContain('Card earned ✓');
+    const strip = c.getViewModel().game!.strip;
+    expect(strip.line).toBe('Move armies into Ontario');
+    expect(strip.count).toEqual({ control: 'slider', value: 9, min: 3, max: 9 });
+    expect(strip.buttons).toEqual([{ id: 'move', label: 'Move 9', primary: true }]);
+    c.intent({ type: 'setCount', value: 4 });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(c.hooks.ui().primary).toBe('Move 4');
     c.dispose();
   });
 });

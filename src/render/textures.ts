@@ -3,7 +3,6 @@ import * as THREE from 'three';
 import type { BoardGeometry, Vec2 } from '../map/types';
 
 export const FONT_SERIF_CAPS = "'Cinzel', 'Cormorant Garamond Variable', Georgia, serif";
-export const FONT_ITALIC = "'Cormorant Garamond Variable', 'Cormorant Garamond', Georgia, serif";
 export const FONT_SANS = "'Inter Variable', 'Inter', system-ui, -apple-system, sans-serif";
 
 // ---------------------------------------------------------------------------
@@ -268,22 +267,7 @@ export function oceanChartTexture(g: BoardGeometry, W = 4096): THREE.CanvasTextu
   // Compass rose in the south Pacific.
   drawCompass(ctx, 8.6 * s, (g.height - 8.4) * s, 3.6 * s);
 
-  // Ocean labels: italic, letter-spaced, pale.
-  ctx.save();
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  for (const l of g.oceanLabels) {
-    const px = l.at[0] * s;
-    const py = (g.height - l.at[1]) * s;
-    const size = l.size * s * 0.92;
-    ctx.font = `italic 500 ${size}px ${FONT_ITALIC}`;
-    const spaced = l.text.split('').join('  ');
-    ctx.fillStyle = 'rgba(0,12,14,0.5)';
-    ctx.fillText(spaced, px, py + size * 0.05);
-    ctx.fillStyle = 'rgba(206,226,214,0.42)';
-    ctx.fillText(spaced, px, py);
-  }
-  ctx.restore();
+  // No ocean names (g.oceanLabels stays in the map data): the board carries only what play needs.
 
   // Vignette toward the frame.
   const vg = ctx.createRadialGradient(W / 2, H / 2, H * 0.45, W / 2, H / 2, W * 0.6);

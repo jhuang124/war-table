@@ -106,29 +106,29 @@ describe('R1-02 occupy: an enemy next to your own stack', () => {
 
   it('clicking Iceland moves the minimum in and attacks from Greenland', async () => {
     const { c, fb } = await resume(occupyBoard());
-    expect(c.getViewModel().game!.actionBar.counter!.value).toBe(9); // the smart default is max here
+    expect(c.getViewModel().game!.strip.count!.value).toBe(9); // the smart default is max here
     const ex = c.hooks.explain('iceland');
     expect(ex.ok).toBe(true);
-    expect(ex.text).toMatch(/^Click: move 3 in · attack from Greenland · \d+% · /);
+    expect(ex.text).toMatch(/^Move 3 in · attack from Greenland · \d+% · /);
     fb.click('iceland');
     await until(() => c.hooks.isIdle(), 4000);
     const s = c.hooks.getState()!;
     expect(s.phase.kind).toBe('attack');
     expect(s.territories.ontario.armies).toBe(3);
     expect(s.territories.greenland.armies).toBe(7);
-    expect(c.hooks.ui().actionBarText).toBe('Attack Iceland from Greenland');
-    expect(c.hooks.ui().battle?.header).toBe('JOHN GREENLAND 7 vs PRIYA ICELAND 1');
+    expect(c.hooks.ui().line).toMatch(/^Attack Iceland from Greenland · \d+%$/);
+    expect(c.hooks.ui().battle?.header).toBe('GREENLAND 7 vs ICELAND 1');
     expect(c.hooks.metrics().turns.reduce((n, t) => n + t.rejected, 0)).toBe(0);
     c.dispose();
   });
 
   it('clicking Greenland itself keeps the stack there and selects it', async () => {
     const { c, fb } = await resume(occupyBoard());
-    expect(c.hooks.explain('greenland').text).toBe('Click: move 3 in · keep attacking from Greenland');
+    expect(c.hooks.explain('greenland').text).toBe('Move 3 in · keep attacking from Greenland');
     fb.click('greenland');
     await until(() => c.hooks.isIdle(), 4000);
     expect(c.hooks.getState()!.territories.greenland.armies).toBe(7);
-    expect(c.hooks.ui().actionBarText).toBe('Attacking from Greenland (7) · click a glowing enemy');
+    expect(c.hooks.ui().line).toBe('Attack from Greenland · click an enemy');
     c.dispose();
   });
 
@@ -138,13 +138,13 @@ describe('R1-02 occupy: an enemy next to your own stack', () => {
     await until(() => c.hooks.isIdle(), 4000);
     const s = c.hooks.getState()!;
     expect(s.territories.ontario.armies).toBe(9);
-    expect(c.hooks.ui().actionBarText).toBe('Attack Alberta from Ontario');
+    expect(c.hooks.ui().line).toMatch(/^Attack Alberta from Ontario · \d+%$/);
     c.dispose();
   });
 });
 
-describe('R1-05 / R1-11 battle header and line 1 across a conquest', () => {
-  it('never shows one owner on both sides, and line 1 never describes a half-moved board', async () => {
+describe('R1-05 / R1-11 the tray header and the line across a conquest', () => {
+  it('never shows one owner on both sides, and the line never describes a half-moved board', async () => {
     // New Guinea 3 → Indonesia 1: one roll of 2 dice conquers, min = max = 2 auto-occupies, then chains.
     const s = fixture({ new_guinea: [0, 3], western_australia: [0, 1], eastern_australia: [0, 1] }, { kind: 'attack' });
     let conquered = false;
@@ -158,46 +158,58 @@ describe('R1-05 / R1-11 battle header and line 1 across a conquest', () => {
     const { c, fb } = await resume(s);
     fb.click('indonesia'); // arm
     await vi.advanceTimersByTimeAsync(30);
-    expect(c.hooks.ui().actionBarText).toBe('Attack Indonesia from New Guinea');
+    expect(c.hooks.ui().line).toMatch(/^Attack Indonesia from New Guinea · \d+%$/);
+    await vi.advanceTimersByTimeAsync(500); // not a double-click
     fb.click('indonesia'); // roll once
     const headers = new Set<string>();
     const lines = new Set<string>();
+    let sameOwner = 0;
     for (let t = 0; t < 4000; t += 20) {
       const u = c.hooks.ui();
+      const b = c.getViewModel().game?.battle;
+      if (b && b.attacker.seat.id === b.defender.seat.id) sameOwner++;
       if (u.battle) headers.add(u.battle.header);
-      lines.add(u.actionBarText);
+      lines.add(u.line);
       await vi.advanceTimersByTimeAsync(20);
     }
-    for (const h of headers) {
-      const [a, d] = h.split(' vs ');
-      expect(a.split(' ')[0]).not.toBe(d.split(' ')[0]);
-    }
-    expect([...headers]).toContain('JOHN NEW GUINEA 3 vs PRIYA INDONESIA 0');
-    expect([...lines].some((l) => /New Guinea \(1\)/.test(l))).toBe(false);
+    expect(sameOwner).toBe(0);
+    expect([...headers]).toContain('NEW GUINEA 3 vs INDONESIA 0');
+    expect([...lines].some((l) => /from New Guinea · \d/.test(l) && /New Guinea \(1\)/.test(l))).toBe(false);
     expect([...lines]).toContain('You took Indonesia');
-    expect(c.hooks.ui().actionBarText).toBe('Attacking from Indonesia (2) · click a glowing enemy');
+    expect(c.hooks.ui().line).toBe('Attack from Indonesia · click an enemy');
     c.dispose();
   });
 });
 
-describe('R1-14 a successful input clears a stale rejection', () => {
-  it('right-click after "All 11 placed" restores the live line', async () => {
+describe('R1-14 a successful input clears a stale rejection (setup: pick · Place · Undo · Done)', () => {
+  it('a refused click after "All 3 placed", then Undo restores the live line', async () => {
     const s = fixture({ ural: [0, 1], ukraine: [0, 1] }, { kind: 'setup-place', toPlace: 3 });
     s.round = 0;
     const { c, fb } = await resume(s);
-    fb.click('ural');
-    fb.click('ural');
-    fb.click('ural');
-    await vi.advanceTimersByTimeAsync(20);
+    expect(c.hooks.ui().line).toBe('Place 3 armies · click a territory');
     fb.click('ural');
     await vi.advanceTimersByTimeAsync(20);
-    expect(c.hooks.ui().actionBarText).toBe('All 3 placed · Confirm placement');
-    const confirm = () => c.hooks.ui().buttons.find((b) => b.label === 'Confirm placement')!;
-    expect(confirm().enabled).toBe(true);
-    fb.click('ural', 2);
+    expect(c.hooks.ui().line).toBe('Place on Ural');
+    expect(c.hooks.ui().primary).toBe('Place 3');
+    c.intent({ type: 'setCount', value: 2 });
+    c.intent({ type: 'button', id: 'place' });
     await vi.advanceTimersByTimeAsync(20);
-    expect(c.hooks.ui().actionBarText).toBe('Place 3 armies · 1 left');
-    expect(confirm().enabled).toBe(false);
+    expect(c.hooks.ui().line).toBe('Place on Ural');
+    expect(c.hooks.ui().primary).toBe('Place 1');
+    c.intent({ type: 'button', id: 'place' });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(c.hooks.ui().line).toBe('All 3 placed');
+    expect(c.hooks.ui().buttons).toEqual(['Undo', 'Done']);
+    // Staging never touches the engine.
+    expect(c.hooks.getState()!.territories.ural.armies).toBe(1);
+    await vi.advanceTimersByTimeAsync(500);
+    fb.click('ural');
+    await vi.advanceTimersByTimeAsync(20);
+    expect(c.hooks.ui().line).toBe('All 3 placed · press Done');
+    c.intent({ type: 'button', id: 'undo' });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(c.hooks.ui().line).toBe('Place 1 more · click a territory');
+    expect(c.hooks.ui().buttons).toEqual(['Undo']);
     c.dispose();
   });
 });
@@ -316,20 +328,20 @@ describe('R1-13 the random deal never shows claim copy', () => {
     const lines = new Set<string>();
     let glowed = false;
     for (let t = 0; t < 3000 && !c.hooks.isIdle(); t += 20) {
-      lines.add(c.hooks.ui().actionBarText);
+      lines.add(c.hooks.ui().line);
       if (c.hooks.getState() && c.getViewModel().game && (hl as { selectable?: string[] })?.selectable?.length === 42) glowed = true;
       await vi.advanceTimersByTimeAsync(20);
     }
     expect([...lines].some((l) => /^Claim a territory/.test(l))).toBe(false);
     expect([...lines]).toContain('Dealing territories');
     expect(glowed).toBe(false);
-    expect(c.hooks.ui().actionBarText).toMatch(/^Place 10 armies/);
+    expect(c.hooks.ui().line).toMatch(/^Place 10 armies/);
     c.dispose();
   });
 });
 
 describe('R1-15 upsets', () => {
-  it('AI-vs-AI upsets never raise a banner; they note the log line instead', async () => {
+  it('upsets never raise a banner; they note the log line instead', async () => {
     const c = createController({ board: fakeBoard().board, audio: silentAudio, storage: memoryKV(), clock, dom: false, prefersReducedMotion: () => false });
     c.hooks.setSpeed(1, 'fast');
     c.hooks.newGame({
@@ -343,7 +355,7 @@ describe('R1-15 upsets', () => {
       for (const b of c.hooks.ui().banners) titles.add(b);
       await vi.advanceTimersByTimeAsync(100);
     }
-    const log = (c.getViewModel().game?.log.lines ?? []).map((l) => l.text);
+    const log = (c.getViewModel().game?.log ?? []).map((l) => l.text);
     expect([...titles].some((b) => /HELD|AGAINST THE ODDS/.test(b))).toBe(false);
     expect(log.some((l) => /an upset \(|against the odds \(/.test(l))).toBe(true);
     c.dispose();

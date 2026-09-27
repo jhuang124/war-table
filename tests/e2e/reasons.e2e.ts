@@ -1,5 +1,5 @@
-// Every reason code (UX.md §7.3): explain() says it, and a real click on the tile shows exactly that
-// copy in action-bar line 1 (never a raw engine string, never a shake).
+// Every reason code: explain() says it, and a real click on the tile shows exactly that copy in the
+// bottom strip's one line for 2 s (never a raw engine string, never a shake), then the line comes back.
 import { check, clickT, finish, loadScenario, open, scenario, ui } from './lib';
 import type { Phase, TerritoryId } from '../../src/engine';
 
@@ -69,23 +69,26 @@ for (const c of cases) {
     const pre = await page.evaluate((t) => window.__risk.explain(t as never), c.select);
     await clickT(page, c.select);
     await page.waitForTimeout(60);
-    console.log('   select', c.select, JSON.stringify(pre), '→', (await ui(page)).actionBarText);
+    console.log('   select', c.select, JSON.stringify(pre), '→', (await ui(page)).line);
+    await page.waitForTimeout(420); // not a double-click
   }
   const ex = await page.evaluate((t) => window.__risk.explain(t as never), c.click);
   if (!ex.code) {
-    const d = await page.evaluate(() => ({ screen: window.__risk.ui().screen, state: !!window.__risk.getState(), save: !!localStorage.getItem('risk3d.save.v1'), line: window.__risk.ui().actionBarText }));
+    const d = await page.evaluate(() => ({ screen: window.__risk.ui().screen, state: !!window.__risk.getState(), save: !!localStorage.getItem('risk3d.save.v1'), line: window.__risk.ui().line }));
     console.log('   diagnostics:', JSON.stringify(d));
   }
   check(ex.ok === false && ex.code === c.code, `${c.code}: explain → ${ex.code} "${ex.text}"`, results);
   await clickT(page, c.click);
-  await page.waitForTimeout(80);
+  await page.waitForFunction((t) => window.__risk.ui().line === t && document.querySelector('[data-testid="line"]')?.getAttribute('data-kind') === 'rejection', ex.text, { timeout: 3000 }).catch(() => undefined);
   const u = await ui(page);
-  const kind = await page.locator('[data-testid="line1"]').getAttribute('data-kind');
-  check(u.actionBarText === ex.text && kind === 'rejection', `${c.code}: line 1 after a real click = "${u.actionBarText}"`, results);
-  const m = await page.evaluate(() => window.__risk.metrics());
-  const rejected = m.turns.length ? 0 : 0;
-  void rejected;
+  const kind = await page.locator('[data-testid="line"]').getAttribute('data-kind');
+  check(u.line === ex.text && kind === 'rejection', `${c.code}: the line after a real click = "${u.line}"`, results);
+  check(ex.text.length <= 52, `${c.code}: fits the one line (${ex.text.length} chars)`, results);
 }
+// The reason holds 2 s, then the live line comes back.
+await page.waitForTimeout(2100);
+const back = await page.locator('[data-testid="line"]').getAttribute('data-kind');
+check(back === 'normal', `after 2 s the line is live again (${back})`, results);
 await page.screenshot({ path: 'artifacts/e2e/reason-last.png' });
 await browser.close();
 finish(results, errors);

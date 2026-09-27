@@ -83,7 +83,7 @@ export const DEFAULT_SETTINGS: Settings = {
   animationSpeed: 1,
   aiSpeed: 'watch',
   textSize: 'laptop',
-  showLabels: true,
+  showLabels: false,
   hideCardsBetweenTurns: false,
   sfxVolume: 0.8,
   muted: false,
@@ -100,9 +100,12 @@ export function sanitizeSettings(x: unknown): Settings {
   if (o.animationSpeed === 0 || o.animationSpeed === 1 || o.animationSpeed === 2) s.animationSpeed = o.animationSpeed;
   if (o.aiSpeed === 'watch' || o.aiSpeed === 'fast' || o.aiSpeed === 'instant') s.aiSpeed = o.aiSpeed;
   if (o.textSize === 'laptop' || o.textSize === 'couch' || o.textSize === 'tv') s.textSize = o.textSize;
-  for (const k of ['showLabels', 'hideCardsBetweenTurns', 'muted', 'music', 'reduceMotion', 'showWinChance', 'autoCamera'] as const) {
+  for (const k of ['hideCardsBetweenTurns', 'muted', 'music', 'reduceMotion', 'showWinChance', 'autoCamera'] as const) {
     if (typeof o[k] === 'boolean') s[k] = o[k] as boolean;
   }
+  // Territory names went off by default in the simplify pass (settings v2): a v1 file's `true` was the
+  // old default, not a choice, so only a v2 file's value counts.
+  if ((x as { v?: number }).v === 2 && typeof o.showLabels === 'boolean') s.showLabels = o.showLabels;
   if (typeof o.sfxVolume === 'number' && Number.isFinite(o.sfxVolume)) s.sfxVolume = Math.min(1, Math.max(0, o.sfxVolume));
   return s;
 }

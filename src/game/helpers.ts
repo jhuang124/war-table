@@ -1,15 +1,11 @@
 // Pure game-side helpers (SPEC §7 Controller): all derived from state + mapData + engine helpers.
-// attackStakes, bestSet, occupyDefault, autoSource, oddsWord, plus the card-status line.
+// bestSet, occupyDefault, autoSource, autoChain, oddsWord, plus the card-status line.
 
 import {
   ADJACENCY,
-  CONTINENTS,
-  TERRITORIES,
   TERRITORY_IDS,
   bonusTerritoryFor,
   setValue,
-  territoriesNeeded,
-  territoryCount,
   validSets,
   type Card,
   type CardSymbol,
@@ -17,7 +13,7 @@ import {
   type PlayerId,
   type TerritoryId,
 } from '../engine';
-import { MINUS, SEP, cName, pName, pct, poss, tName, upper } from './copy';
+import { SEP, pct } from './copy';
 
 // ---------------------------------------------------------------------------
 // Odds
@@ -32,61 +28,6 @@ export function oddsWord(p: number): OddsWord {
   if (v >= 60) return 'likely';
   if (v >= 40) return 'coin flip';
   return 'long shot';
-}
-
-/** 'Blitz · 82% · likely' (or 'Blitz · likely' when the win chance is hidden). */
-export function oddsLabel(p: number, showPercent: boolean): string {
-  return showPercent ? `Blitz${SEP}${pct(p)}%${SEP}${oddsWord(p)}` : `Blitz${SEP}${oddsWord(p)}`;
-}
-
-// ---------------------------------------------------------------------------
-// Stakes
-// ---------------------------------------------------------------------------
-
-export interface StakeLine {
-  text: string;
-  /** Lines 1–2 of the ladder (wins the game, knocks out a player): brass and 20% larger. */
-  priority: boolean;
-}
-
-/**
- * What conquering `to` from `from` would decide, highest first, at most 2 lines (UX.md §5.1):
- * WINS THE GAME › KNOCKS OUT SAM › COMPLETES A CONTINENT › BREAKS A CONTINENT › first conquest earns a card.
- */
-export function attackStakes(state: GameState, from: TerritoryId, to: TerritoryId): StakeLine[] {
-  const me = state.territories[from]?.owner;
-  const them = state.territories[to]?.owner;
-  if (me === undefined || them === undefined || me < 0 || them < 0 || me === them) return [];
-  const out: StakeLine[] = [];
-  const mine = territoryCount(state, me);
-  const theirs = territoryCount(state, them);
-  const aliveOthers = state.players.filter((p) => !p.eliminated && p.id !== me).length;
-  const knocksOut = theirs === 1;
-  if (mine + 1 >= territoriesNeeded(state) || (knocksOut && aliveOthers === 1)) {
-    out.push({ text: 'WINS THE GAME', priority: true });
-  }
-  if (knocksOut) {
-    const n = state.players[them].cards.length;
-    const who = upper(pName(state, them));
-    out.push({
-      text: n > 0 ? `KNOCKS OUT ${who}${SEP}takes their ${n === 1 ? '1 card' : `${n} cards`}` : `KNOCKS OUT ${who}`,
-      priority: true,
-    });
-  }
-  const c = TERRITORIES[to].continent;
-  const others = CONTINENTS[c].territories.filter((t) => t !== to);
-  if (others.every((t) => state.territories[t].owner === me)) {
-    out.push({ text: `COMPLETES ${upper(cName(c))}${SEP}+${CONTINENTS[c].bonus} a turn`, priority: false });
-  }
-  if (CONTINENTS[c].territories.every((t) => state.territories[t].owner === them)) {
-    const name = pName(state, them);
-    out.push({
-      text: `BREAKS ${upper(poss(name))} ${upper(cName(c))}${SEP}${MINUS}${CONTINENTS[c].bonus} a turn for ${name}`,
-      priority: false,
-    });
-  }
-  if (!state.conqueredThisTurn) out.push({ text: `First conquest this turn${SEP}earns a card`, priority: false });
-  return out.slice(0, 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -153,32 +94,16 @@ function enemyNeighbors(state: GameState, t: TerritoryId, owner: PlayerId): Terr
   return ADJACENCY[t].filter((n) => state.territories[n].owner !== owner && state.territories[n].owner >= 0);
 }
 
-export interface OccupyDefault {
-  count: number;
-  note: string | null;
-}
-
 /**
  * Smart occupy default, a pure function of adjacency. `state` is the occupy-phase state (`to` already
- * belongs to the attacker).
- *   to borders enemies, from doesn't → max, 'Front moves forward'
- *   to safe, from borders enemies   → min, 'Siberia is safe · keeping your stack in Ural'
- *   both border enemies             → max, 'Ural keeps 1 · still borders Mongolia'
- *   neither                         → max, no note
+ * belongs to the attacker). The front moves forward (max) unless `to` is safe and `from` still borders
+ * enemies, in which case the stack stays home (min).
  */
-export function occupyDefault(state: GameState, from: TerritoryId, to: TerritoryId, min: number, max: number): OccupyDefault {
+export function occupyDefault(state: GameState, from: TerritoryId, to: TerritoryId, min: number, max: number): number {
   const me = state.territories[from].owner;
   const toEnemies = enemyNeighbors(state, to, me);
   const fromEnemies = enemyNeighbors(state, from, me);
-  if (toEnemies.length > 0 && fromEnemies.length === 0) return { count: max, note: 'Front moves forward' };
-  if (toEnemies.length === 0 && fromEnemies.length > 0) {
-    return { count: min, note: `${tName(to)} is safe${SEP}keeping your stack in ${tName(from)}` };
-  }
-  if (toEnemies.length > 0 && fromEnemies.length > 0) {
-    const worst = [...fromEnemies].sort((a, b) => state.territories[b].armies - state.territories[a].armies)[0];
-    return { count: max, note: `${tName(from)} keeps 1${SEP}still borders ${tName(worst)}` };
-  }
-  return { count: max, note: null };
+  return toEnemies.length === 0 && fromEnemies.length > 0 ? min : max;
 }
 
 // ---------------------------------------------------------------------------

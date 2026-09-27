@@ -17,7 +17,7 @@ await idle(page, 60000).catch(() => undefined);
 const u1 = await ui(page);
 console.log(JSON.stringify(u1, null, 2));
 check(u1.screen === 'game', 'in game', results);
-check(u1.actionBarText.length > 0, `line 1: ${u1.actionBarText}`, results);
+check(u1.line.length > 0, `the line: ${u1.line}`, results);
 await page.screenshot({ path: `${ART}/smoke-game.png` });
 await browser.close();
 finish(results, errors);

@@ -1,8 +1,8 @@
-// Two humans with "Hide cards between turns" on (UX.md §6.3, checklist #21): when John ends his turn
-// with his Cards drawer open, zero frames of Sam's hand may be visible before the cover is up. Every
-// DOM mutation and every animation frame is checked in the page. Then: the cover reads right, Enter
+// Two humans with "Hide cards between turns" on: John looks at his hand in the Cards sheet, places,
+// and ends his turn; zero frames of Sam's hand may be visible before the cover is up. Every DOM
+// mutation and every animation frame is checked in the page. Then: the cover reads right, Enter
 // accepts, the turn banner follows, and the cover does not fire for a human holding no cards.
-import { ART, check, clickBtn, finish, idle, loadScenario, open, rendered, scenario, state, ui } from './lib';
+import { ART, check, clickBtn, dblT, finish, idle, loadScenario, open, rendered, scenario, state, ui } from './lib';
 import type { Card, GameState } from '../../src/engine';
 
 const results: string[] = [];
@@ -20,7 +20,7 @@ const samCards: Card[] = [
   { id: 21, territory: 'peru', symbol: 'infantry' },
   { id: 22, territory: 'china', symbol: 'infantry' },
 ];
-const hs = scenario({ ural: [0, 5], ukraine: [0, 2] }, { kind: 'attack' }, {
+const hs = scenario({ ural: [0, 5], ukraine: [0, 2] }, { kind: 'reinforce', remaining: 3, mustTrade: false, placed: {}, midTurn: false }, {
   players: TWO,
   fill: (_t, i) => [i % 2, 2],
   mutate: (s: GameState) => {
@@ -32,10 +32,14 @@ await loadScenario(page, hs, { settings: { hideCardsBetweenTurns: true } });
 const settings = await page.evaluate(() => JSON.parse(localStorage.getItem('risk3d.settings.v1') ?? '{}'));
 check(settings.hideCardsBetweenTurns === true, 'setting on: Hide cards between turns', results);
 
-// John opens his hand.
-await clickBtn(page, 'rail-cards');
+// John opens his hand from the strip (Cards 2), a read-only sheet.
+let u0 = await ui(page);
+check(u0.buttons.includes('Cards 2'), `Place strip offers Cards 2 (${u0.buttons.join(' / ')})`, results);
+await clickBtn(page, 'btn-cards');
 await page.waitForSelector('[data-testid="card-0"]', { state: 'visible' });
 check(await page.locator('[data-testid="card-0"]').isVisible(), 'John’s hand is open', results);
+u0 = await ui(page);
+check(u0.cardsOpen && (await page.locator('[data-testid="cards-trade"]').isVisible()) === false, 'no set: the sheet only shows the hand', results);
 
 await page.evaluate(`(() => {
   const sam = [20, 21, 22];
@@ -55,6 +59,11 @@ await page.evaluate(`(() => {
   requestAnimationFrame(raf);
 })()`);
 
+// Place everything, attack step, End turn.
+await dblT(page, 'ural');
+await idle(page);
+await clickBtn(page, 'btn-attack');
+await idle(page);
 await clickBtn(page, 'btn-endTurn');
 await page.waitForSelector('[data-testid="handoff"]', { timeout: 5000 });
 await page.waitForTimeout(600); // keep watching while the cover sits there
@@ -65,13 +74,13 @@ check(leak.coverSeen > 0, 'the cover was up at full opacity', results);
 const cover = (await page.locator('[data-testid="handoff"]').textContent())?.replace(/\s+/g, ' ').trim() ?? '';
 check(/Pass to Sam/.test(cover) && /armies waiting · 3 cards · set ready/.test(cover) && /I'm Sam · start turn/.test(cover), `cover: ${cover}`, results);
 let u = await ui(page);
-check(u.actionBarText === 'Pass to Sam' && !u.banners.includes("SAM'S TURN"), `under the cover: line 1 "${u.actionBarText}", turn banner waits`, results);
+check(u.line === 'Pass to Sam' && !u.banners.some((b) => b.startsWith("SAM'S TURN")), `under the cover: the line "${u.line}", turn banner waits`, results);
 await page.evaluate('window.__leak.stop = true');
 await page.keyboard.press('Enter');
 await page.waitForFunction(() => !document.querySelector('[data-testid="handoff"]'));
 await page.waitForTimeout(120);
 u = await ui(page);
-check(u.banners.includes("SAM'S TURN"), `after Enter: ${u.banners.join(' | ')}`, results);
+check(u.banners.some((b) => b.startsWith("SAM'S TURN")), `after Enter: ${u.banners.join(' | ')}`, results);
 await idle(page);
 await rendered(page);
 const s = (await state(page))!;

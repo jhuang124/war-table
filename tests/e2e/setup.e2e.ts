@@ -1,8 +1,8 @@
-// "Place your own" (manual placement) with 1 human + 3 AIs, from the title through real clicks:
-// two passes of staged placement (click, right-click takes one back, pill All, Confirm placement),
+// "Place your own" (manual placement) with 1 human + 3 AIs, from the title through real clicks: two
+// passes of the same Place pattern (pick, stepper, Place N, Undo, a double-click for the rest, Done),
 // AI setup turns as one short beat each, no hand-off cover, then round 1. Budget: ≤ 1 min in total
 // (SPEC §10), measured here with instant human clicks, so the rest is the AIs' share.
-import { ART, check, clearStorage, clickBtn, clickT, finish, open, rendered, state, ui } from './lib';
+import { ART, check, clearStorage, clickBtn, clickT, dblT, finish, open, place, rendered, state, ui } from './lib';
 import { TERRITORY_IDS } from '../../src/engine';
 
 const results: string[] = [];
@@ -39,22 +39,26 @@ for (let guard = 0; guard < 10; guard++) {
   const n = s.phase.toPlace;
   let u = await ui(page);
   if (passes === 0) {
-    check(u.actionBarText === `Place ${n} armies · ${n} left`, `line 1: ${u.actionBarText}`, results);
-    check(u.primary === null && u.buttons.some((b) => b.label === 'Confirm placement' && !b.enabled && b.why === `Place ${n} more`), 'Confirm placement is disabled with “Place N more”', results);
+    check(u.line === `Place ${n} armies · click a territory` && u.step === 'Setup', `[${u.step}] ${u.line}`, results);
+    check(u.primary === null && u.buttons.length === 0, `nothing picked: no buttons (${u.buttons.join(' / ')})`, results);
     check((await page.locator('[data-testid="handoff"]').count()) === 0, 'no hand-off cover during setup', results);
   }
   const own = TERRITORY_IDS.filter((t) => s.territories[t].owner === 0);
   await clickT(page, own[0]);
-  await clickT(page, own[0]);
-  await clickT(page, own[0], { button: 'right' });
   u = await ui(page);
-  check(u.actionBarText === `Place ${n} armies · ${n - 1} left`, `staged 2, took 1 back: ${u.actionBarText}`, results);
+  if (passes === 0) check(u.primary === `Place ${n}` && u.count?.value === n, `picked: stepper ${u.count?.value} · ${u.primary}`, results);
+  await page.waitForTimeout(420);
+  await place(page, own[0], 2);
+  await clickBtn(page, 'btn-undo');
+  u = await ui(page);
+  check(u.count?.value === n && !u.buttons.includes('Undo'), `placed 2, Undo took them back: stepper ${u.count?.value} · ${u.buttons.join(' / ')}`, results);
+  await place(page, own[0], 1);
   const eng = (await state(page))!;
   check(eng.territories[own[0]].armies === s.territories[own[0]].armies, 'staging does not touch the engine', results);
-  await clickT(page, own[1]);
-  await page.locator('[data-testid="pill-all"]').click();
+  await dblT(page, own[1]);
+  await page.waitForTimeout(100);
   u = await ui(page);
-  check(u.actionBarText === `All ${n} placed · Confirm placement` && u.primary === 'Confirm placement', `${u.actionBarText} · primary ${u.primary}`, results);
+  check(u.line === `All ${n} placed` && u.primary === 'Done', `${u.line} · primary ${u.primary}`, results);
   if (passes === 0) await page.screenshot({ path: `${ART}/setup-staged.png` });
   await page.keyboard.press('Enter');
   lastHumanDone = Date.now();

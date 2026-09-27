@@ -1,21 +1,15 @@
 // Contract between the controller (src/game/**) and the HTML UI (src/ui/**).
 //
 // The controller owns all game logic, timing, and copy: it turns GameState + the event stream into a
-// plain-data ViewModel (strings already written per docs/UX.md §7) and receives UiIntents back.
+// plain-data ViewModel (strings already written, per docs/SIMPLIFY.md) and receives UiIntents back.
 // The UI owns layout, styling, and motion: it renders the ViewModel and never imports the engine.
-// Additive optional fields are fine; renames and removals need the lead.
+//
+// The in-game HUD is two strips and nothing else (docs/SIMPLIFY.md §1): the top strip (one chip per
+// seat + the menu) and the bottom strip (step indicator, one line, at most one count control, at most
+// two buttons). The dice tray header, one banner, the cards sheet and the menu sheets come and go.
 
 import type { AudioEngine } from '../audio/types';
-import type {
-  AiDifficulty,
-  CardSymbol,
-  PlayerColorId,
-  PlayerId,
-  PlayerKind,
-  PlayerStats,
-  TerritoryId,
-  TimelinePoint,
-} from '../engine/types';
+import type { AiDifficulty, CardSymbol, PlayerColorId, PlayerId, PlayerKind, PlayerStats, TimelinePoint } from '../engine/types';
 import type { ViewportInsets } from '../render/BoardView';
 
 // ---------------------------------------------------------------------------
@@ -23,7 +17,8 @@ import type { ViewportInsets } from '../render/BoardView';
 // ---------------------------------------------------------------------------
 
 export type Screen = 'boot' | 'title' | 'newGame' | 'game' | 'victory';
-export type Overlay = 'pause' | 'rules' | 'settings' | null;
+/** Sheets over the board: the menu (≡ / Esc) and what it opens. */
+export type Overlay = 'pause' | 'rules' | 'settings' | 'log' | null;
 export type AiSpeed = 'watch' | 'fast' | 'instant';
 export type TextSize = 'laptop' | 'couch' | 'tv';
 
@@ -32,6 +27,7 @@ export interface Settings {
   animationSpeed: 0 | 1 | 2;
   aiSpeed: AiSpeed;
   textSize: TextSize; // root font scale 1.0 / 1.25 / 1.5
+  /** Territory names on every tile (off by default: the hovered and picked tiles show theirs). */
   showLabels: boolean;
   hideCardsBetweenTurns: boolean; // hand-off cover, default false
   sfxVolume: number; // 0..1
@@ -50,7 +46,7 @@ export interface SeatRef {
 }
 
 // ---------------------------------------------------------------------------
-// New game screen (UX.md §4.1)
+// New game screen
 // ---------------------------------------------------------------------------
 
 export type LengthPreset = 'quick' | 'evening' | 'full';
@@ -67,7 +63,7 @@ export interface HouseRulesDraft {
   draft: boolean; // setupMode 'draft' instead of random deal
   cardBonus: 'progressive' | 'fixed';
   fortifyRule: 'connected' | 'adjacent';
-  setupBatch: number | 'auto'; // 'auto' = two passes (UX.md §4.2)
+  setupBatch: number | 'auto'; // 'auto' = two passes
   seed: number | null; // null = random
 }
 
@@ -87,105 +83,78 @@ export interface NewGameVM {
 }
 
 // ---------------------------------------------------------------------------
-// In-game HUD (UX.md §3, §5, §6, §7, §9)
+// In-game HUD (docs/SIMPLIFY.md)
 // ---------------------------------------------------------------------------
 
-export type PhaseStep = 'setup' | 'reinforce' | 'attack' | 'fortify';
-
-export interface TopBarVM {
-  player: SeatRef;
-  round: string; // 'Round 7' | 'Round 7 of 12' | 'Final round' | 'Setup'
-  finalRound: boolean;
-  step: PhaseStep | null;
-  /** 'Next set +10'. `pulseKey` increments when the value steps up (pulse once). */
-  nextSet: { label: string; pulseKey: number } | null;
-  /** null = hide the toggle (no AI seat alive). */
-  aiSpeed: AiSpeed | null;
-}
-
-export interface RosterRowVM {
+/** One chip per seat in the top strip, in turn order. */
+export interface SeatChipVM {
   seat: SeatRef;
+  /** Filled in the seat's color. */
   current: boolean;
+  /** Struck through and dimmed. */
   eliminated: boolean;
-  epitaph: string | null; // 'SAM · out in round 7 · by John'
   territories: number;
-  territoriesNeeded: number;
-  armies: number;
-  income: number;
-  continents: string[]; // ['NA', 'AU']
-  cards: number;
-  cardState: 'normal' | 'warn' | 'mustTrade'; // warn at 4, mustTrade at 5+
-  underAttack: boolean; // glow while an AI attacks this human
-  highlighted: boolean; // this row was clicked; its territories are highlighted on the board
-  /**
-   * Additive (review r1, R1-22): a seat hand-off offered in Pause → Seats. Human seats get
-   * 'Let the AI play Sam · Normal'; AI seats that started human get 'Sam takes the seat back';
-   * seats that started as AI get null.
-   */
-  seatAction?: { label: string; intent: UiIntent } | null;
+  /** The hand size, only when it's 3 or more; null otherwise. */
+  cards: number | null;
 }
 
-export interface ChipVM {
-  id: string;
-  label: string; // '14 territories → 4', 'North America +5', 'Cards +8', 'Hints on', 'Card earned ✓'
-  tone: 'receipt' | 'status' | 'brass' | 'success' | 'toggle';
-  /** Clickable chips send this intent (e.g. the trade chip, the hints chip). */
-  intent?: UiIntent;
+export type TurnStep = 'place' | 'attack' | 'fortify';
+
+/** Left end of the bottom strip. */
+export interface StepVM {
+  /** 'turn' = Place · Attack · Fortify with `current` lit; 'setup' = 'Setup'; 'watching' = "Cobalt's turn". */
+  kind: 'turn' | 'setup' | 'watching';
+  current: TurnStep | null;
+  seat: SeatRef;
+  /** 'Setup' / "Cobalt's turn" / '' (the three steps are drawn by the UI). */
+  label: string;
 }
 
 export type ButtonId =
+  | 'place' // 'Place 9'
   | 'undo'
-  | 'trade'
-  | 'chooseCards'
-  | 'beginAttack'
-  | 'roll'
+  | 'trade' // 'Trade cards +8'
+  | 'cards' // 'Cards 3': opens the read-only hand sheet
+  | 'attack' // 'Attack →' (leave Place)
+  | 'done' // setup: 'Done' commits the placement
   | 'blitz'
-  | 'fortifyNext'
+  | 'roll'
+  | 'fortify' // 'Fortify →' (leave Attack)
   | 'endTurn'
-  | 'move'
-  | 'min'
-  | 'dec'
-  | 'inc'
-  | 'max'
-  | 'confirmPlacement'
-  | 'cancel';
+  | 'move' // 'Move 8' (occupy) / 'Move 5 · end turn' (fortify)
+  | 'watchAis' // all humans out: 'Watch to the end'
+  | 'callGame'; // all humans out: 'End game'
 
 export interface ButtonVM {
   id: ButtonId;
-  label: string; // exact copy, e.g. 'Move 7 · ends turn', 'End turn · draw a card'
-  keycap: string | null; // 'Space' | 'Enter' | 'E' | 'B' | null
-  role: 'primary' | 'secondary' | 'exit';
-  /** At most one button per state has brass === true (UX.md §8.5). */
-  brass: boolean;
-  enabled: boolean;
-  why: string | null; // disabled reason shown on hover, e.g. 'Place 3 more'
-  /** Additive (UI): a 2 px brass underline sweeps and clicks are ignored (UX.md §8.9 'busy'). */
+  label: string; // exact copy
+  /** Brass fill. At most one per state. */
+  primary: boolean;
+  /** A short hold (a knockout, the game ending): a brass underline sweeps and clicks are ignored. */
   busy?: boolean;
 }
 
-export interface ActionBarVM {
-  mode:
-    | 'setup-claim'
-    | 'setup-place'
-    | 'reinforce'
-    | 'attack'
-    | 'occupy'
-    | 'fortify'
-    | 'watching'
-    | 'idle';
-  accent: PlayerColorId; // 3 px top edge
-  line1: string;
-  /** 'rejection' while a refused-click reason is swapped in (UX.md §7.1); 'narration' during AI turns. */
-  line1Kind: 'normal' | 'rejection' | 'narration';
-  /** Bumps on every rejection so the UI can re-run the swap fade even for identical copy. */
-  line1Key: number;
-  line2: string; // '' when empty
-  hints: { on: boolean; toggleable: boolean };
-  chips: ChipVM[];
-  /** Dice toggle '3 · 2 · 1' beside Roll when an attack is armed. */
-  dice: { value: 1 | 2 | 3; max: 1 | 2 | 3 } | null;
-  /** Occupy / fortify count stepper. */
-  counter: { value: number; min: number; max: number; note: string | null } | null;
+/** The one count control: a − N + stepper (Place) or a slider (Occupy, Fortify). */
+export interface CountVM {
+  control: 'stepper' | 'slider';
+  value: number;
+  min: number;
+  max: number;
+}
+
+export interface StripVM {
+  mode: 'setup' | 'place' | 'attack' | 'occupy' | 'fortify' | 'watching' | 'idle';
+  step: StepVM;
+  /** 3 px top edge. */
+  accent: PlayerColorId;
+  /** The one line: ≤ ~50 characters, real names and numbers. */
+  line: string;
+  /** 'rejection' while a refused-click reason is swapped in (2 s); 'narration' during AI turns. */
+  lineKind: 'normal' | 'rejection' | 'narration';
+  /** Bumps on every rejection so the UI can re-run the swap even for identical copy. */
+  lineKey: number;
+  count: CountVM | null;
+  /** ≤ 2, in reading order: the secondary (if any), then the primary. */
   buttons: ButtonVM[];
 }
 
@@ -195,40 +164,31 @@ export interface BattleSideVM {
   armies: number; // displayed (follows the board, not the state)
 }
 
+/** The dice tray's header line, 'URAL 12  vs  SIBERIA 5'. The dice are drawn by the renderer. */
 export interface BattleVM {
   attacker: BattleSideVM;
   defender: BattleSideVM;
-  /** percent is null when 'show win chance' is off; word always present: almost sure/likely/coin flip/long shot. */
-  odds: { percent: number | null; word: string; label: string } | null; // label 'Blitz · 82% · likely'
-  stakes: { text: string; priority: boolean }[]; // ≤ 2, priority lines are brass + 20% larger
-  result: string | null; // 'Sam loses 2' / 'Each loses 1'
-  tally: string | null; // 'URAL 8 → 5 · SIBERIA 3 → 0 · 58%'
   rolling: boolean;
-  tieHint: boolean; // show 'tie → defender' micro-labels (hints on)
-  /** The dice themselves are drawn by the renderer in the tray band. */
 }
 
 export interface CardVM {
   id: number;
   symbol: CardSymbol;
   territory: string | null; // display name, null for wild
-  ownedBonus: boolean; // 'yours +2'
-  selected: boolean;
-  suggested: boolean;
+  /** You own the pictured territory: trading it puts +2 there. */
+  ownedBonus: boolean;
+  /** Part of the best set (the one a trade uses). */
+  inSet: boolean;
 }
 
+/** The read-only hand sheet behind `Cards N`. */
 export interface CardsVM {
   open: boolean;
-  /** null = hidden (hand-off cover up, or not a human's turn). */
-  hand: CardVM[] | null;
-  count: number;
-  header: string; // 'Next set +8 · then +10'
-  status: string; // 'Need 1 more of any kind, or a third match' / 'Set ready · +8'
-  coach: string | null; // 'Sets: 3 alike · 1 of each · any 2 + wild' (hints on)
-  selectionValue: number | null; // value of the currently selected 3, if valid
-  canTrade: boolean;
-  mustTrade: boolean;
-  railBadge: string | null; // 'Set ready +8'
+  hand: CardVM[];
+  /** 'Set ready · +8' / 'Need 1 artillery, or a third match'. */
+  status: string;
+  /** 'Trade for +8' when a trade is allowed right now; null otherwise. */
+  trade: { label: string } | null;
 }
 
 export interface LogLineVM {
@@ -237,77 +197,40 @@ export interface LogLineVM {
   seat: SeatRef | null;
   kind: 'engagement' | 'turn' | 'recap' | 'card' | 'continent' | 'elimination' | 'system';
   text: string; // 'Cobalt blitzed Siam from India: 9 vs 3 → took it, lost 2'
-  detail: string[]; // per-roll lines, shown when the line is expanded
 }
 
+/** The one banner slot (docs/SIMPLIFY.md §5). */
 export interface BannerVM {
   id: number;
-  tier: 1 | 2 | 3;
-  title: string; // 'JOHN HOLDS SOUTH AMERICA'
-  subline: string; // '+2 armies a turn'
+  kind: 'turn' | 'continent' | 'elimination';
+  /** "JOHN'S TURN" / 'JOHN HOLDS ASIA · +7' / 'SAM IS OUT'. */
+  title: string;
+  /** Turn banner: '+9 armies' ('' on a resumed mid-turn). Others: ''. */
+  sub: string;
+  /** Turn banner from round 2, only if you lost territory: 'Cobalt took 2 of yours'. */
+  recap: string | null;
   seat: SeatRef | null;
-  /** Hold time in ms; the controller removes the banner after it. The UI animates in/out. */
+  /** Hold time in ms; the controller removes the banner after it. The UI animates in and out. */
   holdMs: number;
-}
-
-export interface ToastVM {
-  id: number;
-  text: string;
-  seat: SeatRef | null;
-}
-
-export interface TurnBannerVM {
-  id: number;
-  seat: SeatRef;
-  title: string; // "SAM'S TURN"
-  receipt: string; // '+9 armies · 14 territories → 4 · North America +5'
-  recap: string[]; // ≤ 2 lines (UX.md §6.2)
-  holdMs: number;
-}
-
-export interface TooltipVM {
-  /** Client px of the pointer; the UI offsets 18 px up-right and flips to stay in the viewport. */
-  x: number;
-  y: number;
-  name: string;
-  continent: string; // 'Europe · +5'
-  owner: SeatRef | null;
-  armies: number;
-  line: string; // from explainTerritory: a verb or the reason
-  ok: boolean;
-  /** Additive (UI): the hovered tile, so the tooltip can flip away from its badge (UX.md §7.4). */
-  territory?: TerritoryId;
-  /** Additive (review r1, R1-18): badges the tooltip should not cover (the selected source, the armed target or fortify destination). */
-  avoid?: TerritoryId[];
-}
-
-export interface PillsVM {
-  /** Anchor: the UI positions the cluster under this tile's badge each frame via ControllerApi.screenPos. */
-  territory: TerritoryId;
-  buttons: { id: 'plus5' | 'all'; label: string; enabled: boolean }[]; // '+5', 'All 8'
 }
 
 export interface GameVM {
-  topBar: TopBarVM;
-  roster: RosterRowVM[];
-  actionBar: ActionBarVM;
+  seats: SeatChipVM[];
+  strip: StripVM;
   battle: BattleVM | null;
-  cards: CardsVM;
-  log: { open: boolean; lines: LogLineVM[] };
+  /** null = not your Place step (or the hand-off cover is up). */
+  cards: CardsVM | null;
+  /** Oldest first; the Log sheet shows it newest first. */
+  log: LogLineVM[];
   banner: BannerVM | null;
-  toasts: ToastVM[]; // ≤ 2
-  turnBanner: TurnBannerVM | null;
-  tooltip: TooltipVM | null;
-  pills: PillsVM | null;
   handoff: { seat: SeatRef; subline: string } | null; // 'Pass to Sam' cover
-  allHumansOut: boolean; // non-modal card with Watch / End game
   confirm: { kind: 'endGame' | 'restart'; text: string } | null;
-  /** Additive (integration): this game's house rules, for the rules card (the New game draft may differ). */
-  house?: { cardBonus: 'progressive' | 'fixed'; fortifyRule: 'connected' | 'adjacent' };
+  /** Settings → Seats: hand a human seat to the AI (and back). Empty when there's nothing to offer. */
+  seatActions: { seat: SeatRef; label: string; intent: UiIntent }[];
 }
 
 // ---------------------------------------------------------------------------
-// Victory (UX.md §4.6)
+// Victory
 // ---------------------------------------------------------------------------
 
 export interface VictoryVM {
@@ -335,6 +258,8 @@ export interface ViewModel {
   newGame: NewGameVM;
   game: GameVM | null;
   victory: VictoryVM | null;
+  /** Rules sheet, 'This game': the goal, the round limit, card sets, the fortify rule. */
+  rulesNotes: string[];
 }
 
 export type UiIntent =
@@ -352,23 +277,15 @@ export type UiIntent =
   | { type: 'start' }
   // in game
   | { type: 'button'; id: ButtonId }
-  | { type: 'pill'; id: 'plus5' | 'all' }
   | { type: 'setCount'; value: number }
-  | { type: 'setDice'; value: 1 | 2 | 3 }
-  | { type: 'toggleCard'; id: number }
   | { type: 'cardsPanel'; open: boolean }
-  | { type: 'logPanel'; open: boolean }
-  | { type: 'toggleHints' }
-  | { type: 'aiSpeed'; value: AiSpeed }
-  | { type: 'highlightSeat'; player: PlayerId | null }
   | { type: 'handoffAccept' }
   | { type: 'dismissTurnBanner' }
-  | { type: 'watchAisFinish' }
   | { type: 'endGameNow' } // opens the confirm
   | { type: 'restart' } // opens the confirm
   | { type: 'confirm'; yes: boolean }
   | { type: 'saveAndQuit' }
-  /** Additive (review r1, R1-22): hand a seat to the AI or back, applied at the next safe point. */
+  /** Hand a seat to the AI or back, applied at the next safe point. */
   | { type: 'setController'; player: PlayerId; kind: PlayerKind; difficulty?: AiDifficulty }
   // victory
   | { type: 'rematch' }
@@ -381,9 +298,7 @@ export interface ControllerApi {
   /** Called with a fresh ViewModel at most once per animation frame. Unchanged subtrees keep identity. */
   subscribe(fn: (vm: ViewModel) => void): () => void;
   intent(i: UiIntent): void;
-  /** Client-px position of a territory's badge anchor (for the reinforce pills), or null off-screen. */
-  screenPos(t: TerritoryId): { x: number; y: number } | null;
-  /** The UI reports HUD-covered edges on resize, text-size change, and drawer open/close. */
+  /** The UI reports HUD-covered edges on resize and text-size change (top strip, bottom strip, tray band). */
   setViewportInsets(insets: ViewportInsets): void;
   /** For button/UI sounds: 'uiClick', 'uiHover' (throttled), 'uiError'. */
   audio: AudioEngine;

@@ -1,5 +1,5 @@
-// All-AI autoplay to victory: zero console errors, ui().actionBarText never empty, ≤ 1 banner and
-// ≤ 2 toasts at any sample, and the victory screen appears with awards/standings.
+// All-AI autoplay to victory: zero console errors, the strip's line never empty, ≤ 1 banner at any
+// sample, never a turn banner (no seat is played by a human), and the victory screen appears.
 // Usage: npx tsx tests/e2e/autoplay.e2e.ts [query] [aiSpeed]   (default '?stub&debughud' 'fast')
 import { Q, check, clearStorage, finish, open } from './lib';
 
@@ -39,9 +39,9 @@ const res = (await page.evaluate(`new Promise((resolve) => {
     const u = window.__risk.ui();
     if (u.screen === 'game') {
       samples++;
-      if (!u.actionBarText) { empty++; if (emptyAt.length < 5) emptyAt.push(JSON.stringify(window.__risk.getState() && window.__risk.getState().phase)); }
+      if (!u.line) { empty++; if (emptyAt.length < 5) emptyAt.push(JSON.stringify(window.__risk.getState() && window.__risk.getState().phase)); }
       maxBanners = Math.max(maxBanners, u.banners.length);
-      maxToasts = Math.max(maxToasts, u.toasts.length);
+      if (u.banners.some((b) => / TURN( · |$)/.test(b))) maxToasts++;
     }
     if (u.screen === 'victory' || performance.now() - t0 > 420000) {
       resolve({ samples, empty, maxBanners, maxToasts, screen: u.screen, ms: Math.round(performance.now() - t0), emptyAt });
@@ -55,9 +55,9 @@ const st = await page.evaluate(() => window.__risk.getState());
 console.log(res, 'round', st?.round);
 check(res.screen === 'victory', `reached victory in ${Math.round(res.ms / 1000)} s (round ${st?.round})`, results);
 check(res.samples > 100, `${res.samples} samples`, results);
-check(res.empty === 0, `actionBarText never empty (${res.empty} empty) ${res.emptyAt.join(' ')}`, results);
+check(res.empty === 0, `the line is never empty (${res.empty} empty) ${res.emptyAt.join(' ')}`, results);
 check(res.maxBanners <= 1, `≤ 1 banner at a time (max ${res.maxBanners})`, results);
-check(res.maxToasts <= 2, `≤ 2 toasts at a time (max ${res.maxToasts})`, results);
+check(res.maxToasts === 0, `no turn banners for AI-driven seats (${res.maxToasts} samples)`, results);
 await page.waitForTimeout(1800);
 const vic = await page.evaluate(() => {
   const el = document.querySelector('[data-testid="victory"]');

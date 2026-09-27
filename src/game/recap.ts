@@ -1,89 +1,49 @@
-// "Since your last turn" recap (UX.md §6.2) and the award ledger (UX.md §4.6), both built from the
-// event stream as the board plays it. Plain data so they can be saved alongside the game.
+// The turn banner's one recap line (docs/SIMPLIFY.md §5) and the award ledger (victory screen), both
+// built from the event stream as the board plays it. Plain data so they can be saved alongside the game.
 
-import {
-  CONTINENTS,
-  expectedRollLosses,
-  territoriesNeeded,
-  territoryCount,
-  type ContinentId,
-  type GameEvent,
-  type GameState,
-  type PlayerId,
-  type TerritoryId,
-} from '../engine';
-import { MINUS, SEP, cName, listTerritories, pName, signed } from './copy';
+import { expectedRollLosses, type GameEvent, type GameState, type PlayerId, type TerritoryId } from '../engine';
+import { SEP, pName, signed, tName } from './copy';
 
 // ---------------------------------------------------------------------------
 // Recap
 // ---------------------------------------------------------------------------
 
 export interface RecapEntry {
-  /** territoriesLost[attacker] = territories this seat lost to them, in order. */
+  /** lost[attacker] = territories this seat lost to them since its last turn, in order. */
   lost: Record<number, TerritoryId[]>;
-  continentsLost: ContinentId[];
-  eliminations: { player: PlayerId; by: PlayerId }[];
-  trades: { player: PlayerId; armies: number }[];
-  nearGoal: { player: PlayerId }[];
 }
 
 export type RecapLedger = Record<number, RecapEntry>;
 
-export function emptyRecap(): RecapEntry {
-  return { lost: {}, continentsLost: [], eliminations: [], trades: [], nearGoal: [] };
+/** Record one played event into every human seat's ledger. `disp` is the displayed state after it. */
+export function recordRecap(ledger: RecapLedger, disp: GameState, e: GameEvent): void {
+  if (e.type !== 'territoryConquered') return;
+  const victim = disp.players[e.previousOwner];
+  if (!victim || victim.kind !== 'human') return;
+  const entry = (ledger[victim.id] ??= { lost: {} });
+  (entry.lost[e.player] ??= []).push(e.to);
+}
+
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
 /**
- * Record one played event into every human seat's ledger. `disp` is the displayed state after the
- * event. `nearGoalNew` = players who just came within 5 of the goal for the first time.
+ * One line, only if the seat lost territory since its last turn: 'Cobalt took Ural',
+ * 'Cobalt took 2 of yours', 'Cobalt and Amber took 3 of yours'. null when nothing was lost.
  */
-export function recordRecap(ledger: RecapLedger, disp: GameState, e: GameEvent, nearGoalNew: PlayerId[]): void {
-  for (const p of disp.players) {
-    if (p.kind !== 'human' || p.eliminated) continue;
-    const entry = (ledger[p.id] ??= emptyRecap());
-    switch (e.type) {
-      case 'territoryConquered':
-        if (e.previousOwner === p.id) (entry.lost[e.player] ??= []).push(e.to);
-        break;
-      case 'continentLost':
-        if (e.player === p.id) entry.continentsLost.push(e.continent);
-        break;
-      case 'playerEliminated':
-        if (e.player !== p.id) entry.eliminations.push({ player: e.player, by: e.by });
-        break;
-      case 'cardsTraded':
-        if (e.player !== p.id && e.armies >= 10) entry.trades.push({ player: e.player, armies: e.armies });
-        break;
-    }
-    for (const q of nearGoalNew) if (q !== p.id) entry.nearGoal.push({ player: q });
-  }
-}
-
-/** ≤ 2 recap lines for `seat` (UX.md §6.2), highest drama first. */
-export function buildRecap(entry: RecapEntry | undefined, state: GameState, seat: PlayerId): string[] {
-  if (!entry) return [`Quiet round${SEP}nobody touched you`];
-  const lines: string[] = [];
+export function buildRecap(entry: RecapEntry | undefined, state: GameState): string | null {
+  if (!entry) return null;
   const attackers = Object.entries(entry.lost)
     .map(([a, ts]) => ({ a: Number(a), ts }))
     .filter((x) => x.ts.length > 0)
     .sort((x, y) => y.ts.length - x.ts.length);
-  const takeLine = (x: { a: number; ts: TerritoryId[] }) => `${pName(state, x.a)} took ${listTerritories(x.ts)} from you`;
-  if (attackers[0]) lines.push(takeLine(attackers[0]));
-  for (const c of entry.continentsLost) lines.push(`You lost ${cName(c)}${SEP}${MINUS}${CONTINENTS[c].bonus} a turn`);
-  for (const x of attackers.slice(1)) lines.push(takeLine(x));
-  for (const el of entry.eliminations) lines.push(`${pName(state, el.by)} knocked out ${pName(state, el.player)}`);
-  const need = territoriesNeeded(state);
-  const seen = new Set<number>();
-  for (const n of entry.nearGoal) {
-    if (seen.has(n.player) || state.players[n.player]?.eliminated) continue;
-    seen.add(n.player);
-    const left = Math.max(1, need - territoryCount(state, n.player));
-    lines.push(`${pName(state, n.player)} is ${left} from victory`);
-  }
-  for (const tr of entry.trades) lines.push(`${pName(state, tr.player)} cashed in for ${tr.armies}`);
-  if (lines.length === 0) return [`Quiet round${SEP}nobody touched you`];
-  void seat;
-  return lines.slice(0, 2);
+  if (!attackers.length) return null;
+  const total = attackers.reduce((n, x) => n + x.ts.length, 0);
+  const who = joinNames(attackers.map((x) => pName(state, x.a)));
+  if (total === 1) return `${who} took ${tName(attackers[0].ts[0])}`;
+  return `${who} took ${total} of yours`;
 }
 
 // ---------------------------------------------------------------------------

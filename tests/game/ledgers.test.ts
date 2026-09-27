@@ -1,37 +1,37 @@
 import { describe, expect, it } from 'vitest';
 import { TERRITORY_IDS, applyAction, chooseAiAction, cloneState, createGame, type GameEvent } from '../../src/engine';
 import { applyEventToDisplay, isBlocking } from '../../src/game/display';
-import { buildAwards, buildRecap, emptyAwards, emptyRecap, recordAward, recordRecap, type RecapLedger } from '../../src/game/recap';
+import { buildAwards, buildRecap, emptyAwards, recordAward, recordRecap, type RecapLedger } from '../../src/game/recap';
 import { autoSetupBatch, buildNewGameVM, defaultDraft, draftToConfig, lengthRules, patchSeat, addSeat, sanitizeDraft } from '../../src/game/presets';
 import { reconcile } from '../../src/game/reconcile';
 import { board } from './fixtures';
 
-describe('recap (UX.md §6.2)', () => {
-  it('groups losses by attacker, names ≤ 2 territories, then +N more', () => {
+describe('recap: one line, only when you lost territory', () => {
+  const conquer = (to: string, by: number, from = 0): GameEvent => ({ type: 'territoryConquered', player: by, from: 'ural', to: to as never, previousOwner: from });
+  it('names a single loss, counts several, and joins attackers', () => {
     const s = board({ ural: [0, 3] });
     const ledger: RecapLedger = {};
-    const conquer = (to: string, by: number): GameEvent => ({ type: 'territoryConquered', player: by, from: 'ural', to: to as never, previousOwner: 0 });
-    for (const t of ['ukraine', 'ural']) recordRecap(ledger, s, conquer(t, 1), []);
-    expect(buildRecap(ledger[0], s, 0)).toEqual(['Sam took Ukraine and Ural from you']);
-    for (const t of ['siberia', 'yakutsk', 'irkutsk']) recordRecap(ledger, s, conquer(t, 1), []);
-    expect(buildRecap(ledger[0], s, 0)[0]).toBe('Sam took Ukraine, Ural +3 more from you');
+    recordRecap(ledger, s, conquer('ukraine', 1));
+    expect(buildRecap(ledger[0], s)).toBe('Sam took Ukraine');
+    recordRecap(ledger, s, conquer('ural', 1));
+    expect(buildRecap(ledger[0], s)).toBe('Sam took 2 of yours');
+    recordRecap(ledger, s, conquer('siberia', 2));
+    expect(buildRecap(ledger[0], s)).toBe('Sam and Priya took 3 of yours');
   });
-  it('continents lost, cash-ins and near-goal lines; ≤ 2 lines', () => {
+  it('nothing lost → no line', () => {
     const s = board({ ural: [0, 3] });
     const ledger: RecapLedger = {};
-    recordRecap(ledger, s, { type: 'continentLost', player: 0, continent: 'europe', to: 1 }, []);
-    recordRecap(ledger, s, { type: 'cardsTraded', player: 2, cards: [], armies: 15, bonusTerritory: null, tradeIndex: 6 }, []);
-    expect(buildRecap(ledger[0], s, 0)).toEqual(['You lost Europe · −5 a turn', 'Priya cashed in for 15']);
-    const quiet = buildRecap(emptyRecap(), s, 0);
-    expect(quiet).toEqual(['Quiet round · nobody touched you']);
-    expect(buildRecap(undefined, s, 0)).toEqual(['Quiet round · nobody touched you']);
+    recordRecap(ledger, s, { type: 'continentLost', player: 0, continent: 'europe', to: 1 });
+    recordRecap(ledger, s, { type: 'cardsTraded', player: 2, cards: [], armies: 15, bonusTerritory: null, tradeIndex: 6 });
+    expect(buildRecap(ledger[0], s)).toBeNull();
+    expect(buildRecap(undefined, s)).toBeNull();
   });
-  it('only human seats collect, and own actions are not news', () => {
+  it('only human seats collect', () => {
     const s = board({ ural: [0, 3] });
     const ledger: RecapLedger = {};
-    recordRecap(ledger, s, { type: 'cardsTraded', player: 0, cards: [], armies: 12, bonusTerritory: null, tradeIndex: 5 }, []);
-    expect(ledger[0]?.trades ?? []).toEqual([]);
-    expect(ledger[2]).toBeUndefined(); // Priya is an AI
+    recordRecap(ledger, s, conquer('ural', 0, 2)); // John took Ural from Priya (an AI)
+    expect(ledger[2]).toBeUndefined();
+    expect(ledger[0]).toBeUndefined();
   });
 });
 

@@ -1,25 +1,23 @@
-// Reusable controls: action buttons (ButtonVM), plain UI buttons, segmented controls, switches.
-// None of them look like browser defaults; all numerals are tabular Inter (styles.css).
+// Reusable controls: action buttons (ButtonVM), plain UI buttons, segmented controls, switches, the
+// volume slider. None of them look like browser defaults; all numerals are tabular Inter (styles.css).
 
 import type { ButtonVM } from '../game/viewModel';
 import { h, setAttr, setText, toggle } from './dom';
 
-/** A button bound to a ButtonVM. Disabled buttons stay in place, 40% opacity, and explain why on hover. */
+/** A button bound to a ButtonVM. No keycaps: the keyboard is a hidden accelerator. */
 export class ActionButton {
   readonly el: HTMLButtonElement;
   private labelEl: HTMLSpanElement;
-  private kbd: HTMLElement;
   vm: ButtonVM | null = null;
 
   constructor(onPress: (vm: ButtonVM) => void) {
     this.el = h('button', 'btn nofocus');
     this.el.type = 'button';
     this.labelEl = h('span', 'btn-label');
-    this.kbd = h('kbd', 'kc');
-    this.el.append(this.labelEl, this.kbd);
+    this.el.append(this.labelEl);
     this.el.addEventListener('click', () => {
       const vm = this.vm;
-      if (!vm || !vm.enabled || vm.busy) return;
+      if (!vm || vm.busy) return;
       onPress(vm);
     });
   }
@@ -28,11 +26,7 @@ export class ActionButton {
     if (this.vm === vm) return;
     this.vm = vm;
     setText(this.labelEl, vm.label);
-    setText(this.kbd, vm.keycap ?? '');
-    toggle(this.kbd, 'hidden', !vm.keycap);
-    this.el.className = `btn nofocus role-${vm.role}${vm.brass ? ' brass' : ''}${vm.enabled ? '' : ' is-disabled'}${vm.busy ? ' is-busy' : ''}`;
-    setAttr(this.el, 'aria-disabled', vm.enabled ? null : 'true');
-    setAttr(this.el, 'data-why', !vm.enabled && vm.why ? vm.why : null);
+    this.el.className = `btn nofocus ${vm.primary ? 'role-primary brass' : 'role-secondary'}${vm.busy ? ' is-busy' : ''}`;
     setAttr(this.el, 'data-id', vm.id);
     setAttr(this.el, 'data-testid', `btn-${vm.id}`);
   }

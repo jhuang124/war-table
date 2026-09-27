@@ -1,14 +1,14 @@
 // UX.md §11 polish checklist items that need a real browser, on the real board + HUD:
 //   #1 hover lands in the same frame on clickable tiles; non-clickable tiles don't react (cursor)
 //   #2 no hover flicker sliding along the Ukraine/Ural edge (3 px hysteresis)
-//   #3 an orbit drag released over another tile never clicks; right-click takes one back
-//   #14 at most one brass button, every disabled button says why
+//   #3 an orbit drag released over another tile never clicks
+//   #14 at most one brass button, at most two strip buttons, no keycaps
 //   #17 no numerals in Cinzel, no ASCII minus before a number
 //   #19 no sound on tile hover
 //   #22 no focus ring after a mouse click; a ring after Tab
-//   #23 instant speed: dice still show their result; the turn banner still shows
+//   #23 instant speed: the dice still show in the tray
 //   #24 empty states: no attack sources / nothing to fortify / no valid set each say so
-import { check, clickBtn, clickT, finish, idle, loadScenario, open, scenario, state, ui } from './lib';
+import { check, clickBtn, clickT, dblT, finish, idle, loadScenario, open, scenario, state, ui } from './lib';
 import type { Phase } from '../../src/engine';
 
 const results: string[] = [];
@@ -72,7 +72,7 @@ for (const t of ['ural', 'ukraine', 'siberia', 'afghanistan', 'china']) {
 const played1 = await page.evaluate(() => (window.__audio as unknown as { stats?: () => { played: number } } | undefined)?.stats?.().played ?? -1);
 check(played0 >= 0 && played1 === played0, `hovering tiles plays no sound (${played0} → ${played1} played)`, results);
 
-// #3 an orbit drag from Ural released over Ukraine never clicks; right-click takes one back.
+// #3 an orbit drag from Ural released over Ukraine never clicks.
 const before = (await state(page))!.territories;
 await page.mouse.move(ural.x, ural.y + 8);
 await page.mouse.down();
@@ -83,10 +83,8 @@ await page.waitForTimeout(200);
 let after = (await state(page))!.territories;
 check(after.ural.armies === before.ural.armies && after.ukraine.armies === before.ukraine.armies, 'a drag released over a tile places nothing', results);
 await page.evaluate(() => window.__risk.stats()); // camera settles
-await clickT(page, 'ural');
-await clickT(page, 'ural', { button: 'right' });
 after = (await state(page))!.territories;
-check(after.ural.armies === before.ural.armies, `click +1 then right-click −1 → Ural ${after.ural.armies}`, results);
+check(after.ural.armies === before.ural.armies, `still nothing placed (Ural ${after.ural.armies})`, results);
 
 // #14 brass and why, #17 numerals — across a few states.
 const audit = async (label: string) => {
@@ -95,7 +93,8 @@ const audit = async (label: string) => {
     const vis = (el: Element) => (el as HTMLElement).offsetParent !== null && getComputedStyle(el).visibility !== 'hidden';
     const brass = [...document.querySelectorAll('#ui .btn.brass')].filter(vis).length;
     const u = window.__risk.ui();
-    const noWhy = u.buttons.filter((b) => !b.enabled && !b.why).map((b) => b.label);
+    const kbd = [...document.querySelectorAll('#ui .hud kbd')].filter(vis).length;
+    const noWhy = u.buttons.length > 2 || kbd > 0 ? [`${u.buttons.length} buttons, ${kbd} keycaps`] : [];
     const cinzelNums: string[] = [];
     const minus: string[] = [];
     const walk = document.createTreeWalker(document.getElementById('ui')!, NodeFilter.SHOW_TEXT);
@@ -109,11 +108,12 @@ const audit = async (label: string) => {
     return { brass, noWhy, cinzelNums, minus };
   });
   check(a.brass <= 1, `${label}: ${a.brass} brass button(s)`, results);
-  check(a.noWhy.length === 0, `${label}: every disabled button says why${a.noWhy.length ? ' — missing: ' + a.noWhy.join(', ') : ''}`, results);
+  check(a.noWhy.length === 0, `${label}: ≤ 2 strip buttons, no keycaps${a.noWhy.length ? ' — ' + a.noWhy.join(', ') : ''}`, results);
   check(a.cinzelNums.length === 0 && a.minus.length === 0, `${label}: no Cinzel numerals, no ASCII minus${a.cinzelNums.concat(a.minus).length ? ' — ' + a.cinzelNums.concat(a.minus).join(' | ') : ''}`, results);
 };
-await audit('reinforce');
-await page.locator('[data-testid="pill-all"]').click();
+await audit('place');
+await dblT(page, 'ural');
+await idle(page);
 await clickT(page, 'siberia');
 await audit('armed');
 
@@ -141,7 +141,7 @@ await page.evaluate(`(() => {
     const b = window.__risk.ui().battle;
     if (b) {
       S.frames++;
-      const m = b.header.match(/URAL (\\d+) vs .* SIBERIA (\\d+)/);
+      const m = b.header.match(/URAL (\\d+) vs SIBERIA (\\d+)/);
       if (m) {
         const hudA = +m[1], hudD = +m[2];
         const boardA = armies.ural, boardD = armies.siberia;
@@ -158,27 +158,27 @@ await page.evaluate('window.__spoil.stop = true');
 const spoil = (await page.evaluate('window.__spoil')) as { frames: number; ahead: number; first: string | null };
 check(spoil.frames > 30 && spoil.ahead === 0, `battle header never ahead of the board during a blitz (${spoil.frames} frames, ${spoil.ahead} ahead${spoil.first ? ': ' + spoil.first : ''})`, results);
 
-// #23 instant speed: the roll still shows a result; the tray still shows the dice.
+// #23 instant speed: the tray still shows the dice.
 await page.evaluate(() => window.__risk.setSpeed(0));
 await loadScenario(page, scenario({ ural: [0, 12] }, { kind: 'attack' }, { mutate: (s) => void (s.territories.siberia.armies = 8) }), { settings: { animationSpeed: 0 } });
 await clickT(page, 'siberia');
 await clickBtn(page, 'btn-roll');
 await page.waitForTimeout(120);
 const inst = await page.evaluate(() => ({
-  result: window.__risk.ui().battle?.result ?? null,
+  header: window.__risk.ui().battle?.header ?? null,
   tray: (window.__board as unknown as { __debug: { tray: { visible: boolean } } }).__debug.tray.visible,
 }));
-check(!!inst.result && inst.tray, `instant speed: result "${inst.result}", dice tray ${inst.tray ? 'showing' : 'hidden'}`, results);
+check(inst.tray, `instant speed: header "${inst.header}", dice tray ${inst.tray ? 'showing' : 'hidden'}`, results);
 await page.screenshot({ path: 'artifacts/e2e/polish-instant-dice.png' });
 await page.evaluate(() => window.__risk.setSpeed(1));
 
 // #24 empty states.
 await loadScenario(page, scenario({ ural: [0, 1], ukraine: [0, 1] }, { kind: 'attack' }));
 let u = await ui(page);
-check(u.actionBarText === 'No attacks left · every border army is down to 1' && /^Fortify|^End turn/.test(u.primary ?? ''), `no sources: "${u.actionBarText}" · primary ${u.primary}`, results);
+check(u.line === 'No attacks left' && u.primary === 'End turn', `no sources: "${u.line}" · primary ${u.primary}`, results);
 await loadScenario(page, scenario({ ural: [0, 1], ukraine: [0, 1] }, { kind: 'fortify' }));
 u = await ui(page);
-check(u.actionBarText === 'Nothing to move · End turn' && /^End turn/.test(u.primary ?? ''), `nothing to fortify: "${u.actionBarText}" · primary ${u.primary}`, results);
+check(u.line === 'Nothing to move · end your turn' && u.primary === 'End turn', `nothing to fortify: "${u.line}" · primary ${u.primary}`, results);
 await loadScenario(
   page,
   scenario({ ural: [0, 3] }, reinforce(3), {
@@ -189,7 +189,7 @@ await loadScenario(
       ]),
   }),
 );
-await clickBtn(page, 'rail-cards');
+await clickBtn(page, 'btn-cards');
 await page.waitForTimeout(300);
 const status = await page.locator('.cards-status').textContent();
 check(/^Need 1 .+/.test(status ?? ''), `no valid set: "${status}"`, results);

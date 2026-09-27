@@ -1,6 +1,6 @@
 // Screenshot every gallery fixture. Usage:
 //   node src/ui/gallery/shoot.mjs [--port 5282] [--size 1440x900] [--text tv] [--only id,id] [--out artifacts/ui/r1]
-// Also reports console errors and a few layout checks (action bar rect, min font size, overlaps).
+// Also reports console errors and a few layout checks (strip rect, min font size, clipped lines, words).
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,7 +24,7 @@ page.on('console', (m) => {
 });
 page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
 
-await page.goto(`${base}?state=reinforce`);
+await page.goto(`${base}?state=place`);
 await page.waitForFunction(() => window.__gallery?.ready);
 let ids = await page.evaluate(() => window.__gallery.ids);
 if (args.only) ids = String(args.only).split(',');
@@ -40,7 +40,7 @@ for (const id of ids) {
   const clip = args.clip ? (() => { const [x, y, w, h] = String(args.clip).split(',').map(Number); return { x, y, width: w, height: h }; })() : undefined;
   await page.screenshot({ path: file, clip });
   const m = await page.evaluate(() => {
-    const bar = document.querySelector('.actionbar');
+    const bar = document.querySelector('.strip');
     const r = bar && getComputedStyle(document.querySelector('.hud')).visibility !== 'hidden' ? bar.getBoundingClientRect() : null;
     // smallest visible font size among text-bearing elements in the UI
     let min = 999;
@@ -61,18 +61,27 @@ for (const id of ids) {
       const fs = parseFloat(cs.fontSize);
       if (fs < min) { min = fs; minEl = `${el.className || el.tagName}: ${el.textContent.trim().slice(0, 30)}`; }
     }
-    // text overflowing its box (ellipsis) in the action bar
-    const clipped = [...document.querySelectorAll('.actionbar .l1-text, .actionbar .ab-line2, .actionbar .ab-note')]
+    // the line overflowing its box (ellipsis)
+    const clipped = [...document.querySelectorAll('.strip .ln-text:not(.ln-ghost)')]
       .filter((e) => e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).display !== 'none')
       .map((e) => e.textContent.slice(0, 50));
-    return { bar: r ? [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)].join(',') : null, minFont: min, minEl, clipped };
+    // words on screen in the strips and the tray header
+    const words = ['.topstrip', '.strip', '.battle:not(.hidden)']
+      .map((q) => document.querySelector(q))
+      .filter((e) => e && e.offsetParent !== null)
+      .map((e) => e.innerText)
+      .join(' ')
+      .split(/\s+/)
+      .filter((w) => /[A-Za-z0-9]/.test(w)).length;
+    return { bar: r ? [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)].join(',') : null, minFont: min, minEl, clipped, words };
   });
   report.push({ id, ...m });
 }
 fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify({ size: `${W}x${H}`, text, errors, report }, null, 2));
 const bars = new Set(report.filter((r) => r.bar).map((r) => r.bar));
 console.log(`shots: ${report.length} → ${out}`);
-console.log(`action bar rects: ${[...bars].join(' | ')}`);
+console.log(`strip rects: ${[...bars].join(' | ')}`);
+console.log(`words: ${report.map((r) => `${r.id} ${r.words}`).join(' · ')}`);
 console.log(`min font: ${Math.min(...report.map((r) => r.minFont))}px`);
 for (const r of report) if (r.minFont < (text === 'tv' ? 20 : 13) || r.clipped.length) console.log(`  ${r.id}: min ${r.minFont}px (${r.minEl}) clipped: ${r.clipped.join(' / ')}`);
 console.log(`console errors: ${errors.length}`);

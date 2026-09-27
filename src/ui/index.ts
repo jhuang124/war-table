@@ -1,43 +1,38 @@
-// The HTML UI (SPEC §7, UX.md). Renders the ViewModel, sends UiIntents, never imports the engine.
+// The HTML UI (docs/SIMPLIFY.md): renders the ViewModel, sends UiIntents, never imports the engine.
+//
+// In game the only chrome is the top strip (seat chips + ≡), the bottom strip (step · line · count ·
+// ≤ 2 buttons) and, during a fight, the dice tray's header line. The banner slot, the cards sheet, the
+// hand-off cover and the menu sheets come and go.
 //
 // Rendering: each component keeps its elements and patches them; every level short-circuits on
 // ViewModel identity (the controller keeps unchanged subtrees identical), so an idle frame costs a few
-// reference compares and no DOM writes. The only per-frame work is positioning the reinforce pills.
+// reference compares and no DOM writes.
 
 import './styles.css';
-import type { ControllerApi, MountUi, Screen, UiIntent, ViewModel } from '../game/viewModel';
+import type { MountUi, Screen, UiIntent, ViewModel } from '../game/viewModel';
 import type { ViewportInsets } from '../render/BoardView';
 import { h, motion, setAttr, toggle } from './dom';
 import { trayGeometry } from '../shared/tray';
-import { ActionBar } from './hud/actionbar';
 import { Announcements } from './hud/announce';
-import { BattlePanel } from './hud/battle';
-import { Pills, Tooltip } from './hud/float';
-import { CardsDrawer, LogDrawer, Rail } from './hud/rail';
-import { Roster } from './hud/roster';
-import { TopBar } from './hud/topbar';
-import { Confirm, Handoff, HumansOut, Overlays } from './overlays';
+import { BattleHeader } from './hud/battle';
+import { CardsSheet } from './hud/cards';
+import { BottomStrip } from './hud/strip';
+import { TopStrip } from './hud/topstrip';
+import { Confirm, Handoff, Overlays } from './overlays';
 import { NewGameScreen } from './screens/newgame';
 import { TitleScreen } from './screens/title';
 import { VictoryScreen } from './screens/victory';
 import { effectiveUiScale, isFitted } from './uiScale';
 
 /**
- * Battle band height. The renderer centers its tray in the band (src/render/dice.ts layout():
- * die = max(56, min(8vh × uiScale, 0.56 × band)), tray = max(1.75 × die, 0.66 × band)). This panel's
- * text lives only in the margins above and below the tray, so pick the smallest band whose margins fit
- * the worst-case text (header above; odds + two priority stakes below), capped at 34% of the height.
- * Returns the band and the margin (= the height of each text strip), in CSS px.
+ * Dice-tray band, just above the bottom strip. The renderer centres its tray in the band
+ * (src/shared/tray.ts), so the band is the tray plus one header line above it and the same margin
+ * below. Returns the band and that margin (the header's strip), in CSS px.
  */
 export function solveBand(H: number, scale: number, W = typeof window !== 'undefined' ? window.innerWidth : 1440): { band: number; strip: number } {
   const rem = 16 * scale;
-  const header = Math.max(0.022 * H, 1.0625 * rem) * 1.5;
-  const odds = Math.max(0.03 * H, 1.375 * rem) * 1.2;
-  const stakes = 2 * Math.max(0.0186 * H, 1.05 * rem) * 1.12 + 4;
-  const need = Math.ceil(Math.max(header, odds, stakes));
+  const need = Math.ceil(Math.max(0.022 * H, 1.0625 * rem) * 1.6);
   const cap = Math.round(H * 0.34);
-  // The tray itself comes from the formula the renderer uses (src/shared/tray.ts): grow the band until
-  // the strips above and below the centred tray fit their text.
   let band = 120;
   let strip = 0;
   for (; band <= cap; band += 2) {
@@ -50,24 +45,17 @@ export function solveBand(H: number, scale: number, W = typeof window !== 'undef
 }
 
 interface Instance {
-  root: HTMLElement;
   newGame: NewGameScreen;
-  log: LogDrawer;
   victory: VictoryScreen;
-  announce: Announcements;
-  tooltip: Tooltip;
 }
 let current: Instance | null = null;
 
-/** Gallery / test hook: poke local-only UI state (house rules drawer, log expansion, victory intro). */
+/** Gallery / test hook: poke local-only UI state (house rules drawer, victory intro). */
 export function uiDebug() {
   const c = current;
   return {
     openHouseRules: () => c?.newGame.setHouseOpen(true),
-    expandLog: () => c?.log.expandFirst(),
     skipVictoryIntro: () => c?.victory.showFull(),
-    recap: () => c?.announce.recap ?? [],
-    tooltip: () => c?.tooltip.text() ?? null,
   };
 }
 
@@ -75,27 +63,19 @@ export const mountUi: MountUi = (host, api) => {
   const boot = host.querySelector('#boot-splash') as HTMLElement | null;
   const root = h('div', 'ui-root');
   host.append(root);
-
-  // ---- sounds + intents ---------------------------------------------------
-  let lastHover: Element | null = null;
-  let lastHoverAt = 0;
   const send = (i: UiIntent) => api.intent(i);
 
   // ---- components ---------------------------------------------------------
   const hud = h('div', 'hud');
-  const topBar = new TopBar(send);
-  const roster = new Roster(send);
-  const rail = new Rail(send);
-  const cards = new CardsDrawer(send);
-  const log = new LogDrawer(send);
-  const battle = new BattlePanel();
-  const actionBar = new ActionBar(send);
+  const top = new TopStrip(send);
+  const strip = new BottomStrip(send);
+  const battle = new BattleHeader();
   const announce = new Announcements();
-  const tooltip = new Tooltip(api);
-  const pills = new Pills(api, send);
-  const humansOut = new HumansOut(send);
-  tooltip.avoid = pills.el;
-  hud.append(topBar.el, roster.el, rail.el, battle.el, actionBar.el, humansOut.el, announce.el, pills.el, cards.el, log.el, tooltip.el);
+  const cards = new CardsSheet(send);
+  // Always-laid-out twin of the tray band, so the insets are right while the header is hidden.
+  const bandProbe = h('div', 'band-probe');
+  bandProbe.setAttribute('aria-hidden', 'true');
+  hud.append(top.el, battle.el, strip.el, cards.el, announce.el, bandProbe);
 
   const title = new TitleScreen(send);
   const newGame = new NewGameScreen(send);
@@ -103,14 +83,8 @@ export const mountUi: MountUi = (host, api) => {
   const handoff = new Handoff(send);
   const overlays = new Overlays(send);
   const confirm = new Confirm(send);
-  // Always-laid-out twin of the battle band, so insets are right even while the panel is hidden.
-  const bandProbe = h('div', 'band-probe');
-  bandProbe.setAttribute('aria-hidden', 'true');
-  hud.append(bandProbe);
-  const bubble = h('div', 'bubble hidden');
-  bubble.setAttribute('role', 'tooltip');
-  root.append(hud, title.el, newGame.el, victory.el, handoff.el, overlays.el, confirm.el, bubble);
-  current = { root, newGame, log, victory, announce, tooltip };
+  root.append(hud, title.el, newGame.el, victory.el, handoff.el, overlays.el, confirm.el);
+  current = { newGame, victory };
 
   const screens: Partial<Record<Screen, HTMLElement>> = { title: title.el, newGame: newGame.el, victory: victory.el };
   for (const el of Object.values(screens)) el!.classList.add('off');
@@ -149,29 +123,24 @@ export const mountUi: MountUi = (host, api) => {
     }
   };
 
-  // ---- viewport insets ----------------------------------------------------
+  // ---- viewport insets: the top strip, the bottom strip, the tray band above it ---------------------
   let lastInsets = '';
   let scale = 1;
   const measure = () => {
     const H = window.innerHeight;
     const W = window.innerWidth;
-    const { band: tray, strip } = solveBand(H, scale, W);
-    root.style.setProperty('--tray', `${tray}px`);
-    root.style.setProperty('--strip', `${strip}px`);
-    topBar.fit();
-    roster.fitAbove(actionBar.el.getBoundingClientRect().top - 12);
-    const tb = topBar.el.getBoundingClientRect();
-    const ro = roster.el.getBoundingClientRect();
-    const ra = rail.el.getBoundingClientRect();
-    const bt = bandProbe.getBoundingClientRect();
+    const { band, strip: headerStrip } = solveBand(H, scale, W);
+    root.style.setProperty('--tray', `${band}px`);
+    root.style.setProperty('--strip', `${headerStrip}px`);
+    const tb = top.el.getBoundingClientRect();
+    const st = strip.el.getBoundingClientRect();
     const insets: ViewportInsets = {
       top: Math.round(tb.bottom),
-      left: Math.round(ro.width ? ro.right : 0),
-      right: Math.round(ra.width ? W - ra.left : 0),
-      bottom: Math.round(H - bt.top),
-      trayBand: tray,
+      left: 0,
+      right: 0,
+      bottom: Math.round(H - st.top + 4),
+      trayBand: band,
     };
-    root.style.setProperty('--inset-bottom', `${insets.bottom}px`);
     const key = JSON.stringify(insets);
     if (key !== lastInsets) {
       lastInsets = key;
@@ -188,22 +157,8 @@ export const mountUi: MountUi = (host, api) => {
     });
   };
   const ro = new ResizeObserver(queueMeasure);
-  for (const el of [topBar.el, roster.el, rail.el, actionBar.el, bandProbe]) ro.observe(el);
+  for (const el of [top.el, strip.el, bandProbe]) ro.observe(el);
   window.addEventListener('resize', queueMeasure);
-  const refit = () => actionBar.fit();
-  window.addEventListener('resize', refit);
-
-  // ---- per-frame: pills follow their tile ---------------------------------
-  let raf = 0;
-  const tick = () => {
-    raf = 0;
-    if (!pills.active) return;
-    pills.frame();
-    raf = requestAnimationFrame(tick);
-  };
-  const ensureTick = () => {
-    if (pills.active && !raf) raf = requestAnimationFrame(tick);
-  };
 
   // ---- text size, fitted to the screen (src/ui/uiScale.ts) ------------------
   let fitted = false;
@@ -223,11 +178,7 @@ export const mountUi: MountUi = (host, api) => {
     scale = nextScale;
     document.documentElement.style.fontSize = `${scale * 100}%`;
     queueMeasure();
-    if (relayout)
-      requestAnimationFrame(() => {
-        actionBar.fit();
-        victory.refreshChart();
-      });
+    if (relayout) requestAnimationFrame(() => victory.refreshChart());
   };
   const onResizeScale = () => applyScale(true);
   window.addEventListener('resize', onResizeScale);
@@ -251,147 +202,58 @@ export const mountUi: MountUi = (host, api) => {
 
     const g = next.game;
     if (g && (!prev || prev.game !== g)) {
-      topBar.update(g.topBar);
-      roster.update(g.roster);
-      rail.update(g.cards, g.log.open);
-      const brassFree = !g.actionBar.buttons.some((b) => b.brass);
-      cards.update(g.cards, brassFree);
-      log.update(g.log.open, g.log.lines);
-      actionBar.update(g.actionBar);
+      top.update(g.seats);
+      strip.update(g.strip);
       battle.update(g.battle);
-      announce.update(g.turnBanner, g.banner, g.toasts);
-      tooltip.update(next.overlay ? null : g.tooltip, g.battle);
-      pills.update(g.pills);
-      humansOut.update(g.allHumansOut);
+      announce.update(g.banner);
+      cards.update(g.cards);
       handoff.update(g.handoff);
       confirm.update(g.confirm);
-      ensureTick();
     } else if (!g && prev?.game) {
-      tooltip.update(null);
-      pills.update(null);
+      battle.update(null);
+      announce.update(null);
+      cards.update(null);
       handoff.update(null);
       confirm.update(null);
-      battle.update(null);
-      announce.update(null, null, []);
     }
-    if (!prev || prev.overlay !== next.overlay || prev.settings !== next.settings || prev.screen !== next.screen || (next.overlay === 'pause' && prev.game?.roster !== next.game?.roster))
+    if (!prev || prev.overlay !== next.overlay || prev.settings !== next.settings || prev.screen !== next.screen || prev.rulesNotes !== next.rulesNotes || (next.overlay && prev.game !== next.game))
       overlays.update(next);
     toggle(root, 'overlay-open', !!next.overlay || !!g?.confirm);
-    revalidateBubble();
   };
 
   // ---- delegated input behavior -------------------------------------------
-  const isBtn = (t: EventTarget | null) => (t instanceof Element ? t.closest<HTMLElement>('button, .slider') : null);
+  let lastHover: Element | null = null;
+  let lastHoverAt = 0;
+  const isBtn = (t: EventTarget | null) => (t instanceof Element ? t.closest<HTMLElement>('button, [role="slider"]') : null);
   const onPointerDown = (e: PointerEvent) => {
     const b = isBtn(e.target);
     if (b && b.getAttribute('aria-disabled') !== 'true') b.classList.add('is-down');
     // Any press on the UI dismisses the turn banner (board clicks are the controller's).
-    if (vm?.game?.turnBanner) send({ type: 'dismissTurnBanner' });
+    if (vm?.game?.banner?.kind === 'turn') send({ type: 'dismissTurnBanner' });
   };
   const clearDown = () => root.querySelectorAll('.is-down').forEach((el) => el.classList.remove('is-down'));
   const onMouseDown = (e: MouseEvent) => {
-    // No mouse focus on buttons: keyboard shortcuts stay with the game, and focus rings stay keyboard-only.
+    // No mouse focus on buttons: the keyboard stays with the game, and focus rings stay keyboard-only.
     if (isBtn(e.target)?.tagName === 'BUTTON') e.preventDefault();
   };
   const onClick = (e: MouseEvent) => {
     const b = isBtn(e.target);
-    if (!b || b.tagName !== 'BUTTON') return;
-    if (b.getAttribute('aria-disabled') === 'true') {
-      if (b.dataset.why) showBubble(b, b.dataset.why, 2200);
-      return;
-    }
+    if (!b || b.tagName !== 'BUTTON' || b.getAttribute('aria-disabled') === 'true') return;
     api.audio.play('uiClick');
   };
   const onOver = (e: PointerEvent) => {
-    // Button hover sound only; the bubble follows real pointer movement (onMove).
     const t = e.target instanceof Element ? e.target : null;
     const b = t?.closest<HTMLElement>('button');
     if (b && b !== lastHover) {
       lastHover = b;
       const now = performance.now();
-      if (b.getAttribute('aria-disabled') !== 'true' && now - lastHoverAt > 90 && movedRecently()) {
+      if (b.getAttribute('aria-disabled') !== 'true' && now - lastHoverAt > 90) {
         lastHoverAt = now;
         api.audio.play('uiHover');
       }
     } else if (!b) lastHover = null;
   };
-  const onContext = (e: MouseEvent) => {
-    e.preventDefault();
-  };
-
-  // Disabled-button reasons and icon tips share one bubble. It follows real pointer movement only:
-  // a render that slides a disabled button under a still pointer (the turn-start case) never opens
-  // it, any move off the element (onto the board too) closes it, and every render re-checks it, so it
-  // never goes stale or outlives its reason. Action-bar bubbles sit above the whole bar, so they never
-  // cover a sibling button (e.g. the brass Trade on a forced trade).
-  let bubbleTimer = 0;
-  let bubbleFor: HTMLElement | null = null;
-  let bubbleText = '';
-  let lastX = -1;
-  let lastY = -1;
-  let lastMoveAt = -1e9;
-  const movedRecently = () => performance.now() - lastMoveAt < 400;
-  const tipOf = (el: HTMLElement): string => {
-    if (!el.isConnected || el.closest('.hidden, .off, .leaving')) return '';
-    const why = el.getAttribute('aria-disabled') === 'true' ? el.dataset.why : '';
-    return why || el.dataset.tip || '';
-  };
-  const placeBubble = (el: HTMLElement) => {
-    const r = el.getBoundingClientRect();
-    const b = bubble.getBoundingClientRect();
-    let x = r.left + r.width / 2 - b.width / 2;
-    x = Math.max(8, Math.min(window.innerWidth - b.width - 8, x));
-    const bar = el.closest('.actionbar');
-    const top = bar ? bar.getBoundingClientRect().top : r.top;
-    let y = top - b.height - 8;
-    if (y < 8) y = r.bottom + 8;
-    bubble.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
-  };
-  const showBubble = (el: HTMLElement, text: string, autoHideMs: number) => {
-    window.clearTimeout(bubbleTimer);
-    bubbleText = text;
-    bubble.textContent = text;
-    bubble.classList.remove('hidden');
-    bubbleFor = el;
-    placeBubble(el);
-    if (autoHideMs) bubbleTimer = window.setTimeout(hideBubble, autoHideMs);
-  };
-  const hideBubble = () => {
-    window.clearTimeout(bubbleTimer);
-    if (!bubbleFor) return;
-    bubbleFor = null;
-    bubbleText = '';
-    bubble.classList.add('hidden');
-  };
-  /** After every render: hide if the element lost its reason, re-word it if the reason changed. */
-  const revalidateBubble = () => {
-    if (!bubbleFor) return;
-    const text = tipOf(bubbleFor);
-    if (!text) hideBubble();
-    else if (text !== bubbleText) {
-      bubbleText = text;
-      bubble.textContent = text;
-      placeBubble(bubbleFor);
-    }
-  };
-  const onMove = (e: PointerEvent) => {
-    if (e.clientX === lastX && e.clientY === lastY) return; // synthetic re-hover after a DOM change
-    lastX = e.clientX;
-    lastY = e.clientY;
-    lastMoveAt = performance.now();
-    const t = e.target instanceof Element && root.contains(e.target) ? e.target : null;
-    const tipEl = t?.closest<HTMLElement>('[data-why], [data-tip]') ?? null;
-    const text = tipEl ? tipOf(tipEl) : '';
-    if (!tipEl || !text) return hideBubble();
-    if (tipEl === bubbleFor && text === bubbleText) return;
-    showBubble(tipEl, text, 0);
-  };
-  const onDocOut = (e: PointerEvent) => {
-    if (!e.relatedTarget) hideBubble(); // the pointer left the window
-  };
-  const onAnyDown = (e: PointerEvent) => {
-    if (bubbleFor && !(e.target instanceof Node && bubbleFor.contains(e.target))) hideBubble();
-  };
+  const onContext = (e: MouseEvent) => e.preventDefault();
 
   // Keyboard: the controller owns game keys. The UI only handles keys for its own layers (menus,
   // dialogs, text fields) and stops them there so nothing fires twice.
@@ -406,7 +268,7 @@ export const mountUi: MountUi = (host, api) => {
       e.stopPropagation();
       return;
     }
-    const focusedBtn = !!t && t !== document.body && root.contains(t) && (t.tagName === 'BUTTON' || t.getAttribute('role') === 'slider');
+    const focusedCtl = !!t && t !== document.body && root.contains(t) && (t.tagName === 'BUTTON' || t.getAttribute('role') === 'slider');
     const g = v.game;
     const stop = () => {
       e.preventDefault();
@@ -415,8 +277,8 @@ export const mountUi: MountUi = (host, api) => {
     if (e.repeat && (e.key === 'Enter' || e.key === ' ')) return stop();
     if (g?.confirm && v.screen === 'game') {
       if (e.key === 'Escape') (stop(), send({ type: 'confirm', yes: false }));
-      else if (e.key === 'Enter' && !focusedBtn) (stop(), send({ type: 'confirm', yes: true }));
-      else if (focusedBtn && (e.key === 'Enter' || e.key === ' ')) e.stopPropagation();
+      else if (e.key === 'Enter' && !focusedCtl) (stop(), send({ type: 'confirm', yes: true }));
+      else if (focusedCtl && (e.key === 'Enter' || e.key === ' ')) e.stopPropagation();
       else if (e.key !== 'Tab') stop();
       return;
     }
@@ -424,22 +286,20 @@ export const mountUi: MountUi = (host, api) => {
       if (e.key === 'Escape') {
         stop();
         send({ type: 'overlay', overlay: v.overlay !== 'pause' ? overlays.backTarget() : null });
-      } else if (e.key === 'Enter' && !focusedBtn && v.overlay === 'pause') (stop(), send({ type: 'overlay', overlay: null }));
-      else if (e.key === '?' && v.overlay !== 'rules') (stop(), send({ type: 'overlay', overlay: 'rules' }));
-      else if (focusedBtn && (e.key === 'Enter' || e.key === ' ')) e.stopPropagation();
+      } else if (e.key === 'Enter' && !focusedCtl && v.overlay === 'pause') (stop(), send({ type: 'overlay', overlay: null }));
+      else if (focusedCtl && (e.key === 'Enter' || e.key === ' ')) e.stopPropagation();
       else if (e.key !== 'Tab' && !e.key.startsWith('Arrow')) stop();
       return;
     }
     if (v.screen === 'game') {
       if (g?.handoff && (e.key === 'Enter' || e.key === ' ')) (stop(), send({ type: 'handoffAccept' }));
-      else if (focusedBtn && (e.key === 'Enter' || e.key === ' ')) e.stopPropagation();
+      else if (focusedCtl && (e.key === 'Enter' || e.key === ' ')) e.stopPropagation();
       return;
     }
     // Menu screens.
-    if (focusedBtn && (e.key === 'Enter' || e.key === ' ')) return void e.stopPropagation();
+    if (focusedCtl && (e.key === 'Enter' || e.key === ' ')) return void e.stopPropagation();
     if (v.screen === 'title') {
       if (e.key === 'Enter') (stop(), send(v.save ? { type: 'continue' } : { type: 'nav', screen: 'newGame' }));
-      else if (e.key === '?') (stop(), send({ type: 'overlay', overlay: 'rules' }));
     } else if (v.screen === 'newGame') {
       if (e.key === 'Enter') (stop(), v.newGame.canStart && send({ type: 'start' }));
       else if (e.key === 'Escape') (stop(), send({ type: 'nav', screen: 'title' }));
@@ -459,36 +319,25 @@ export const mountUi: MountUi = (host, api) => {
   root.addEventListener('mousedown', onMouseDown);
   root.addEventListener('click', onClick);
   root.addEventListener('pointerover', onOver);
-  window.addEventListener('pointermove', onMove, { passive: true, capture: true });
-  window.addEventListener('pointerdown', onAnyDown, { capture: true });
-  document.addEventListener('pointerout', onDocOut);
   root.addEventListener('contextmenu', onContext);
   window.addEventListener('keydown', onKey, true);
 
   render(api.getViewModel());
   measure();
-  document.fonts?.ready.then(() => {
-    actionBar.fit();
-    queueMeasure();
-  });
+  document.fonts?.ready.then(queueMeasure);
   const unsub = api.subscribe(render);
 
   return {
     dispose() {
       unsub();
       ro.disconnect();
-      cancelAnimationFrame(raf);
       window.removeEventListener('resize', queueMeasure);
-      window.removeEventListener('resize', refit);
       window.removeEventListener('resize', onResizeScale);
       window.removeEventListener('pointerup', clearDown);
       window.removeEventListener('pointercancel', clearDown);
       window.removeEventListener('keydown', onKey, true);
-      window.removeEventListener('pointermove', onMove, { capture: true });
-      window.removeEventListener('pointerdown', onAnyDown, { capture: true });
-      document.removeEventListener('pointerout', onDocOut);
       root.remove();
-      if (current?.root === root) current = null;
+      if (current?.newGame === newGame) current = null;
     },
   };
 };

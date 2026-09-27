@@ -8,11 +8,11 @@
 import { createAudio } from '../../audio';
 import type { ControllerApi, UiIntent, ViewModel } from '../../game/viewModel';
 import type { ViewportInsets } from '../../render/BoardView';
-import type { TerritoryId } from '../../engine/types';
 import { BOARD } from '../../map';
 import { PLAYER_COLORS } from '../../shared/palette';
 import { mountUi, uiDebug } from '../index';
 import { effectiveUiScale } from '../uiScale';
+import { trayGeometry } from '../../shared/tray';
 import { fixtures, type Fixture } from './fixtures';
 
 const params = new URLSearchParams(location.search);
@@ -37,15 +37,6 @@ const img = document.createElement('img');
 img.alt = '';
 img.src = '/artifacts/map/preview.png';
 slab.append(img);
-const markers = new Map<TerritoryId, HTMLElement>();
-for (const [id, t] of Object.entries(BOARD.territories)) {
-  const m = document.createElement('i');
-  m.className = 'g-mark';
-  m.style.left = `${(t.anchor[0] / BOARD.width) * 100}%`;
-  m.style.top = `${(1 - t.anchor[1] / BOARD.height) * 100}%`;
-  slab.append(m);
-  markers.set(id as TerritoryId, m);
-}
 stage.append(slab);
 table.append(stage);
 boardHost.append(table);
@@ -56,8 +47,9 @@ if (params.get('bg') === 'render') {
   table.style.backgroundImage = `url(/artifacts/render/home-${W}x${H}.png)`;
 }
 
-let insets: ViewportInsets = { top: 56, left: 232, right: 80, bottom: 300, trayBand: 180 };
+let insets: ViewportInsets = { top: 44, left: 0, right: 0, bottom: 80, trayBand: 180 };
 const layoutBoard = () => {
+  // The land fills the space between the strips; the tray band overlays it during fights.
   const availW = W - insets.left - insets.right;
   const availH = H - insets.top - insets.bottom;
   const margin = 0.04;
@@ -97,9 +89,11 @@ function drawDice() {
   // Mirror src/render/dice.ts layout(): tray centered in the band.
   const band = insets.trayBand;
   const scale = effectiveUiScale(current.vm.settings.textSize, W, H);
-  const size = Math.max(56, Math.min(H * 0.08 * scale, band * 0.56));
-  const trayH = Math.max(size * 1.75, band * 0.66);
-  tray.style.cssText = `top:${H - insets.bottom + (band - trayH) / 2}px;height:${trayH}px`;
+  const g = trayGeometry(W, H, band, scale);
+  const size = g.die;
+  const trayH = g.trayH;
+  // The band sits just above the bottom strip; the tray is centred in it (src/render/index.ts).
+  tray.style.cssText = `top:${H - insets.bottom - band + (band - trayH) / 2}px;height:${trayH}px;width:${g.trayW}px`;
   const mk = (face: number, color: string, ink: string, dim = false) => {
     const d = document.createElement('div');
     d.className = 'g-die';
@@ -131,7 +125,7 @@ if (debug) document.body.append(dbg);
 function drawDebug() {
   if (!debug) return;
   dbg.innerHTML = `<div style="position:fixed;left:${insets.left}px;top:${insets.top}px;right:${insets.right}px;bottom:${insets.bottom}px;outline:1px dashed #0ff"></div>
-  <div style="position:fixed;left:0;right:0;top:${H - insets.bottom}px;height:${insets.trayBand}px;outline:1px dashed #f0f"></div>
+  <div style="position:fixed;left:0;right:0;top:${H - insets.bottom - insets.trayBand}px;height:${insets.trayBand}px;outline:1px dashed #f0f"></div>
 `;
 }
 
@@ -151,12 +145,6 @@ const api: ControllerApi = {
     intents.push(i);
     console.debug('[intent]', JSON.stringify(i));
     react(i);
-  },
-  screenPos(t) {
-    const m = markers.get(t);
-    if (!m) return null;
-    const r = m.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
   },
   setViewportInsets(i) {
     insets = i;
@@ -180,42 +168,18 @@ function react(i: UiIntent) {
     case 'setting':
       return push({ ...vm, settings: { ...vm.settings, ...i.patch }, reducedMotion: i.patch.reduceMotion ?? vm.reducedMotion });
     case 'cardsPanel':
-      if (g) push({ ...vm, game: { ...g, cards: { ...g.cards, open: i.open }, log: i.open ? { ...g.log, open: false } : g.log } });
-      return;
-    case 'logPanel':
-      if (g) push({ ...vm, game: { ...g, log: { ...g.log, open: i.open }, cards: i.open ? { ...g.cards, open: false } : g.cards } });
-      return;
-    case 'toggleHints':
-      if (g) push({ ...vm, game: { ...g, actionBar: { ...g.actionBar, hints: { ...g.actionBar.hints, on: !g.actionBar.hints.on } } } });
-      return;
-    case 'setDice':
-      if (g?.actionBar.dice) push({ ...vm, game: { ...g, actionBar: { ...g.actionBar, dice: { ...g.actionBar.dice, value: i.value } } } });
-      return;
-    case 'aiSpeed':
-      if (g) push({ ...vm, settings: { ...vm.settings, aiSpeed: i.value }, game: { ...g, topBar: { ...g.topBar, aiSpeed: i.value } } });
-      return;
-    case 'toggleCard':
-      if (g?.cards.hand) {
-        const hand = g.cards.hand.map((c) => (c.id === i.id ? { ...c, selected: !c.selected } : c));
-        const sel = hand.filter((c) => c.selected).length;
-        push({ ...vm, game: { ...g, cards: { ...g.cards, hand, canTrade: sel === 3, selectionValue: sel === 3 ? 10 : null } } });
-      }
-      return;
-    case 'highlightSeat':
-      if (g) push({ ...vm, game: { ...g, roster: g.roster.map((r) => ({ ...r, highlighted: r.seat.id === i.player })) } });
+      if (g?.cards) push({ ...vm, game: { ...g, cards: { ...g.cards, open: i.open } } });
       return;
     case 'setCount':
-      if (g?.actionBar.counter) push({ ...vm, game: { ...g, actionBar: { ...g.actionBar, counter: { ...g.actionBar.counter, value: i.value } } } });
+      if (g?.strip.count) {
+        const c = g.strip.count;
+        const v = Math.max(c.min, Math.min(c.max, i.value));
+        const buttons = g.strip.buttons.map((b) => (b.id === 'place' || b.id === 'move' ? { ...b, label: b.label.replace(/\d+/, String(v)) } : b));
+        push({ ...vm, game: { ...g, strip: { ...g.strip, count: { ...c, value: v }, buttons } } });
+      }
       return;
     case 'button':
-      if (g?.actionBar.counter && ['min', 'max', 'inc', 'dec'].includes(i.id)) {
-        const c = g.actionBar.counter;
-        const v = i.id === 'min' ? c.min : i.id === 'max' ? c.max : Math.max(c.min, Math.min(c.max, c.value + (i.id === 'inc' ? 1 : -1)));
-        const buttons = g.actionBar.buttons.map((b) =>
-          b.id === 'move' ? { ...b, label: b.label.replace(/\d+/, String(v)) } : b.id === 'inc' || b.id === 'max' ? { ...b, enabled: v < c.max } : b.id === 'dec' || b.id === 'min' ? { ...b, enabled: v > c.min } : b,
-        );
-        push({ ...vm, game: { ...g, actionBar: { ...g.actionBar, counter: { ...c, value: v }, buttons } } });
-      }
+      if (g && i.id === 'cards' && g.cards) push({ ...vm, game: { ...g, cards: { ...g.cards, open: !g.cards.open } } });
       return;
     case 'confirm':
       if (g) push({ ...vm, game: { ...g, confirm: null } });
@@ -224,7 +188,7 @@ function react(i: UiIntent) {
       if (g) push({ ...vm, game: { ...g, handoff: null } });
       return;
     case 'dismissTurnBanner':
-      if (g?.turnBanner) push({ ...vm, game: { ...g, turnBanner: null } });
+      if (g?.banner?.kind === 'turn') push({ ...vm, game: { ...g, banner: null } });
       return;
     case 'nav':
       return push({ ...vm, screen: i.screen, overlay: null });
@@ -249,13 +213,12 @@ function buildIndex() {
 }
 
 // ---- go ------------------------------------------------------------------
-const fx = (stateId && byId.get(stateId)) || byId.get('reinforce')!;
+const fx = (stateId && byId.get(stateId)) || byId.get('place')!;
 current = fx;
 vm = text ? { ...fx.vm, settings: { ...fx.vm.settings, textSize: text } } : fx.vm;
 mountUi(document.getElementById('ui')!, api);
 layoutBoard();
 if (fx.after === 'openHouse') uiDebug().openHouseRules();
-if (fx.after === 'expandLog') uiDebug().expandLog();
 if (fx.after === 'skipVictoryIntro') setTimeout(() => uiDebug().skipVictoryIntro(), 50);
 const idx = buildIndex();
 if (!stateId || params.get('index') === '1') idx.classList.add('open');

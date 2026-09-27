@@ -240,19 +240,20 @@ describe('AI highlight reel (UX.md §6.1)', () => {
     c.dispose();
   }, 60_000);
 
-  it('instant: each AI turn snaps with a ~300 ms beat and the turn banner still shows', async () => {
+  it('instant: each AI turn snaps with a ~300 ms beat, and AI turns get no turn banner', async () => {
     const { c, fb } = make();
     c.hooks.setSpeed(1, 'instant');
     c.hooks.newGame({ players: AIS(3), seed: 4, dominationPercent: 70, turnLimit: null });
     let banners = 0;
     for (let t = 0; t < 60_000 && (c.hooks.getState()?.round ?? 0) <= 4; t += 50) {
-      if (c.getViewModel().game?.turnBanner) banners++;
+      if (c.getViewModel().game?.banner?.kind === 'turn') banners++;
       await vi.advanceTimersByTimeAsync(50);
     }
     const turns = c.hooks.metrics().turns.filter((t) => t.kind === 'ai');
     expect(turns.length).toBeGreaterThan(6);
     for (const t of turns.slice(1)) expect(t.ms).toBeLessThan(700);
-    expect(banners).toBeGreaterThan(0);
+    // The turn banner is for the humans at the table; the step indicator names an AI's turn.
+    expect(banners).toBe(0);
     // No board animations during instant AI turns (the deal before the first turn aside).
     const afterDeal = fb.played.filter((p) => p.ev.type === 'diceRolled');
     expect(afterDeal.length).toBe(0);
@@ -269,28 +270,51 @@ describe('human input', () => {
     return kit;
   }
 
-  it('10 clicks on one tile = exactly +10, nothing dropped, line 1 counts down', async () => {
+  it('Place: a click picks, the stepper defaults to all, Place N commits, Undo takes it back whole', async () => {
     const { c, fb } = await humanReinforce();
     const s = c.hooks.getState()!;
     expect(s.phase.kind).toBe('reinforce');
-    // Give the player 14 to place so 10 fit.
     const me = s.currentPlayer;
-    const t = (Object.keys(s.territories) as TerritoryId[]).find((x) => s.territories[x].owner === me)!;
-    const before = s.territories[t].armies;
+    const own = (Object.keys(s.territories) as TerritoryId[]).filter((x) => s.territories[x].owner === me);
+    const [a, b] = own;
+    const before = { a: s.territories[a].armies, b: s.territories[b].armies };
     const remaining = (s.phase as { remaining: number }).remaining;
-    const clicks = Math.min(10, remaining);
-    for (let i = 0; i < clicks; i++) {
-      fb.click(t);
-      await vi.advanceTimersByTimeAsync(150);
-    }
-    expect(c.hooks.getState()!.territories[t].armies).toBe(before + clicks);
+    expect(c.hooks.ui().line).toBe(`Place ${remaining} armies · click a territory`);
+    fb.click(a);
+    await vi.advanceTimersByTimeAsync(500);
+    let u = c.hooks.ui();
+    expect(u.line).toMatch(/^Place on /);
+    expect(u.count).toEqual({ control: 'stepper', value: remaining, min: 1, max: remaining });
+    expect(u.primary).toBe(`Place ${remaining}`);
+    // Nothing is committed until Place.
+    expect(c.hooks.getState()!.territories[a].armies).toBe(before.a);
+    c.intent({ type: 'setCount', value: 2 });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(c.hooks.ui().primary).toBe('Place 2');
+    c.intent({ type: 'button', id: 'place' });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(c.hooks.getState()!.territories[a].armies).toBe(before.a + 2);
+    // The pick stays; the stepper resets to all that's left; Undo appears.
+    u = c.hooks.ui();
+    expect(u.primary).toBe(`Place ${remaining - 2}`);
+    expect(u.buttons).toContain('Undo');
+    // Another of yours moves the pick; Undo takes back the whole last placement.
+    fb.click(b);
+    await vi.advanceTimersByTimeAsync(500);
+    c.intent({ type: 'button', id: 'undo' });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(c.hooks.getState()!.territories[a].armies).toBe(before.a);
+    expect((c.hooks.getState()!.phase as { remaining: number }).remaining).toBe(remaining);
+    // A double-click places everything left there.
+    fb.click(b);
+    await vi.advanceTimersByTimeAsync(120);
+    fb.click(b);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(c.hooks.getState()!.territories[b].armies).toBe(before.b + remaining);
+    u = c.hooks.ui();
+    expect(u.line).toBe('All placed · attack next');
+    expect(u.buttons).toEqual(['Undo', 'Attack →']);
     expect(c.hooks.metrics().inputDropped).toBe(0);
-    const left = remaining - clicks;
-    expect(c.hooks.ui().actionBarText).toBe(left > 0 ? `Place ${left} more` : 'All placed · click an enemy to attack');
-    // Right-click takes one back.
-    fb.click(t, 2);
-    await vi.advanceTimersByTimeAsync(50);
-    expect(c.hooks.getState()!.territories[t].armies).toBe(before + clicks - 1);
     c.dispose();
   });
 
@@ -339,33 +363,37 @@ describe('human input', () => {
     c.hooks.dispatch({ type: 'reinforce', player: me, territory: (Object.keys(s.territories) as TerritoryId[]).find((x) => s.territories[x].owner === me)!, count: (s.phase as { remaining: number }).remaining });
     c.hooks.dispatch({ type: 'endReinforce', player: me });
     c.hooks.dispatch({ type: 'endTurn', player: me });
-    await until(() => c.getViewModel().game?.topBar.player.id !== me, 3000, 10);
+    await until(() => !!c.getViewModel().game?.seats.find((x) => x.current && x.seat.id !== me), 3000, 10);
     const s2 = c.hooks.getState()!;
     const t = (Object.keys(s2.territories) as TerritoryId[]).find((x) => s2.territories[x].owner === s2.currentPlayer)!;
     fb.click(t);
     expect(c.hooks.metrics().inputDropped).toBe(1);
     await vi.advanceTimersByTimeAsync(300);
-    const armies = c.hooks.getState()!.territories[t].armies;
     fb.click(t);
-    expect(c.hooks.getState()!.territories[t].armies).toBe(armies + 1);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(c.hooks.ui().line).toMatch(/^Place on /);
     c.dispose();
   });
 
-  it('rejected clicks swap line 1 for 2.2 s; the third identical one adds the glow hint', async () => {
+  it('a refused click swaps its plain reason into the line for 2 s, then the line comes back', async () => {
     const { c, fb } = await humanReinforce(13);
     const s = c.hooks.getState()!;
     const enemy = (Object.keys(s.territories) as TerritoryId[]).find((x) => s.territories[x].owner !== s.currentPlayer)!;
-    const normal = c.hooks.ui().actionBarText;
+    const normal = c.hooks.ui().line;
     fb.click(enemy);
     await vi.advanceTimersByTimeAsync(20);
-    expect(c.hooks.ui().actionBarText).toMatch(/^That's .+'s · click one of your territories$/);
-    await vi.advanceTimersByTimeAsync(2300);
-    expect(c.hooks.ui().actionBarText).toBe(normal);
+    expect(c.hooks.ui().line).toMatch(/^That's .+'s · click one of your territories$/);
+    expect(c.hooks.ui().lineKind).toBe('rejection');
+    await vi.advanceTimersByTimeAsync(1900);
+    expect(c.hooks.ui().lineKind).toBe('rejection');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(c.hooks.ui().line).toBe(normal);
+    // The same reason every time: no escalating copy.
+    fb.click(enemy);
     fb.click(enemy);
     fb.click(enemy);
     await vi.advanceTimersByTimeAsync(20);
-    expect(c.hooks.ui().actionBarText).toMatch(/Glowing territories are the ones you can use\.$/);
-    expect(c.hooks.metrics().turns.length).toBeGreaterThanOrEqual(0);
+    expect(c.hooks.ui().line).toMatch(/^That's .+'s · click one of your territories$/);
     c.dispose();
   });
 });
@@ -384,10 +412,11 @@ describe('resume', () => {
     expect(c.getViewModel().save).not.toBeNull();
     c.intent({ type: 'continue' });
     await vi.advanceTimersByTimeAsync(50);
-    const bar = c.getViewModel().game!.actionBar;
-    expect(bar.mode).toBe('occupy');
-    expect(bar.line1).toBe('You took Siberia · move armies in');
-    expect(bar.counter).toEqual({ value: 7, min: 3, max: 7, note: 'Ural keeps 1 · still borders Afghanistan' });
+    const strip = c.getViewModel().game!.strip;
+    expect(strip.mode).toBe('occupy');
+    expect(strip.line).toBe('Move armies into Siberia');
+    expect(strip.count).toEqual({ control: 'slider', value: 7, min: 3, max: 7 });
+    expect(strip.buttons.map((b) => b.label)).toEqual(['Move 7']);
     expect(fb.highlights.arrow).toEqual({ from: 'ural', to: 'siberia', kind: 'attack' });
     // A board click confirms the default and then acts.
     fb.click('yakutsk');
@@ -395,11 +424,11 @@ describe('resume', () => {
     const after = c.hooks.getState()!;
     expect(after.phase.kind).toBe('attack');
     expect(after.territories.siberia.armies).toBe(7);
-    expect(c.hooks.ui().actionBarText).toMatch(/^Attack Yakutsk from Siberia/);
+    expect(c.hooks.ui().line).toMatch(/^Attack Yakutsk from Siberia · \d+%$/);
     c.dispose();
   });
 
-  it('mid-reinforce restores placed ghosts, the count and undo', async () => {
+  it('mid-reinforce restores the count and Undo (a whole placement back)', async () => {
     const kv = memoryKV();
     const s = fixture({ ural: [0, 6], ukraine: [0, 1] }, { kind: 'reinforce', remaining: 4, mustTrade: false, placed: { ural: 3 }, midTurn: false });
     saveWith(kv, s);
@@ -407,37 +436,40 @@ describe('resume', () => {
     c.intent({ type: 'continue' });
     await vi.advanceTimersByTimeAsync(50);
     const g = c.getViewModel().game!;
-    expect(g.actionBar.line1).toBe('Place 4 more');
-    expect(fb.highlights.pending).toEqual({ ural: 3 });
-    expect(g.actionBar.buttons.find((b) => b.id === 'undo')!.enabled).toBe(true);
+    expect(g.strip.line).toBe('Place 4 more · click a territory');
+    // Committed armies are in the counts already: no ghosts until something is picked.
+    expect(fb.highlights.pending ?? {}).toEqual({});
+    expect(g.strip.buttons.map((b) => b.id)).toEqual(['undo']);
     c.intent({ type: 'button', id: 'undo' });
     await vi.advanceTimersByTimeAsync(400);
-    expect(c.hooks.getState()!.territories.ural.armies).toBe(5);
+    expect(c.hooks.getState()!.territories.ural.armies).toBe(3);
     c.dispose();
   });
 });
 
-describe('announcements ladder', () => {
-  it('≤ 1 banner, ≤ 2 toasts, line 1 never empty across an all-AI game', async () => {
+describe('banners', () => {
+  it('≤ 1 banner, only continent and elimination banners in an all-AI game, the line never empty', async () => {
     const { c } = make();
     c.hooks.setSpeed(1, 'fast');
     c.hooks.newGame({ players: AIS(4), seed: 77, dominationPercent: 60, turnLimit: 12 });
     let maxBanners = 0;
-    let maxToasts = 0;
     let empty = 0;
     let samples = 0;
+    const kinds = new Set<string>();
     for (let t = 0; t < 1_800_000 && c.getViewModel().screen === 'game'; t += 100) {
       const u = c.hooks.ui();
       maxBanners = Math.max(maxBanners, u.banners.length);
-      maxToasts = Math.max(maxToasts, u.toasts.length);
-      if (!u.actionBarText) empty++;
+      const b = c.getViewModel().game?.banner;
+      if (b) kinds.add(b.kind);
+      if (!u.line) empty++;
       samples++;
       await vi.advanceTimersByTimeAsync(100);
     }
     expect(c.getViewModel().screen).toBe('victory');
     expect(samples).toBeGreaterThan(50);
     expect(maxBanners).toBeLessThanOrEqual(1);
-    expect(maxToasts).toBeLessThanOrEqual(2);
+    // No humans: no turn banners, and continent captures (AI vs AI) only flare on the board.
+    expect([...kinds].every((k) => k === 'elimination')).toBe(true);
     expect(empty).toBe(0);
     const v = c.getViewModel().victory!;
     expect(v.title).toMatch(/RULES THE WORLD$/);

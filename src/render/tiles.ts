@@ -34,16 +34,8 @@ export interface Tile {
   bbox: [number, number, number, number];
   /** Max distance from the anchor to any vertex (board units). */
   radius: number;
-  /** Clear radius around the anchor inside the tile (board units). */
+  /** Clear radius around the anchor inside the tile (board units); the army token sits at the anchor. */
   clearance: number;
-  /** Badge sits this far south of the anchor (board units). */
-  badgeDz: number;
-  /**
-   * Formation centre relative to the anchor (board units; +formDx east, +formDz north). The view
-   * re-places it whenever the home view changes, so the pieces stand beside the badge, not under it.
-   */
-  formDx: number;
-  formDz: number;
   // --- displayed look (animated)
   rgb: RGB; // owner color currently shown (before dim/light)
   dim: number; // 0..1
@@ -152,7 +144,7 @@ export class TileSet {
       const segs: number[] = [];
       const yRim = TILE_TOP + 0.02;
       // The rim traces the shape, not the coastline: detail finer than the stroke (≈ 0.12 units at home)
-      // and islets smaller than a badge scribble into noise, so they're simplified away / skipped.
+      // and islets smaller than a token scribble into noise, so they're simplified away / skipped.
       const biggest = Math.max(...rings.map(ringArea));
       const rimRings = rings.filter((r) => ringArea(r) >= Math.min(1.5, biggest)).map((r) => simplifyRing(r, 0.12));
       for (const ring of rimRings) {
@@ -204,8 +196,6 @@ export class TileSet {
         for (const [x, y] of ring) radius = Math.max(radius, Math.hypot(x - tg.anchor[0], y - tg.anchor[1]));
       let clearance = Infinity;
       for (const ring of rings) clearance = Math.min(clearance, distToRing(tg.anchor[0], tg.anchor[1], ring));
-      const badgeDz = Math.max(0.1, Math.min(0.75, (clearance - 1.3) * 0.55 + 0.1));
-      const formDz = Math.max(0.35, Math.min(1.25, clearance - 1.15));
 
       const tile: Tile = {
         id,
@@ -224,9 +214,6 @@ export class TileSet {
         bbox: tg.bbox,
         radius,
         clearance,
-        badgeDz,
-        formDx: 0,
-        formDz,
         rgb: hexToRgb('#cbbd9b'),
         dim: 0,
         light: 0,

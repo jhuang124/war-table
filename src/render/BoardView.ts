@@ -21,7 +21,7 @@ export interface BoardHighlights {
   targets?: TerritoryId[];
   /** A committed source → target pairing (attack arrow or fortify route). */
   arrow?: { from: TerritoryId; to: TerritoryId; kind: 'attack' | 'fortify'; path?: TerritoryId[] } | null;
-  /** Staged/preview counts drawn as "+N" ghosts over tiles (e.g. reinforcements placed this phase). */
+  /** Staged/preview counts drawn as "+N" beside the token (only while a placement is staged). */
   pending?: Partial<Record<TerritoryId, number>>;
   dimOthers?: boolean;
 }
@@ -65,13 +65,18 @@ export interface PlayEventOptions {
    * Additive (controller builder): set on an `armiesMoved` (reason 'occupy') that follows its conquest
    * with no human choice in between (the AI's occupy, or an engine auto-occupy). It IS the conquest's
    * march (UX.md §6.1, §8.2 "Conquest ~650 ms … march starting at +150"), not a separate 400 ms move:
-   * fold it into the running conquest animation and resolve as soon as the pieces land.
+   * fold it into the running conquest animation and resolve as soon as the token lands.
    */
   inlineMarch?: boolean;
 }
 
-/** HUD-covered edges in CSS px. The home view frames the board inside the rest; the dice tray sits
- *  in a band of height `trayBand` just above `bottom`. */
+/**
+ * HUD-covered edges in CSS px. The home view frames the land inside the rest (docs/SIMPLIFY.md §1).
+ * `bottom` is the bottom strip only. The dice tray shows during fights in a band of height `trayBand`
+ * just above it, centred in the band (0 = the board's own default band); the home view does NOT
+ * reserve that band — it only lifts the land if a token would sit under the tray. (A `bottom` that
+ * already includes the band, the round-1 convention, is recognised when bottom ≥ trayBand + 40.)
+ */
 export interface ViewportInsets {
   top: number;
   right: number;
@@ -104,10 +109,14 @@ export interface BoardView {
   resetCamera(): void;
   /** Slow cinematic orbit for the title screen / victory. */
   setAttractMode(on: boolean): void;
+  /**
+   * Settings "Territory names": every name on. Off (the default) still shows the hovered tile's name
+   * and the picked source / armed target's (`selected`, `arrow.from`, `arrow.to`).
+   */
   setShowLabels(on: boolean): void;
   /** Tell the board which screen edges the HUD covers (re-sent on resize / text-size change). */
   setViewportInsets(insets: ViewportInsets): void;
-  /** UI text-size multiplier (1, 1.25, 1.5) for badges, the dice tray and DOM labels. */
+  /** UI text-size multiplier (1, 1.25, 1.5) for the army tokens (softened), the dice tray and DOM names. */
   setUiScale(scale: number): void;
 
   /**
@@ -128,7 +137,7 @@ export interface BoardView {
   /** Additive (renderer builder): settings.autoCamera — return home at turn start if displaced. Default true. */
   setAutoCamera?(on: boolean): void;
 
-  /** Screen position (client px) of a territory's army anchor, or null if off-screen. */
+  /** Screen position (client px) of a territory's army token (the top of the disc), or null if off-screen. */
   getScreenPosition(t: TerritoryId): { x: number; y: number } | null;
   getStats(): BoardStats;
   dispose(): void;

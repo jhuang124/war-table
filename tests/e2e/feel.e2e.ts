@@ -1,12 +1,14 @@
-// Feel and layout checks on the real board + HUD (SPEC §10, UX.md §11):
-//   - the renderer's dice tray sits exactly inside the UI's battle band, between the header strip and
-//     the odds strip, at 1280×800, 1440×900, 1920×1080 and TV text on 1920×1080
-//   - dice ≥ 56 px; badges ≥ 22 px tall at home on 1280×800
-//   - the action bar's rect is identical in reinforce / attack / armed / occupy / fortify / watching
-//   - the idle board settles to 0 tweens; a reinforce click shows its effect within 50 ms
+// Feel and layout checks on the real board + HUD (SPEC §10, docs/SIMPLIFY.md):
+//   - the renderer's dice tray sits inside the UI's tray band, just above the bottom strip, with the
+//     header line above the tray, at 1280×800, 1440×900, 1920×1080 and TV text on 1920×1080
+//   - the only chrome is the two strips (and the tray during a fight); the board spans the window
+//   - ≤ 25 words on screen in an armed Attack state
+//   - dice ≥ 56 px; army tokens ≥ 22 px tall at home on 1280×800
+//   - the bottom strip's rect is identical in place / attack / armed / occupy / fortify / watching
+//   - the idle board settles to 0 tweens; a Place click shows its effect within 50 ms
 //   - no frame > 50 ms on the first roll after a cold load
 //   - no text selection on double-click, no context menu, TV text ≥ 20 px and no HUD overlap
-import { ART, check, clickBtn, clickT, finish, idle, loadScenario, open, scenario, state } from './lib';
+import { ART, check, clickBtn, clickT, dblT, finish, idle, loadScenario, open, scenario, state } from './lib';
 import type { Page } from 'playwright';
 import type { Phase } from '../../src/engine';
 
@@ -32,20 +34,21 @@ async function trayAndBand(page: Page) {
     return {
       tray: { top: dbg.cy - dbg.trayH / 2, bottom: dbg.cy + dbg.trayH / 2, left: dbg.cx - dbg.trayW / 2, right: dbg.cx + dbg.trayW / 2, die: dbg.size },
       band: r('.battle'),
-      header: r('.bt-top .bt-side.bt-att') && r('.bt-top'),
       headerText: (() => {
-        const els = [...document.querySelectorAll('.bt-top .bt-side')];
+        const els = [...document.querySelectorAll('.bt-head .bt-side')];
         if (!els.length) return null;
         const rs = els.map((e) => e.getBoundingClientRect());
         return { top: Math.min(...rs.map((x) => x.top)), bottom: Math.max(...rs.map((x) => x.bottom)) };
       })(),
-      oddsText: (() => {
-        const els = [...document.querySelectorAll('.bt-bottom .bt-main > *, .bt-bottom .bt-aside > *')].filter((e) => (e as HTMLElement).offsetParent);
-        if (!els.length) return null;
-        const rs = els.map((e) => e.getBoundingClientRect());
-        return { top: Math.min(...rs.map((x) => x.top)), bottom: Math.max(...rs.map((x) => x.bottom)) };
-      })(),
-      bar: r('[data-testid="actionbar"]'),
+      bar: r('[data-testid="strip"]'),
+      top: r('[data-testid="topstrip"]'),
+      words: ['.topstrip', '.strip', '.battle:not(.hidden)']
+        .map((q) => document.querySelector(q) as HTMLElement | null)
+        .filter((e): e is HTMLElement => !!e && e.offsetParent !== null)
+        .map((e) => e.innerText)
+        .join(' ')
+        .split(/\s+/)
+        .filter((w) => /[A-Za-z0-9]/.test(w)).length,
       H: innerHeight,
     };
   });
@@ -64,16 +67,18 @@ for (const vp of [
     settings: { textSize: vp.text },
   });
   await clickT(page, 'siberia');
+  const armedWords = (await trayAndBand(page)).words;
+  if (vp.text === 'laptop') check(armedWords <= 25, `${tag}: ${armedWords} words on screen in an armed Attack state (≤ 25)`, results);
   await clickBtn(page, 'btn-roll');
-  await page.waitForFunction(() => window.__risk.ui().battle?.result, null, { timeout: 5000 });
-  await page.waitForTimeout(400);
+  await page.waitForFunction(() => (window.__board as unknown as { __debug: { tray: { visible: boolean } } }).__debug.tray.visible, null, { timeout: 5000 });
+  await page.waitForTimeout(700);
   const g = await trayAndBand(page);
   await page.screenshot({ path: `${ART}/feel-tray-${tag}.png` });
   const tol = 1.5;
   check(!!g.band && g.tray.top >= g.band.top - tol && g.tray.bottom <= g.band.bottom + tol, `${tag}: tray ${Math.round(g.tray.top)}–${Math.round(g.tray.bottom)} inside band ${Math.round(g.band!.top)}–${Math.round(g.band!.bottom)}`, results);
-  check(!!g.headerText && g.headerText.bottom <= g.tray.top + tol, `${tag}: header text ends ${Math.round(g.headerText!.bottom)} ≤ tray top ${Math.round(g.tray.top)}`, results);
-  check(!!g.oddsText && g.oddsText.top >= g.tray.bottom - tol, `${tag}: odds/result text starts ${Math.round(g.oddsText!.top)} ≥ tray bottom ${Math.round(g.tray.bottom)}`, results);
-  check(!!g.bar && g.oddsText!.bottom <= g.bar.top + tol, `${tag}: battle text clears the action bar (${Math.round(g.oddsText!.bottom)} ≤ ${Math.round(g.bar!.top)})`, results);
+  check(!!g.headerText && g.headerText.bottom <= g.tray.top + tol && g.headerText.top >= g.band!.top - tol, `${tag}: header line ${Math.round(g.headerText!.top)}–${Math.round(g.headerText!.bottom)} sits above the tray (${Math.round(g.tray.top)})`, results);
+  check(!!g.bar && g.tray.bottom <= g.bar.top + tol, `${tag}: the tray clears the bottom strip (${Math.round(g.tray.bottom)} ≤ ${Math.round(g.bar!.top)})`, results);
+  check(!!g.top && g.top.bottom <= 0.07 * g.H && !!g.bar && g.H - g.bar.top <= 0.11 * g.H, `${tag}: chrome is two thin strips (top ${Math.round(g.top!.bottom)} px, bottom ${Math.round(g.H - g.bar!.top)} px)`, results);
   check(Math.abs((g.tray.left + g.tray.right) / 2 - vp.width / 2) < 1 && Math.abs((g.band!.left + g.band!.right) / 2 - vp.width / 2) < 1, `${tag}: tray and band share the centre line`, results);
   check(g.tray.die >= 56, `${tag}: die ${Math.round(g.tray.die)} px (≥ 56)`, results);
   if (vp.text === 'tv') {
@@ -94,7 +99,7 @@ for (const vp of [
         if (fs < 19.5) small.push(`${t.slice(0, 24)} (${fs}px ${el.className})`);
       }
       const box = (s: string) => document.querySelector(s)?.getBoundingClientRect();
-      const panels = ['.topbar', '.roster', '.rail', '.battle', '[data-testid="actionbar"]'].map((s) => [s, box(s)] as const).filter(([, b]) => b && b.width > 0);
+      const panels = ['.topstrip', '.battle', '[data-testid="strip"]'].map((s) => [s, box(s)] as const).filter(([, b]) => b && b.width > 0);
       const overlaps: string[] = [];
       for (let i = 0; i < panels.length; i++)
         for (let j = i + 1; j < panels.length; j++) {
@@ -119,7 +124,7 @@ for (const vp of [
   const badges = await page.evaluate(() =>
     [...document.querySelectorAll<HTMLElement>('.rb-badge')].filter((b) => b.style.visibility !== 'hidden').map((b) => b.getBoundingClientRect().height),
   );
-  check(badges.length === 42 && Math.min(...badges) >= 22, `badges at home on 1280×800: ${badges.length} visible, min height ${Math.min(...badges).toFixed(1)} px (≥ 22)`, results);
+  check(badges.length === 42 && Math.min(...badges) >= 22, `army tokens at home on 1280×800: ${badges.length} visible, min height ${Math.min(...badges).toFixed(1)} px (≥ 22)`, results);
   const st0 = await page.evaluate(() => window.__risk.stats());
   check(st0.activeTweens === 0 && !st0.cameraMoving, `idle board: ${st0.activeTweens} tweens, camera ${st0.cameraMoving ? 'moving' : 'still'}`, results);
   await page.screenshot({ path: `${ART}/feel-home-1280x800.png` });
@@ -127,30 +132,31 @@ for (const vp of [
   const rects: Record<string, string> = {};
   const barRect = async (k: string) => {
     rects[k] = await page.evaluate(() => {
-      const b = document.querySelector('[data-testid="actionbar"]')!.getBoundingClientRect();
+      const b = document.querySelector('[data-testid="strip"]')!.getBoundingClientRect();
       return `${b.left},${b.top},${b.width},${b.height}`;
     });
   };
-  await barRect('reinforce');
-  // Click → first visible effect: the badge number changes within 50 ms of pointer-up.
+  await barRect('place');
+  // Click → first visible effect: the strip's line says 'Place on Ural' within 50 ms of pointer-up.
   const pos = (await page.evaluate(() => window.__risk.screenPos('ural')))!;
   await page.evaluate(`(() => {
-    const badge = [...document.querySelectorAll('.rb-badge')].find((b) => b.getBoundingClientRect().left < ${pos.x} && b.getBoundingClientRect().right > ${pos.x} && b.getBoundingClientRect().top < ${pos.y} && b.getBoundingClientRect().bottom > ${pos.y});
+    const line = document.querySelector('[data-testid="line"]');
     window.__ack = { up: 0, seen: 0 };
     window.addEventListener('pointerup', () => (window.__ack.up = performance.now()), { capture: true, once: true });
-    new MutationObserver(() => { if (!window.__ack.seen && window.__ack.up) window.__ack.seen = performance.now(); }).observe(badge, { subtree: true, characterData: true, childList: true });
+    new MutationObserver(() => { if (!window.__ack.seen && window.__ack.up) window.__ack.seen = performance.now(); }).observe(line, { subtree: true, characterData: true, childList: true });
   })()`);
   await page.mouse.click(pos.x, pos.y);
   await page.waitForTimeout(150);
   const ack = (await page.evaluate('window.__ack')) as { up: number; seen: number };
-  check(ack.seen > 0 && ack.seen - ack.up <= 50, `reinforce click → badge updated in ${(ack.seen - ack.up).toFixed(1)} ms (≤ 50)`, results);
+  check(ack.seen > 0 && ack.seen - ack.up <= 50, `Place click → the line updated in ${(ack.seen - ack.up).toFixed(1)} ms (≤ 50)`, results);
+  await barRect('place-picked');
   // No text selection on double-click; no context menu on the HUD or the board.
-  await page.locator('[data-testid="line1"]').dblclick();
+  await page.locator('[data-testid="line"]').dblclick();
   const sel = await page.evaluate(() => window.getSelection()?.toString() ?? '');
   check(sel === '', `double-click selects no text ("${sel}")`, results);
   const ctx = await page.evaluate(() => {
     const out: boolean[] = [];
-    for (const el of [document.querySelector('[data-testid="actionbar"]'), document.querySelector('#board canvas')]) {
+    for (const el of [document.querySelector('[data-testid="strip"]'), document.querySelector('#board canvas')]) {
       const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 });
       el!.dispatchEvent(ev);
       out.push(ev.defaultPrevented);
@@ -158,8 +164,10 @@ for (const vp of [
     return out;
   });
   check(ctx.every(Boolean), `context menu suppressed on HUD and board (${ctx.join(', ')})`, results);
-  await page.locator('[data-testid="pill-all"]').click();
-  await clickBtn(page, 'btn-beginAttack');
+  await page.waitForTimeout(420);
+  await dblT(page, 'ural');
+  await idle(page);
+  await clickBtn(page, 'btn-attack');
   await idle(page);
   await barRect('attack');
   await clickT(page, 'afghanistan');
@@ -167,16 +175,17 @@ for (const vp of [
   await clickBtn(page, 'btn-blitz');
   await idle(page);
   if ((await state(page))!.phase.kind === 'occupy') await barRect('occupy');
-  await clickBtn(page, (await state(page))!.phase.kind === 'occupy' ? 'btn-move' : 'btn-fortifyNext');
+  if ((await state(page))!.phase.kind === 'occupy') await clickBtn(page, 'btn-move');
   await idle(page);
-  if ((await state(page))!.phase.kind === 'attack') await clickBtn(page, 'btn-fortifyNext');
+  await page.keyboard.press('Escape');
+  await clickBtn(page, 'btn-fortify');
   await idle(page);
   await barRect('fortify');
   await clickBtn(page, 'btn-endTurn');
   await page.waitForTimeout(700);
   await barRect('watching');
   const distinct = new Set(Object.values(rects));
-  check(distinct.size === 1, `action bar rect identical across ${Object.keys(rects).join(', ')}: ${[...distinct].join(' | ')}`, results);
+  check(distinct.size === 1, `bottom strip rect identical across ${Object.keys(rects).join(', ')}: ${[...distinct].join(' | ')}`, results);
   await browser.close();
   if (errors.length) results.push(`FAIL console errors: ${errors.join(' | ')}`);
 }

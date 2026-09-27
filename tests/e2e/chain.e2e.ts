@@ -1,17 +1,16 @@
-// Review round 1 (game fixer): chaining after a conquest on the real board + HUD.
+// Chaining after a conquest on the real board + HUD (review round 1, carried through the simplify pass).
 //   R1-02 an enemy next to your own stack during occupy is a legal chain click (min moves in)
-//   R1-05 the battle header never shows one owner on both sides, and a decided fight shows its verdict
-//   R1-11 line 1 never describes a half-moved board after a conquest
+//   R1-05 the tray header never shows one owner on both sides, and a decided fight shows its verdict
+//   R1-11 the line never describes a half-moved board after a conquest
 //   R1-21 Enter pressed right after a chain click never fires a Blitz the player hasn't seen
 //   R1-13 the random deal never shows claim-phase copy
-//   R1-14 a right-click after a refused click restores the live line 1
-import { applyAction, type GameState } from '../../src/engine';
-import { ART, TWO_HUMANS, check, clickT, finish, idle, loadScenario, open, scenario, ui } from './lib';
+//   R1-14 an Undo after a refused click restores the live line (setup)
+import { applyAction } from '../../src/engine';
+import { ART, TWO_HUMANS, check, clickBtn, clickT, finish, idle, loadScenario, open, place, scenario, ui } from './lib';
 
 const results: string[] = [];
 const { browser, page, errors } = await open();
 const shot = (name: string) => page.screenshot({ path: `${ART}/chain-${name}.png` });
-const name = (s: GameState, t: string) => s.players[s.territories[t as 'ural'].owner].name.toUpperCase();
 
 // --- R1-02: Greenland 10 took Ontario; click Iceland (next to Greenland, not to Ontario) -------------
 const occ = () =>
@@ -20,22 +19,21 @@ const occ = () =>
   const s0 = occ();
   await loadScenario(page, s0);
   const u0 = await ui(page);
-  check(/^You took Ontario/.test(u0.actionBarText) && u0.primary === 'Move 9', `occupy shows Move 9 (${u0.actionBarText} · ${u0.primary})`, results);
+  check(u0.line === 'Move armies into Ontario' && u0.primary === 'Move 9', `occupy shows Move 9 (${u0.line} · ${u0.primary})`, results);
   const ex = await page.evaluate(() => window.__risk.explain('iceland'));
-  check(ex.ok && /^Click: move 3 in · attack from Greenland · \d+% · /.test(ex.text), `explain(Iceland): ${ex.text}`, results);
+  check(ex.ok && /^Move 3 in · attack from Greenland · \d+% · /.test(ex.text), `explain(Iceland): ${ex.text}`, results);
   const pos = (await page.evaluate(() => window.__risk.screenPos('iceland')))!;
   await page.mouse.move(pos.x, pos.y);
   await page.waitForTimeout(600);
-  const tip = (await ui(page)).tooltip ?? '';
-  check(/move 3 in · attack from Greenland/.test(tip), `tooltip over Iceland: ${tip.replace(/\n/g, ' / ')}`, results);
+  check((await page.locator('.tooltip').count()) === 0, 'hovering shows no tooltip (the board names the tile)', results);
   await shot('r1-02-occupy-hover-iceland');
   await clickT(page, 'iceland');
   await idle(page);
   const s1 = (await page.evaluate(() => window.__risk.getState()))!;
   const u1 = await ui(page);
   check(s1.territories.ontario.armies === 3 && s1.territories.greenland.armies === 7, `min moved in: Ontario ${s1.territories.ontario.armies}, Greenland ${s1.territories.greenland.armies}`, results);
-  check(u1.actionBarText === 'Attack Iceland from Greenland', `line 1 armed from the stack: ${u1.actionBarText}`, results);
-  check(u1.battle?.header === `JOHN GREENLAND 7 vs ${name(s1, 'iceland')} ICELAND 1`, `battle header: ${u1.battle?.header}`, results);
+  check(/^Attack Iceland from Greenland · \d+%$/.test(u1.line), `armed from the stack: ${u1.line}`, results);
+  check(u1.battle?.header === 'GREENLAND 7 vs ICELAND 1', `tray header: ${u1.battle?.header}`, results);
   const rej = await page.evaluate(() => window.__risk.metrics().turns.reduce((n, t) => n + t.rejected, 0));
   check(rej === 0, `no rejection (${rej})`, results);
   await page.mouse.move(5, 5);
@@ -54,7 +52,7 @@ const occ = () =>
   const s = (await page.evaluate(() => window.__risk.getState()))!;
   const u = await ui(page);
   check(s.territories.alberta.owner !== 0 && s.territories.alberta.armies === 1, `Enter after a chain click did not blitz (Alberta ${s.territories.alberta.armies})`, results);
-  check(u.primary === 'Blitz' && u.actionBarText === 'Attack Alberta from Ontario', `armed and waiting: ${u.actionBarText} · ${u.primary}`, results);
+  check(u.primary === 'Blitz' && /^Attack Alberta from Ontario · \d+%$/.test(u.line), `armed and waiting: ${u.line} · ${u.primary}`, results);
 }
 
 // --- R1-05 / R1-11: one roll conquers Indonesia from New Guinea 3 (auto-occupy, then chain) ----------
@@ -74,11 +72,11 @@ const occ = () =>
   await page.waitForTimeout(80);
   await clickT(page, 'indonesia'); // roll once
   const t0 = Date.now();
-  const samples: { t: number; line: string; header: string | null; result: string | null }[] = [];
+  const samples: { t: number; line: string; header: string | null }[] = [];
   let shots = 0;
   while (Date.now() - t0 < 4200) {
     const u = await ui(page);
-    samples.push({ t: Date.now() - t0, line: u.actionBarText, header: u.battle?.header ?? null, result: u.battle?.result ?? null });
+    samples.push({ t: Date.now() - t0, line: u.line, header: u.battle?.header ?? null });
     const t = Date.now() - t0;
     if ((shots === 0 && t > 1300) || (shots === 1 && t > 1900) || (shots === 2 && t > 2600)) await shot(`r1-05-conquest-${shots++}`);
     await page.waitForTimeout(40);
@@ -87,19 +85,15 @@ const occ = () =>
   const lines = [...new Set(samples.map((x) => x.line))];
   console.log('   headers: ' + headers.join(' | '));
   console.log('   lines:   ' + lines.join(' | '));
-  const sameOwner = headers.filter((h) => {
-    const [a, d] = h.split(' vs ');
-    return a.split(' ')[0] === d.split(' ')[0];
-  });
-  check(sameOwner.length === 0, `no header with one owner on both sides (${sameOwner.join(' | ') || 'none'})`, results);
-  check(headers.some((h) => /^JOHN NEW GUINEA 3 vs \S+ INDONESIA 0$/.test(h)), 'the verdict header holds the armies at the verdict (NEW GUINEA 3 vs INDONESIA 0)', results);
-  check(!lines.some((l) => /New Guinea \(1\)/.test(l)), 'line 1 never reads "Attacking from New Guinea (1)"', results);
-  check(lines.includes('You took Indonesia'), 'line 1 says "You took Indonesia" while the conquest plays', results);
+  check(headers.every((h) => !/^INDONESIA .* vs INDONESIA/.test(h)), `no header pits a tile against itself (${headers.join(' | ')})`, results);
+  check(headers.includes('NEW GUINEA 3 vs INDONESIA 0'), 'the verdict header holds the armies at the verdict (NEW GUINEA 3 vs INDONESIA 0)', results);
+  check(!lines.some((l) => /from New Guinea · 1/.test(l)), 'the line never describes a half-moved board', results);
+  check(lines.includes('You took Indonesia'), 'the line says "You took Indonesia" while the conquest plays', results);
   const last = samples[samples.length - 1];
-  check(last.line === 'Attacking from Indonesia (2) · click a glowing enemy', `settles on the chained source: ${last.line}`, results);
+  check(last.line === 'Attack from Indonesia · click an enemy', `settles on the chained source: ${last.line}`, results);
 }
 
-// --- R1-14: setup-place, refused 4th click, then right-click ------------------------------------------
+// --- R1-14: setup-place, a refused click after all are placed, then Undo ------------------------------
 {
   const s = scenario({ ural: [0, 1], ukraine: [0, 1] }, { kind: 'setup-place', toPlace: 3 }, {
     mutate: (x) => {
@@ -109,17 +103,15 @@ const occ = () =>
     },
   });
   await loadScenario(page, s);
-  for (let i = 0; i < 3; i++) await clickT(page, 'ural');
-  await page.waitForTimeout(100);
+  await place(page, 'ural');
   await clickT(page, 'ural');
   await page.waitForTimeout(100);
   const a = await ui(page);
-  check(a.actionBarText === 'All 3 placed · Confirm placement', `refused 4th click: ${a.actionBarText}`, results);
-  await clickT(page, 'ural', { button: 'right' });
+  check(a.line === 'All 3 placed · press Done' && a.lineKind === 'rejection', `refused click: ${a.line}`, results);
+  await clickBtn(page, 'btn-undo');
   await page.waitForTimeout(150);
   const b = await ui(page);
-  const conf = b.buttons.find((x) => x.label === 'Confirm placement');
-  check(b.actionBarText === 'Place 3 armies · 1 left' && conf && !conf.enabled, `after right-click: ${b.actionBarText} · Confirm ${conf?.enabled ? 'on' : `off (${conf?.why})`}`, results);
+  check(b.line === 'Place 3 armies · click a territory' && b.lineKind === 'normal' && !b.buttons.includes('Done'), `after Undo: ${b.line} · ${b.buttons.join(' / ') || 'no buttons'}`, results);
 }
 
 // --- R1-13: a Place-your-own game with a human first: the deal never says "Claim a territory" --------
@@ -132,7 +124,7 @@ const occ = () =>
   const lines = new Set<string>();
   let shotDone = false;
   while (Date.now() - t0 < 2500) {
-    lines.add((await ui(page)).actionBarText);
+    lines.add((await ui(page)).line);
     if (!shotDone && Date.now() - t0 > 500) {
       await shot('r1-13-deal');
       shotDone = true;
