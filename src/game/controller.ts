@@ -700,6 +700,8 @@ class Controller {
     blank.currentPlayer = state.firstPlayer;
     blank.phase = { kind: 'setup-claim' };
     this.disp = blank;
+    // Whatever the last game was still animating (its victory wave, a march) ends here, before the deal.
+    this.board.skipAnimations();
     this.board.setAttractMode(false);
     this.board.syncState(blank);
     this.screen = 'game';
@@ -758,6 +760,7 @@ class Controller {
     if (s.phase.kind === 'occupy' && this.sel.occupyCount === null) {
       this.sel.occupyCount = occupyDefault(s, s.phase.from, s.phase.to, s.phase.min, s.phase.max);
     }
+    this.board.skipAnimations();
     this.board.setAttractMode(false);
     this.board.syncState(s);
     this.screen = 'game';

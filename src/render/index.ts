@@ -1013,7 +1013,9 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         }
         tray.hide(200);
         await wave(null, p ? hexToRgb(p.light) : IVORY_RGB, 2400, 0.45, run);
-        if (!reduced) rig.setAttract(true);
+        // Only if the finale played out: a skipped run means the table has moved on (a Rematch or a new
+        // game pressed during the wave), and an orbit switched on now would sway the next game's board.
+        if (!reduced && !run.skipped) rig.setAttract(true);
         return;
       }
     }

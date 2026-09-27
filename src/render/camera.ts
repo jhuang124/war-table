@@ -338,6 +338,12 @@ export class CameraRig {
 
   /** Ease to a pose with the SPEC limits. Resolves on arrival. */
   moveTo(to: Pose, durationMs?: number): Promise<void> {
+    // An explicit move wins over the idle orbit: update() never advances a move while the orbit runs,
+    // so anything awaiting this one (the board's camera waits) would otherwise hang.
+    if (this.attract) {
+      this.attract = false;
+      this.goal = { ...this.cur };
+    }
     if (this.auto) {
       const r = this.auto.resolve;
       this.auto = null;
