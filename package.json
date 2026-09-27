@@ -1,0 +1,44 @@
+{
+  "name": "risk3d",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5273 --strictPort",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 5274",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build:map": "tsx scripts/build-map.ts",
+    "verify:map": "tsx scripts/verify-map.ts",
+    "sim": "tsx scripts/simulate.ts",
+    "start": "vite build && vite preview --host 127.0.0.1 --port 5274"
+  },
+  "dependencies": {
+    "@fontsource-variable/cormorant-garamond": "^5.3.0",
+    "@fontsource-variable/fraunces": "^5.3.0",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource/cinzel": "^5.3.0",
+    "three": "^0.186.1",
+    "troika-three-text": "^0.52.5"
+  },
+  "devDependencies": {
+    "@types/d3-geo": "^3.1.1",
+    "@types/node": "^26.6.3",
+    "@types/polylabel": "^2.0.0",
+    "@types/three": "^0.186.0",
+    "@types/topojson-client": "^3.1.5",
+    "d3-delaunay": "^6.0.4",
+    "d3-geo": "^3.1.1",
+    "playwright": "^1.63.0",
+    "polygon-clipping": "^0.15.7",
+    "polylabel": "^2.1.0",
+    "simplify-js": "^1.2.4",
+    "topojson-client": "^3.1.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2",
+    "world-atlas": "^2.0.2"
+  }
+}

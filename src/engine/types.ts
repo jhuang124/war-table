@@ -1,0 +1,325 @@
+// THE CONTRACT. Every module (engine, AI, renderer, UI) builds against these shapes.
+// Changing a shape here means updating docs/SPEC.md and every consumer. Additive,
+// optional fields are fine; renames and removals are not.
+
+// ---------------------------------------------------------------------------
+// Ids
+// ---------------------------------------------------------------------------
+
+export type ContinentId =
+  | 'north_america'
+  | 'south_america'
+  | 'europe'
+  | 'africa'
+  | 'asia'
+  | 'australia';
+
+export type TerritoryId =
+  // North America (9)
+  | 'alaska'
+  | 'northwest_territory'
+  | 'greenland'
+  | 'alberta'
+  | 'ontario'
+  | 'quebec'
+  | 'western_us'
+  | 'eastern_us'
+  | 'central_america'
+  // South America (4)
+  | 'venezuela'
+  | 'peru'
+  | 'brazil'
+  | 'argentina'
+  // Europe (7)
+  | 'iceland'
+  | 'scandinavia'
+  | 'great_britain'
+  | 'northern_europe'
+  | 'western_europe'
+  | 'southern_europe'
+  | 'ukraine'
+  // Africa (6)
+  | 'north_africa'
+  | 'egypt'
+  | 'east_africa'
+  | 'congo'
+  | 'south_africa'
+  | 'madagascar'
+  // Asia (12)
+  | 'ural'
+  | 'siberia'
+  | 'yakutsk'
+  | 'kamchatka'
+  | 'irkutsk'
+  | 'mongolia'
+  | 'japan'
+  | 'afghanistan'
+  | 'china'
+  | 'middle_east'
+  | 'india'
+  | 'siam'
+  // Australia (4)
+  | 'indonesia'
+  | 'new_guinea'
+  | 'western_australia'
+  | 'eastern_australia';
+
+/** Seat index, 0..players.length-1. */
+export type PlayerId = number;
+
+/** Owner value for an unclaimed territory (only during draft setup). */
+export const UNCLAIMED = -1;
+
+export type PlayerColorId = 'crimson' | 'cobalt' | 'emerald' | 'amber' | 'violet' | 'rose';
+
+export type PlayerKind = 'human' | 'ai';
+export type AiDifficulty = 'easy' | 'normal' | 'hard';
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+export interface PlayerConfig {
+  name: string;
+  color: PlayerColorId;
+  kind: PlayerKind;
+  /** Required when kind === 'ai'. */
+  difficulty?: AiDifficulty;
+}
+
+export interface GameConfig {
+  /** 2..4 players, seat order = turn order before the random first-player pick. */
+  players: PlayerConfig[];
+  /** 'random': territories dealt evenly at random. 'draft': players claim one at a time. */
+  setupMode: 'random' | 'draft';
+  /** 'manual': players place remaining starting armies in batches. 'auto': engine places them. */
+  initialPlacement: 'manual' | 'auto';
+  /** Armies placed per setup-place turn (last batch may be smaller). Default 5. */
+  setupBatch: number;
+  /** Override starting armies per player. Default: 2p 40, 3p 35, 4p 30. */
+  startingArmies?: number;
+  /** Card set values. 'progressive': 4,6,8,10,12,15,+5... 'fixed': inf 4, cav 6, art 8, mixed 10. */
+  cardBonus: 'progressive' | 'fixed';
+  /** Fortify along any chain of your own territories, or only to an adjacent one. */
+  fortifyRule: 'connected' | 'adjacent';
+  /** Territories needed to win, as a percent of 42. 100 = world domination (default). */
+  dominationPercent: number;
+  /** End the game after this many full rounds (most territories, then most armies, wins). null = off. */
+  turnLimit: number | null;
+  /** Seed for the game's PRNG. Same seed + same actions = same game. */
+  seed: number;
+}
+
+// ---------------------------------------------------------------------------
+// Cards
+// ---------------------------------------------------------------------------
+
+export type CardSymbol = 'infantry' | 'cavalry' | 'artillery' | 'wild';
+
+export interface Card {
+  /** 0..43, stable across the game. */
+  id: number;
+  /** null for the two wild cards. */
+  territory: TerritoryId | null;
+  symbol: CardSymbol;
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+export interface TerritoryState {
+  /** PlayerId, or UNCLAIMED (-1) during draft setup. */
+  owner: PlayerId;
+  armies: number;
+}
+
+export interface PlayerStats {
+  territoriesConquered: number;
+  battlesWon: number; // dice rolls where the defender lost more armies than the attacker
+  battlesLost: number;
+  armiesDestroyed: number; // enemy armies this player killed
+  armiesLost: number;
+  cardsTraded: number; // sets traded
+  reinforcementsReceived: number;
+  peakTerritories: number;
+}
+
+export interface PlayerState {
+  id: PlayerId;
+  name: string;
+  color: PlayerColorId;
+  kind: PlayerKind;
+  difficulty?: AiDifficulty;
+  cards: Card[];
+  eliminated: boolean;
+  eliminatedBy?: PlayerId;
+  eliminatedOnTurn?: number;
+  /** Starting armies still to place during setup. 0 once setup is done. */
+  setupArmies: number;
+  stats: PlayerStats;
+}
+
+export type Phase =
+  /** Draft setup: current player claims one unclaimed territory. */
+  | { kind: 'setup-claim' }
+  /** Current player must place `toPlace` more armies on their own territories this setup turn. */
+  | { kind: 'setup-place'; toPlace: number }
+  /**
+   * Reinforce. `remaining` armies still to place. `mustTrade` = holding 5+ cards, trade first.
+   * `placed` tracks armies placed this phase per territory, so they can be taken back (unreinforce).
+   * `midTurn` = a forced trade after eliminating a player; ending it returns to 'attack'.
+   * The phase does NOT auto-advance at remaining 0; the player sends `endReinforce`.
+   */
+  | {
+      kind: 'reinforce';
+      remaining: number;
+      mustTrade: boolean;
+      placed: Partial<Record<TerritoryId, number>>;
+      midTurn: boolean;
+    }
+  | { kind: 'attack' }
+  /** A territory was just conquered. Move between `min` and `max` armies from `from` into `to`. */
+  | { kind: 'occupy'; from: TerritoryId; to: TerritoryId; min: number; max: number }
+  | { kind: 'fortify' }
+  | {
+      kind: 'game-over';
+      winner: PlayerId;
+      reason: 'domination' | 'percent' | 'turnLimit';
+    };
+
+export type PhaseKind = Phase['kind'];
+
+/** One sample per round start, for the end-of-game chart. */
+export interface TimelinePoint {
+  round: number;
+  territories: number[]; // indexed by PlayerId
+  armies: number[];
+}
+
+export interface GameState {
+  version: 1;
+  /** Random id, e.g. 'g_k2j4h1'. */
+  id: string;
+  config: GameConfig;
+  players: PlayerState[];
+  territories: Record<TerritoryId, TerritoryState>;
+  currentPlayer: PlayerId;
+  /** Player who took the first turn; a round ends when play returns to them. */
+  firstPlayer: PlayerId;
+  /** Increments every time a player's main turn starts. 0 during setup. */
+  turn: number;
+  /** 1-based round number once main play starts. 0 during setup. */
+  round: number;
+  phase: Phase;
+  /** Draw pile, top = last element. */
+  deck: Card[];
+  discard: Card[];
+  /** Number of sets traded so far (all players), drives progressive values. */
+  tradeCount: number;
+  /** Current player conquered at least one territory this turn (earns a card at turn end). */
+  conqueredThisTurn: boolean;
+  /** PRNG state (uint32). Only the engine advances it. */
+  rng: number;
+  timeline: TimelinePoint[];
+}
+
+// ---------------------------------------------------------------------------
+// Actions (every action names the acting player; the engine rejects out-of-turn actions)
+// ---------------------------------------------------------------------------
+
+export type Action =
+  | { type: 'claim'; player: PlayerId; territory: TerritoryId }
+  | { type: 'placeSetup'; player: PlayerId; territory: TerritoryId; count: number }
+  | { type: 'trade'; player: PlayerId; cardIds: [number, number, number] }
+  | { type: 'reinforce'; player: PlayerId; territory: TerritoryId; count: number }
+  | { type: 'unreinforce'; player: PlayerId; territory: TerritoryId; count: number }
+  | { type: 'endReinforce'; player: PlayerId }
+  | { type: 'attack'; player: PlayerId; from: TerritoryId; to: TerritoryId; dice: 1 | 2 | 3 }
+  /** Roll repeatedly (max dice) until `to` falls or `from` drops to `stopAt` armies (default 1, min 1). */
+  | { type: 'blitz'; player: PlayerId; from: TerritoryId; to: TerritoryId; stopAt?: number }
+  | { type: 'occupy'; player: PlayerId; count: number }
+  | { type: 'endAttack'; player: PlayerId }
+  /** One fortify per turn; performing it ends the turn. */
+  | { type: 'fortify'; player: PlayerId; from: TerritoryId; to: TerritoryId; count: number }
+  /** Ends the turn from 'attack' or 'fortify' (skips fortifying). */
+  | { type: 'endTurn'; player: PlayerId }
+  /** Hand a seat to the AI or back to a human (e.g. a friend leaves). Allowed any time, any player. */
+  | { type: 'setController'; player: PlayerId; kind: PlayerKind; difficulty?: AiDifficulty };
+
+export type ActionType = Action['type'];
+
+// ---------------------------------------------------------------------------
+// Events — what happened, in order. The renderer animates these one at a time.
+// ---------------------------------------------------------------------------
+
+export interface ReinforcementBreakdown {
+  territoryCount: number;
+  base: number; // max(3, floor(territoryCount / 3))
+  continents: { continent: ContinentId; bonus: number }[];
+  total: number; // base + continent bonuses (card trades are separate events)
+}
+
+export type GameEvent =
+  | { type: 'gameStarted'; firstPlayer: PlayerId }
+  | { type: 'territoriesDealt'; owners: Record<TerritoryId, PlayerId> }
+  | { type: 'territoryClaimed'; player: PlayerId; territory: TerritoryId }
+  | {
+      type: 'armiesPlaced';
+      player: PlayerId;
+      territory: TerritoryId;
+      count: number; // negative for unreinforce
+      source: 'setup' | 'reinforce' | 'cardBonus' | 'undo';
+    }
+  | { type: 'setupTurn'; player: PlayerId; toPlace: number }
+  | {
+      type: 'turnStarted';
+      player: PlayerId;
+      turn: number;
+      round: number;
+      reinforcements: ReinforcementBreakdown;
+    }
+  | { type: 'phaseChanged'; player: PlayerId; phase: PhaseKind }
+  | {
+      type: 'cardsTraded';
+      player: PlayerId;
+      cards: Card[];
+      armies: number;
+      bonusTerritory: TerritoryId | null; // +2 placed here (a traded card's territory you own)
+      tradeIndex: number; // 1-based count of sets traded so far
+    }
+  | {
+      type: 'diceRolled';
+      player: PlayerId;
+      defender: PlayerId;
+      from: TerritoryId;
+      to: TerritoryId;
+      attackDice: number[]; // sorted high → low
+      defendDice: number[]; // sorted high → low
+      attackerLosses: number;
+      defenderLosses: number;
+      blitz: boolean;
+    }
+  | { type: 'territoryConquered'; player: PlayerId; from: TerritoryId; to: TerritoryId; previousOwner: PlayerId }
+  | {
+      type: 'armiesMoved';
+      player: PlayerId;
+      from: TerritoryId;
+      to: TerritoryId;
+      count: number;
+      reason: 'occupy' | 'fortify';
+      path?: TerritoryId[]; // fortify: the owned chain from → to (inclusive)
+    }
+  | { type: 'continentGained'; player: PlayerId; continent: ContinentId }
+  | { type: 'continentLost'; player: PlayerId; continent: ContinentId; to: PlayerId }
+  | { type: 'cardDrawn'; player: PlayerId; card: Card }
+  | { type: 'cardsCaptured'; player: PlayerId; from: PlayerId; cards: Card[] }
+  | { type: 'playerEliminated'; player: PlayerId; by: PlayerId }
+  | { type: 'controllerChanged'; player: PlayerId; kind: PlayerKind; difficulty?: AiDifficulty }
+  | { type: 'gameOver'; winner: PlayerId; reason: 'domination' | 'percent' | 'turnLimit' };
+
+export type GameEventType = GameEvent['type'];
+
+export type ActionResult =
+  | { ok: true; state: GameState; events: GameEvent[] }
+  | { ok: false; error: string };
