@@ -13,7 +13,9 @@ Contracts already written (read them before anything else):
 | `src/engine/mapData.ts` | 42 territories, 6 continents, 83 borders, card symbols, starting armies |
 | `src/map/types.ts` | Board geometry format (map pipeline → renderer) |
 | `src/render/BoardView.ts` | Renderer interface (renderer ↔ controller) |
-| `src/shared/palette.ts` | Player colors |
+| `src/shared/palette.ts` | Player colors, seat emblems |
+| `src/game/viewModel.ts` | Controller ↔ UI: ViewModel (plain data + finished copy), UiIntent, ControllerApi, MountUi |
+| `index.html` | `#board` (canvas container) under `#ui` (HTML overlay); boots `src/main.ts` |
 
 **Renderer, UI and controller builders: read `docs/UX.md` alongside this spec.** It holds the
 click-by-click turn, the timing table, camera rules, exact copy, and the reviewer rubric. This spec
@@ -29,10 +31,12 @@ src/engine/      pure TS, no DOM. Rules, reducer, setup, RNG, AI. Runs in browse
 src/map/         board.json (generated) + loader. Geometry only.
 scripts/         build-map.ts, verify-map.ts, simulate.ts (AI-vs-AI soak)
 src/render/      Three.js board: scene, tiles, pieces, dice, effects, camera, picking.
-src/game/        controller: event queue, input state machine, AI driver, save/load, hooks.
-src/ui/          HTML/CSS overlay: menus, HUD, dialogs, cards, log, settings, victory.
+src/game/        controller: event queue, input state machine, AI driver, save/load, hooks, copy.
+                 Produces a ViewModel (src/game/viewModel.ts) and consumes UiIntents.
+src/ui/          HTML/CSS overlay: renders the ViewModel (menus, HUD, dialogs, cards, log,
+                 settings, victory). Never imports the engine. Entry: mountUi(root, api).
+src/main.ts      boot: createBoardView(#board) → createController(board) → mountUi(#ui, api).
 src/audio/       WebAudio-synthesized SFX (no audio files).
-src/main.ts      boot.
 tests/engine/    vitest unit tests.   tests/e2e/   Playwright scripts (node).
 ```
 

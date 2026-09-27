@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Risk · War Table</title>
+  </head>
+  <!-- Contract: #board (WebGL canvas container) sits under #ui (HTML overlay). src/main.ts boots both. -->
+  <body style="margin:0;background:#0c0f13;overflow:hidden">
+    <div id="board" style="position:fixed;inset:0"></div>
+    <div id="ui" style="position:fixed;inset:0;pointer-events:none"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
