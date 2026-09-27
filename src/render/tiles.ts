@@ -7,7 +7,7 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import type { BoardGeometry, Vec2 } from '../map/types';
 import type { TerritoryId } from '../engine/types';
 import { TERRITORY_IDS } from '../engine/mapData';
-import { BEVEL_S, BEVEL_T, TILE_DEPTH, TILE_TOP, adjust, mixRgb, setColor, toWorld, type RGB, hexToRgb, IVORY, distToRing } from './util';
+import { BEVEL_S, BEVEL_T, TILE_DEPTH, TILE_TOP, adjust, mixRgb, setColor, toWorld, type RGB, hexToRgb, IVORY, distToRing, ringArea, simplifyRing } from './util';
 
 export type RimMode = 'none' | 'selectable' | 'selected' | 'target' | 'armed';
 
@@ -36,8 +36,13 @@ export interface Tile {
   radius: number;
   /** Clear radius around the anchor inside the tile (board units). */
   clearance: number;
-  /** Badge sits this far south of the anchor; the formation this far north (board units). */
+  /** Badge sits this far south of the anchor (board units). */
   badgeDz: number;
+  /**
+   * Formation centre relative to the anchor (board units; +formDx east, +formDz north). The view
+   * re-places it whenever the home view changes, so the pieces stand beside the badge, not under it.
+   */
+  formDx: number;
   formDz: number;
   // --- displayed look (animated)
   rgb: RGB; // owner color currently shown (before dim/light)
@@ -142,10 +147,15 @@ export class TileSet {
       pivot.position.set(anchorW.x, 0, anchorW.z);
       pivot.add(mesh);
 
-      // Rims: the tile outline at the bevel shoulder, relative to the pivot.
+      // Rims: the tile outline, relative to the pivot. Drawn just above the tile top (not down at the
+      // bevel shoulder), so no bevel, own or neighbour's, ever cuts into the screen-space line.
       const segs: number[] = [];
-      const yRim = TILE_DEPTH + BEVEL_T * 0.55;
-      for (const ring of rings) {
+      const yRim = TILE_TOP + 0.02;
+      // The rim traces the shape, not the coastline: detail finer than the stroke (≈ 0.12 units at home)
+      // and islets smaller than a badge scribble into noise, so they're simplified away / skipped.
+      const biggest = Math.max(...rings.map(ringArea));
+      const rimRings = rings.filter((r) => ringArea(r) >= Math.min(1.5, biggest)).map((r) => simplifyRing(r, 0.12));
+      for (const ring of rimRings) {
         for (let i = 0; i < ring.length; i++) {
           const a = ring[i];
           const b = ring[(i + 1) % ring.length];
@@ -156,12 +166,19 @@ export class TileSet {
       }
       const lg = new LineSegmentsGeometry();
       lg.setPositions(segs);
+      // Each outline is hundreds of short segments whose quads overlap at every joint; blended twice,
+      // those joints read as a bright stipple. The stencil lets each pixel take a stroke only once:
+      // every under-stroke writes 1, every ivory stroke writes 2 (and may cover the under-stroke).
       const rimUnderMat = new LineMaterial({
         color: 0x0b0d10,
         linewidth: 4,
         transparent: true,
         opacity: 0,
         depthWrite: false,
+        stencilWrite: true,
+        stencilRef: 1,
+        stencilFunc: THREE.NotEqualStencilFunc,
+        stencilZPass: THREE.ReplaceStencilOp,
       });
       const rimIvoryMat = new LineMaterial({
         color: ivory.getHex(),
@@ -169,6 +186,10 @@ export class TileSet {
         transparent: true,
         opacity: 0,
         depthWrite: false,
+        stencilWrite: true,
+        stencilRef: 2,
+        stencilFunc: THREE.NotEqualStencilFunc,
+        stencilZPass: THREE.ReplaceStencilOp,
       });
       this.lineMats.push(rimUnderMat, rimIvoryMat);
       const rimUnder = new LineSegments2(lg, rimUnderMat);
@@ -204,6 +225,7 @@ export class TileSet {
         radius,
         clearance,
         badgeDz,
+        formDx: 0,
         formDz,
         rgb: hexToRgb('#cbbd9b'),
         dim: 0,

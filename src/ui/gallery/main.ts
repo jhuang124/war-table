@@ -12,6 +12,7 @@ import type { TerritoryId } from '../../engine/types';
 import { BOARD } from '../../map';
 import { PLAYER_COLORS } from '../../shared/palette';
 import { mountUi, uiDebug } from '../index';
+import { effectiveUiScale } from '../uiScale';
 import { fixtures, type Fixture } from './fixtures';
 
 const params = new URLSearchParams(location.search);
@@ -95,7 +96,7 @@ function drawDice() {
   if (!b || current?.vm.screen !== 'game') return;
   // Mirror src/render/dice.ts layout(): tray centered in the band.
   const band = insets.trayBand;
-  const scale = { laptop: 1, couch: 1.25, tv: 1.5 }[current.vm.settings.textSize] ?? 1;
+  const scale = effectiveUiScale(current.vm.settings.textSize, W, H);
   const size = Math.max(56, Math.min(H * 0.08 * scale, band * 0.56));
   const trayH = Math.max(size * 1.75, band * 0.66);
   tray.style.cssText = `top:${H - insets.bottom + (band - trayH) / 2}px;height:${trayH}px`;
@@ -261,4 +262,5 @@ if (!stateId || params.get('index') === '1') idx.classList.add('open');
 window.addEventListener('keydown', (e) => {
   if (e.key === 'i' && !(e.target instanceof HTMLInputElement)) idx.classList.toggle('open');
 });
-Object.assign(window, { __gallery: { ids: all.map((f) => f.id), intents, ui: uiDebug, ready: true } });
+// get/set let a Playwright script drive VM transitions (banner hand-offs, bar reflow) frame by frame.
+Object.assign(window, { __gallery: { ids: all.map((f) => f.id), intents, ui: uiDebug, ready: true, get: () => vm, set: (next: ViewModel) => push(next) } });

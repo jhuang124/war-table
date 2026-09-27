@@ -123,6 +123,24 @@ describe('explainTerritory plans', () => {
     expect(r.verb).toBe('Click: move 7 in');
     expect(r.plan).toEqual({ kind: 'occupyThen', count: 7, select: 'siberia', then: null });
   });
+  it('during occupy, an enemy next to `from` keeps the stack home: min moves in, then attack from `from`', () => {
+    const s = board({ greenland: [0, 10], ontario: [0, 0] }, { kind: 'occupy', from: 'greenland', to: 'ontario', min: 3, max: 9, previousOwner: 2 });
+    const r = explainTerritory(s, ui({ occupyCount: 9 }), 'iceland');
+    expect(r.ok).toBe(true);
+    expect(r.text).toMatch(/^Click: move 3 in · attack from Greenland · \d+% · (almost sure|likely)$/);
+    expect(r.plan).toEqual({ kind: 'occupyThen', count: 3, select: 'greenland', then: { kind: 'arm', from: 'greenland', to: 'iceland', auto: false } });
+    // Next to the conquered tile: the pending count stands.
+    expect(explainTerritory(s, ui({ occupyCount: 9 }), 'alberta').plan).toMatchObject({ kind: 'occupyThen', count: 9, select: 'ontario' });
+    // Next to neither: the old reason is still true.
+    const far = explainTerritory(s, ui({ occupyCount: 9 }), 'ukraine');
+    expect(far.ok).toBe(false);
+  });
+  it('during occupy, clicking `from` itself moves the minimum and keeps attacking from it', () => {
+    const s = board({ greenland: [0, 10], ontario: [0, 0] }, { kind: 'occupy', from: 'greenland', to: 'ontario', min: 3, max: 9, previousOwner: 2 });
+    const r = explainTerritory(s, ui({ occupyCount: 9 }), 'greenland');
+    expect(r.text).toBe('Click: move 3 in · keep attacking from Greenland');
+    expect(r.plan).toEqual({ kind: 'occupyThen', count: 3, select: 'greenland', then: null });
+  });
   it('setup staging stops at the batch size', () => {
     const s = board({ ural: [0, 1] }, { kind: 'setup-place', toPlace: 2 });
     expect(explainTerritory(s, ui({ staged: { ural: 1 } }), 'ural').plan).toEqual({ kind: 'stage', t: 'ural' });

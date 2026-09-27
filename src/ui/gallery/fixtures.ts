@@ -283,7 +283,7 @@ export const BARS: Record<string, ActionBarVM> = {
   'attack-armed': bar({
     mode: 'attack',
     line1: 'Attack Siberia from Ural',
-    line2: 'Blitz keeps rolling until Siberia falls or Ural is down to 1.',
+    line2: "Blitz rolls until they fall or you're down to 1.",
     chips: [chip('card', 'Card earned ✓', 'success')],
     dice: { value: 3, max: 3 },
     buttons: [
@@ -296,7 +296,7 @@ export const BARS: Record<string, ActionBarVM> = {
   'attack-dice2': bar({
     mode: 'attack',
     line1: 'Attack Kamchatka from Yakutsk',
-    line2: 'Blitz keeps rolling until Kamchatka falls or Yakutsk is down to 1.',
+    line2: "Blitz rolls until they fall or you're down to 1.",
     chips: [chip('card', 'Card earned ✓', 'success')],
     dice: { value: 2, max: 2 },
     buttons: [

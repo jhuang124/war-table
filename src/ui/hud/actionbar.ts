@@ -1,7 +1,11 @@
-// Action bar (UX.md §8.9): fixed 5.25 rem × min(57.5 rem, 94vw), never resizes.
+// Action bar (UX.md §8.9): fixed 5.25 rem × min(65 rem, 94vw), never resizes.
 //
-//   row 1: [line 1 ……………………………] [dice toggle | occupy stepper] [secondary slot] [primary slot]
-//   row 2: [receipt chips] [line 2 …………] [trade / hints chips] [exit buttons]
+//   row 1: [line 1 ……………………] [receipts, when they fit] [dice toggle | occupy stepper] [secondary] [primary]
+//   row 2: [card status] [receipts, otherwise] [line 2 …………] [trade / hints chips] [exit buttons]
+//
+// Zones never re-flow on live state (dice toggle, counts): the card-status chip has a fixed slot at the
+// start of row 2, and the fit (which row the receipts take, the 17 px step-down of line 1) runs only when
+// the bar's content changes, or when a live change would otherwise truncate line 1.
 //
 // Line 1 crossfades (160 ms) when its wording changes; when only a number changes it pops (±1) or
 // counts (≥ 5). A rejection swaps in with a 120 ms fade. Everything is patched in place.
@@ -112,6 +116,8 @@ class Line1 {
 class Chip {
   readonly el: HTMLElement;
   vm: ChipVM | null = null;
+  /** Show only the part before ' · ' (the fit sets this when line 2 needs the room). */
+  private short = false;
   constructor(vm: ChipVM, send: (i: UiIntent) => void) {
     this.el = vm.intent ? h('button', 'chip nofocus') : h('span', 'chip');
     if (this.el instanceof HTMLButtonElement) {
@@ -127,7 +133,20 @@ class Chip {
     this.vm = vm;
     this.el.dataset.testid = `chip-${vm.id}`;
     this.el.className = `chip tone-${vm.tone}${vm.intent ? ' is-action nofocus' : ''}`;
-    setText(this.el, minus(vm.label));
+    this.paint();
+  }
+  setShort(on: boolean): boolean {
+    const full = minus(this.vm?.label ?? '');
+    if (on && !full.includes(' · ')) return false;
+    this.short = on;
+    this.paint();
+    return true;
+  }
+  private paint(): void {
+    const full = minus(this.vm?.label ?? '');
+    const cut = full.indexOf(' · ');
+    setText(this.el, this.short && cut > 0 ? full.slice(0, cut) : full);
+    setAttr(this.el, 'data-tip', this.short && cut > 0 ? full : null);
   }
 }
 
@@ -266,6 +285,8 @@ export class ActionBar {
   private line1 = new Line1();
   private line2: HTMLDivElement;
   private line2Text = '';
+  private row1: HTMLDivElement;
+  private row2: HTMLDivElement;
   private receipts: ChipRow;
   private status: ChipRow;
   private actChips: ChipRow;
@@ -278,7 +299,7 @@ export class ActionBar {
   private primary: ButtonGroup;
   private exits: ButtonGroup;
   private vm: ActionBarVM | null = null;
-  private infoKey = '';
+  private layoutKey = '';
   private splitFrom: string | null = null;
 
   constructor(private send: (i: UiIntent) => void) {
@@ -288,8 +309,8 @@ export class ActionBar {
     this.line1.el.dataset.testid = 'line1';
     this.el.setAttribute('aria-label', 'Actions');
     this.el.setAttribute('aria-live', 'polite');
-    const row1 = h('div', 'ab-row ab-row1');
-    const row2 = h('div', 'ab-row ab-row2');
+    this.row1 = h('div', 'ab-row ab-row1');
+    this.row2 = h('div', 'ab-row ab-row2');
     this.middle = h('div', 'ab-middle');
     this.dice = new DiceToggle(send);
     this.stepper = new Stepper(press);
@@ -297,7 +318,7 @@ export class ActionBar {
     this.secondary = new ButtonGroup('ab-slot ab-secondary', press);
     this.primary = new ButtonGroup('ab-slot ab-primary', press);
     this.receipts = new ChipRow('ab-receipts', send);
-    row1.append(this.line1.el, this.receipts.el, h('div', 'ab-spacer'), this.middle, this.secondary.el, this.primary.el);
+    this.row1.append(this.line1.el, this.receipts.el, h('div', 'ab-spacer'), this.middle, this.secondary.el, this.primary.el);
 
     this.line2 = h('div', 'ab-line2');
     this.note = h('div', 'ab-note');
@@ -308,8 +329,8 @@ export class ActionBar {
     this.hintsBtn.addEventListener('click', () => send({ type: 'toggleHints' }));
     this.exits = new ButtonGroup('ab-exits', press);
     this.status = new ChipRow('ab-status', send);
-    row2.append(this.status.el, this.line2, this.note, this.actChips.el, this.hintsBtn, this.exits.el);
-    this.el.append(row1, row2);
+    this.row2.append(this.status.el, this.line2, this.note, this.actChips.el, this.hintsBtn, this.exits.el);
+    this.el.append(this.row1, this.row2);
 
     // Mouse wheel adjusts the occupy / fortify count.
     this.el.addEventListener(
@@ -333,16 +354,19 @@ export class ActionBar {
     setStyle(this.el, '--accent', pal.base);
     this.el.dataset.mode = vm.mode;
     // If a previous fit split line 1, compare against the full sentence so numbers still patch in place.
-    if (this.splitFrom && minus(vm.line1) !== this.splitFrom) this.line1.replaceInstant(this.splitFrom);
+    const split = this.splitFrom;
+    if (split) this.line1.replaceInstant(split);
     this.splitFrom = null;
     this.line1.update(vm.line1, vm.line1Kind, vm.line1Key, vm.line1Kind === 'narration' ? pal.light : null);
-    this.setLine2(minus(vm.line2));
+    // Same sentence as before the split: the fit below re-splits it in this frame, so line 2 doesn't blink.
+    const keepSplit = split !== null && minus(vm.line1) === split && !vm.line2;
+    if (!keepSplit) this.setLine2(minus(vm.line2));
 
     const chips = vm.chips.filter((c) => c.intent?.type !== 'toggleHints');
     const info = chips.filter((c) => !c.intent);
-    const infoKey = info.map((c) => `${c.id}:${c.label}`).join('|') + '#' + vm.line1 + '#' + vm.buttons.map((b) => b.id).join();
-    this.receipts.update(info);
-    this.status.update([]);
+    const isStatus = (c: ChipVM) => c.tone === 'status' || c.tone === 'success';
+    this.receipts.update(info.filter((c) => !isStatus(c)));
+    this.status.update(info.filter(isStatus));
     this.actChips.update(chips.filter((c) => !!c.intent));
 
     toggle(this.hintsBtn, 'hidden', !vm.hints.toggleable);
@@ -363,17 +387,27 @@ export class ActionBar {
     this.primary.update(rest.filter((b) => b.role === 'primary'));
     this.secondary.update(rest.filter((b) => b.role === 'secondary'));
     this.exits.update(rest.filter((b) => b.role === 'exit'));
-    if (infoKey !== this.infoKey) {
-      this.infoKey = infoKey;
+
+    // Re-fit on content changes only. Live changes inside one state (counts, the dice toggle, a button
+    // enabling) keep the layout, unless line 1 would now be cut off.
+    const key = [
+      vm.mode,
+      vm.line1Kind,
+      info.map((c) => `${c.id}:${c.label}`).join('|'),
+      vm.line2,
+      vm.hints.toggleable,
+      note,
+      rest.map((b) => b.id).join(),
+      chips.filter((c) => !!c.intent).map((c) => c.label).join('|'),
+    ].join('#');
+    if (key !== this.layoutKey) {
+      this.layoutKey = key;
       this.fit();
-    } else this.markClipped();
+    } else if (keepSplit) this.fit();
+    else if (this.line1Truncated()) this.fit();
+    else this.markClipped();
   }
 
-  /**
-   * Priority fit inside the fixed bar: line 1 never yields to a chip. Info chips (receipts, card
-   * status) sit beside line 1 when there is room and spill to the start of row 2 when there isn't;
-   * an overflowing hint keeps its full text in a hover tip. Runs on content change and resize only.
-   */
   private setLine2(l2: string): void {
     if (l2 === this.line2Text) return;
     this.line2Text = l2;
@@ -381,34 +415,55 @@ export class ActionBar {
     if (!motion.reduced) this.line2.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: 'ease-out' });
   }
 
+  private line1Truncated(): boolean {
+    const line = this.line1.el.querySelector<HTMLElement>('.l1-text:not(.l1-ghost)');
+    return !!line && line.scrollWidth > line.clientWidth + 1;
+  }
+
+  private line2Clipped(): boolean {
+    return this.line2.scrollWidth > this.line2.clientWidth + 1 || this.row2.scrollWidth > this.row2.clientWidth + 1;
+  }
+
+  /**
+   * Priority fit inside the fixed bar. Line 1 (the teaching line) never yields: receipts leave row 1
+   * first, then line 1 steps down 20 → 17 px, then its tail after ' · ' moves to an empty line 2. On
+   * row 2 the hint outranks the receipts (they're also in the turn banner and the roster): receipts
+   * drop from the end, then the card-status chip shortens to its head, before line 2 ellipsizes (its
+   * full text stays in a hover tip). Runs on content change and resize only.
+   */
   fit(): void {
     const vm = this.vm;
     if (!vm) return;
     const full = minus(vm.line1);
-    if (this.splitFrom) {
-      this.line1.replaceInstant(full);
-      this.splitFrom = null;
+    if (this.splitFrom) this.line1.replaceInstant(full);
+    this.splitFrom = null;
+    if (this.line2Text !== minus(vm.line2)) {
       this.line2Text = minus(vm.line2);
       setText(this.line2, this.line2Text);
     }
-    const row1 = this.receipts.el;
-    const row2 = this.status.el;
-    // Everything back to row 1, in order.
-    for (const c of [...row2.children]) row1.append(c);
-    const line = this.line1.el.querySelector<HTMLElement>('.l1-text:not(.l1-ghost)');
-    const truncated = () => !!line && line.scrollWidth > line.clientWidth + 1;
-    const r1 = row1.parentElement!;
-    const over = () => truncated() || r1.scrollWidth > r1.clientWidth + 1;
-    let guard = 12;
-    while (row1.lastElementChild && over() && guard--) row2.prepend(row1.lastElementChild);
-    // Still too long, and line 2 is free: carry the sentence's tail down to line 2.
+    // Reset: receipts beside line 1, all shown, full-size line 1, full status chips.
+    this.line1.el.classList.remove('l1-tight');
+    if (this.receipts.el.previousElementSibling !== this.line1.el) this.line1.el.after(this.receipts.el);
+    for (const c of this.receipts.chips.values()) c.el.classList.remove('hidden');
+    this.receipts.el.classList.remove('all-hidden');
+    for (const c of this.status.chips.values()) c.setShort(false);
+    const row1Over = () => this.line1Truncated() || this.row1.scrollWidth > this.row1.clientWidth + 1;
+
+    if (this.receipts.chips.size && row1Over()) this.status.el.after(this.receipts.el);
+    if (this.line1Truncated()) this.line1.el.classList.add('l1-tight');
     const cut = full.indexOf(' · ');
-    if (truncated() && !vm.line2 && cut > 0) {
+    if (this.line1Truncated() && !vm.line2 && cut > 0) {
       this.line1.replaceInstant(full.slice(0, cut));
       this.splitFrom = full;
       this.line2Text = full.slice(cut + 3);
       setText(this.line2, this.line2Text);
     }
+    if (this.receipts.el.parentElement === this.row2) {
+      const list = [...this.receipts.chips.values()];
+      for (let i = list.length - 1; i >= 0 && this.line2Clipped(); i--) list[i].el.classList.add('hidden');
+      toggle(this.receipts.el, 'all-hidden', list.length > 0 && list.every((c) => c.el.classList.contains('hidden')));
+    }
+    if (this.line2Clipped()) for (const c of this.status.chips.values()) c.setShort(true);
     this.markClipped();
   }
 

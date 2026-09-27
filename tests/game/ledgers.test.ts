@@ -129,7 +129,8 @@ describe('new game draft → GameConfig', () => {
     d = patchSeat(defaultDraft(), 1, { color: 'violet' });
     expect(d.seats[1].name).toBe('Violet'); // AI seats follow their color's name
     d = patchSeat(d, 1, { kind: 'human' });
-    expect(d.seats[1].name).toBe('Player 2');
+    expect(d.seats[1].name).toBe('Violet'); // flipping Human/AI keeps the name (R1-16)
+    expect(defaultDraft().seats[0].name).toBe('Crimson'); // humans default to their color too
     d = patchSeat(d, 0, { name: 'John' });
     d = patchSeat(d, 0, { color: 'emerald' });
     expect(d.seats[0].name).toBe('John');

@@ -88,25 +88,22 @@ export class TerritoryChart {
       plot.append(h('p', 'dim', 'No rounds recorded'));
       return;
     }
-    const maxR = pts[pts.length - 1].round;
-    const minR = pts[0].round;
+    // Samples are taken at the start of each round (the board after the previous round); the engine adds
+    // one more at game over, inside the last round. That final board is plotted at the end of the last
+    // round (x = R + 1, tick 'End'), so the line climbs across the round instead of spiking in place.
+    const n = pts.length;
+    const finalDup = n > 1 && pts[n - 1].round === pts[n - 2].round;
+    const xr = pts.map((p, i) => (finalDup && i === n - 1 ? p.round + 1 : p.round));
+    const minR = xr[0];
+    const maxR = xr[n - 1];
     const span = Math.max(1, maxR - minR);
-    const x = (r: number, i: number) => {
-      // Duplicate round numbers (the final point repeats the round): nudge by index.
-      const base = pts.length > 1 && span === 0 ? i / (pts.length - 1) : (r - minR) / span;
-      return pad.l + base * (W - pad.l - pad.r);
-    };
+    const x = (r: number) => pad.l + ((r - minR) / span) * (W - pad.l - pad.r);
     // Scale to the game that was played (a called game at 13 territories shouldn't hug the floor).
     let peak = 0;
     for (const p of pts) for (const v of Object.values(p.territories)) peak = Math.max(peak, v as number);
     const yMax = Math.min(42, Math.max(20, Math.ceil((peak + 2) / 10) * 10));
     const y = (v: number) => pad.t + (1 - v / yMax) * (H - pad.t - pad.b);
-    const xs = pts.map((p, i) => x(p.round, i));
-    // If the final point repeats the last round, spread it half a step right so it stays visible.
-    if (pts.length > 1 && pts[pts.length - 1].round === pts[pts.length - 2].round) {
-      const step = (W - pad.l - pad.r) / Math.max(1, span);
-      xs[xs.length - 1] = Math.min(W - pad.r, xs[xs.length - 2] + step * 0.5);
-    }
+    const xs = n === 1 ? [pad.l] : xr.map((r) => x(r));
     const tick = 0.84 * rem;
 
     // Grid + y axis
@@ -117,13 +114,19 @@ export class TerritoryChart {
       t.textContent = String(v);
       grid.append(t);
     }
-    // x ticks: about 6 labels
+    // x ticks: about 6 labels, plus 'End' under the final board.
     const every = Math.max(1, Math.ceil(span / 6));
+    const endX = finalDup ? xs[n - 1] : Infinity;
     for (let r = minR; r <= maxR; r += every) {
-      const i = pts.findIndex((p) => p.round === r);
-      if (i < 0) continue;
+      const i = xr.findIndex((v, k) => v === r && !(finalDup && k === n - 1));
+      if (i < 0 || Math.abs(xs[i] - endX) < 2.2 * rem) continue;
       const t = svg('text', { x: xs[i], y: H - tick * 0.4, 'text-anchor': 'middle', class: 'c-tick' });
       t.textContent = String(r);
+      grid.append(t);
+    }
+    if (finalDup) {
+      const t = svg('text', { x: endX, y: H - tick * 0.4, 'text-anchor': 'middle', class: 'c-tick' });
+      t.textContent = 'End';
       grid.append(t);
     }
     s.append(grid);

@@ -23,6 +23,7 @@ const CSS = `
 .rb-badge.zero .n{opacity:.55}
 .rb-badge{transition:opacity 180ms ease-out}
 .rb-badge.dim{opacity:.58}
+.rb-badge.ghosted{z-index:2}
 .rb-ghost{position:absolute;left:calc(100% + 6px);top:50%;transform:translateY(-50%);height:18px;padding:0 6px;border-radius:9px;
   background:#f3ead8;color:#12151a;font:700 13px/18px 'Inter Variable',Inter,system-ui,sans-serif;
   font-variant-numeric:tabular-nums lining-nums;box-shadow:0 0 0 1px rgba(12,14,18,.8),0 2px 6px rgba(0,0,0,.45);display:none}
@@ -88,6 +89,9 @@ export class Overlay {
   private chips: Chip[] = [];
   private v = new THREE.Vector3();
   private showLabels = false;
+  get labelsOn(): boolean {
+    return this.showLabels;
+  }
   uiScale = 1;
   zoomScale = 1;
   private labelsDirty = true;
@@ -229,6 +233,9 @@ export class Overlay {
     const b = this.badges.get(id)!;
     if (b.ghostN === n) return;
     b.ghostN = n;
+    // The chip hangs off the badge's right edge, over where the next badge may sit; lift the whole
+    // badge above its neighbours so the pending count is never hidden under a later sibling.
+    b.el.classList.toggle('ghosted', n > 0);
     if (n > 0) {
       b.ghost.textContent = `+${n}`;
       b.ghost.style.display = 'block';

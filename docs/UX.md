@@ -292,7 +292,9 @@ When an engagement starts (the first roll on a from→to pair this turn), record
   `HELD!` / `Sam holds Argentina · John had 84%`
 - The attacker takes it at ≤ 30%: `AGAINST THE ODDS` / `John takes Kamchatka at 22%`
 
-Both are tier 1. Log them for the awards.
+Both are tier 1. Log them for the awards. As built (review r1): the banners fire only when a human
+seat is the attacker or defender; AI-vs-AI upsets go to the awards and add a note to the engagement's
+log line (`… an upset (Amber had 75%)`). Merged AI-turn banners use past tense (`COBALT HELD SIAM`).
 
 ### 5.4 Sound mapped to drama [audio callers: render + ctrl]
 
@@ -332,9 +334,12 @@ the turn plays at instant.
   over 400 ms, which shouldn't happen.
   - As built (integration): once AI-vs-AI fights run compressed (from the 3rd in a turn, the 2nd in
     round 1) the gap between them is 140 ms, and a snapped AI-vs-AI conquest past the turn's headline
-    point (6 s; 3 s in round 1) gets a 170 ms beat instead of 250 ms. Fights against a human play full
-    until the headline point, then brief. Round-1 AI turns before any human has moved are capped at
-    5 s. Measured: AI turns at `watch` median ≈ 2.6–5 s, p95 ≈ 8 s (tests/e2e/game, round).
+    point (3 s in round 1, 6 s in rounds 2–3, 4 s from round 4) gets a 170 ms beat instead of 250 ms.
+    Fights against a human play full until the headline point, at most 2 per AI turn; later fights
+    against a human play brief at 2× (still visible, never snapped), and past the headline point the
+    gap between fights is the 140 ms compressed think time. Round-1 AI turns before any human has
+    moved are capped at 5 s. Measured: AI turns at `watch` median ≈ 2.6–5.4 s, p95 ≈ 7–9 s
+    (tests/e2e/game, round; review r1).
 - **Style by stakes** (`playEvent` option `style`, SPEC §11.2):
   - `full`, when the defender is human: telegraph the arrow and battle panel for 400 ms, then dice at
     the blitz timing (§8.2).
@@ -423,7 +428,7 @@ chip in the bar toggles them for the current seat with one click, stored in UI m
 | attack, nothing selected | `Attack · click an enemy territory next to yours` | `You need 2+ armies to attack, because 1 always stays behind.` |
 | attack, source picked | `Attacking from Ural (8) · click a glowing enemy` | none |
 | attack, auto-picked source | `Attack Brazil from Venezuela` (counts live in the battle panel) | `Click another of yours to switch.` |
-| attack, armed | `Attack Siberia from Ural` | `Blitz keeps rolling until Siberia falls or Ural is down to 1.` |
+| attack, armed | `Attack Siberia from Ural` | `Blitz rolls until they fall or you're down to 1.` |
 | attack, no sources | `No attacks left · every border army is down to 1` | none |
 | occupy | `You took Siberia · move armies in` | `At least 3, one per die you rolled. 1 stays in Ural.` |
 | fortify, nothing selected | `Fortify · one move, then your turn ends` | `Troops travel only through your own territories.` |
@@ -585,9 +590,9 @@ turn banner still shows (150 / 500 / 150 ms). There's a 250 ms beat after each c
 
 ### 8.3 Camera [render]
 
-- **Home view**: the whole board framed inside the HUD-free region (`setViewportInsets`, SPEC §11.2)
-  with a 4% margin, pitch 55°, azimuth 0. The bottom inset includes the battle-panel band, so dice
-  never cover the board at home.
+- **Home view**: the land (every territory) fitted inside the HUD-free region (`setViewportInsets`,
+  SPEC §11.2) with a 4% margin, pitch 64°, azimuth 0. The frame and ocean rim may run under HUD edges
+  and into the battle-panel band, but dice never cover a territory at home.
 - The camera moves **on its own only** when:
   1. a turn starts and the driver left it displaced from home by > 10% zoom or pan (ease back home);
   2. during an AI turn, an engagement's tiles are off-screen or the target projects < 24 px wide
@@ -682,7 +687,8 @@ Layering rules:
 
 ### 8.9 Action bar layout [ui]
 
-- Fixed height 5.25 rem (84 px at 100%), fixed width `min(920px, 94vw)`, centered, with a 3 px top edge
+- Fixed height 5.25 rem (84 px at 100%), fixed width `min(65rem, 94vw)` (1040 px at 100%; review r1,
+  was `min(920px, 94vw)`), centered, with a 3 px top edge
   in the current player's color. It **never resizes or moves** between phases.
 - Zones:
   - left: line 1 (20 px / 600) and line 2 (15 px, ivory at 70%), with an ellipsis on overflow
@@ -772,6 +778,11 @@ screen.
 - All HUD sizes are in rem. The badges follow via `setUiScale`.
 - Minimums at 1.0: action line 1 20 px, body 15 px, roster 15 px, log 13 px, nothing below 13 px.
 - At TV on 1920×1080, nothing overlaps and all HUD text is ≥ 20 px.
+- As built (review r1): the size is **fitted to the screen**: effective scale =
+  `min(setting, max(1, min(W / 1280, H / 720)))` (`src/ui/uiScale.ts`), so TV is exact on 1920×1080,
+  1.125 on 1440×900 and 1.0 on 1280×800. Settings and the title show `fitted to this screen` when it
+  clamps. The HUD, the tray band and the renderer (`setUiScale`, badges and dice) all use the fitted
+  scale, re-applied on resize.
 
 ### 10.4 Reduced motion (`prefers-reduced-motion` or the setting) [should]
 

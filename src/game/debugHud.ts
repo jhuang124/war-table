@@ -2,6 +2,7 @@
 // button, counter, banner, battle-panel text, card and log line is present and clickable, so the
 // controller can be driven end to end before (or without) the real src/ui. Not the shipping look.
 
+import { effectiveUiScale } from '../ui/uiScale';
 import { EMBLEM_PATHS, PLAYER_COLORS, PLAYER_COLOR_IDS } from '../shared/palette';
 import type { ControllerApi, SeatRef, UiIntent, ViewModel } from './viewModel';
 
@@ -317,7 +318,7 @@ export function mountDebugHud(root: HTMLElement, api: ControllerApi): { dispose(
 
   const render = (vm: ViewModel) => {
     last = vm;
-    document.documentElement.style.fontSize = `${16 * ({ laptop: 1, couch: 1.25, tv: 1.5 } as const)[vm.settings.textSize]}px`;
+    document.documentElement.style.fontSize = `${16 * effectiveUiScale(vm.settings.textSize, window.innerWidth, window.innerHeight)}px`;
     let html = '';
     if (vm.screen === 'title' || vm.screen === 'boot') html = renderTitle(vm);
     else if (vm.screen === 'newGame') html = renderNewGame(vm);

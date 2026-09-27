@@ -117,6 +117,12 @@ export interface RosterRowVM {
   cardState: 'normal' | 'warn' | 'mustTrade'; // warn at 4, mustTrade at 5+
   underAttack: boolean; // glow while an AI attacks this human
   highlighted: boolean; // this row was clicked; its territories are highlighted on the board
+  /**
+   * Additive (review r1, R1-22): a seat hand-off offered in Pause → Seats. Human seats get
+   * 'Let the AI play Sam · Normal'; AI seats that started human get 'Sam takes the seat back';
+   * seats that started as AI get null.
+   */
+  seatAction?: { label: string; intent: UiIntent } | null;
 }
 
 export interface ChipVM {
@@ -271,6 +277,8 @@ export interface TooltipVM {
   ok: boolean;
   /** Additive (UI): the hovered tile, so the tooltip can flip away from its badge (UX.md §7.4). */
   territory?: TerritoryId;
+  /** Additive (review r1, R1-18): badges the tooltip should not cover (the selected source, the armed target or fortify destination). */
+  avoid?: TerritoryId[];
 }
 
 export interface PillsVM {
@@ -360,6 +368,8 @@ export type UiIntent =
   | { type: 'restart' } // opens the confirm
   | { type: 'confirm'; yes: boolean }
   | { type: 'saveAndQuit' }
+  /** Additive (review r1, R1-22): hand a seat to the AI or back, applied at the next safe point. */
+  | { type: 'setController'; player: PlayerId; kind: PlayerKind; difficulty?: AiDifficulty }
   // victory
   | { type: 'rematch' }
   // settings

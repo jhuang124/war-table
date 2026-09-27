@@ -16,7 +16,7 @@ export interface NewGameDraft {
 export function defaultDraft(): NewGameDraft {
   return {
     seats: [
-      { name: 'Player 1', color: DEFAULT_SEAT_COLORS[0], kind: 'human', difficulty: 'normal' },
+      { name: PLAYER_COLORS[DEFAULT_SEAT_COLORS[0]].name, color: DEFAULT_SEAT_COLORS[0], kind: 'human', difficulty: 'normal' },
       { name: PLAYER_COLORS[DEFAULT_SEAT_COLORS[1]].name, color: DEFAULT_SEAT_COLORS[1], kind: 'ai', difficulty: 'normal' },
       { name: PLAYER_COLORS[DEFAULT_SEAT_COLORS[2]].name, color: DEFAULT_SEAT_COLORS[2], kind: 'ai', difficulty: 'normal' },
       { name: PLAYER_COLORS[DEFAULT_SEAT_COLORS[3]].name, color: DEFAULT_SEAT_COLORS[3], kind: 'ai', difficulty: 'normal' },
@@ -37,7 +37,8 @@ export function sanitizeDraft(x: unknown): NewGameDraft {
         .filter((s) => s && typeof s === 'object' && PLAYER_COLOR_IDS.includes(s.color))
         .slice(0, 4)
         .map((s) => ({
-          name: typeof s.name === 'string' ? s.name.slice(0, 24) : '',
+          // Older drafts defaulted humans to "Player N"; seats now default to their color's name (R1-16).
+          name: typeof s.name === 'string' && !/^Player \d$/.test(s.name.trim()) ? s.name.slice(0, 24) : PLAYER_COLORS[s.color].name,
           color: s.color,
           kind: s.kind === 'ai' ? ('ai' as const) : ('human' as const),
           difficulty: s.difficulty === 'easy' || s.difficulty === 'hard' ? s.difficulty : ('normal' as const),
@@ -84,7 +85,7 @@ export function draftToConfig(d: NewGameDraft, seed: number): GameConfig {
   const n = d.seats.length;
   const { dominationPercent, turnLimit } = lengthRules(d.length, n);
   const players = d.seats.map((s, i) => ({
-    name: s.name.trim() || (s.kind === 'ai' ? PLAYER_COLORS[s.color].name : `Player ${i + 1}`),
+    name: s.name.trim() || PLAYER_COLORS[s.color].name,
     color: s.color,
     kind: s.kind,
     ...(s.kind === 'ai' ? { difficulty: s.difficulty } : {}),
@@ -203,7 +204,10 @@ export function buildNewGameVM(d: NewGameDraft): NewGameVM {
   };
 }
 
-/** Apply a seat patch with the naming conventions: AI seats default to their color's name. */
+/**
+ * Apply a seat patch with the naming conventions: every seat defaults to its color's name, a default
+ * name follows the seat's color, and flipping Human/AI never renames a seat (R1-16).
+ */
 export function patchSeat(d: NewGameDraft, index: number, patch: Partial<SeatDraft>): NewGameDraft {
   const seats = d.seats.map((s) => ({ ...s }));
   const s = seats[index];
@@ -211,10 +215,7 @@ export function patchSeat(d: NewGameDraft, index: number, patch: Partial<SeatDra
   const wasDefaultName =
     !s.name.trim() || /^Player \d$/.test(s.name.trim()) || s.name === PLAYER_COLORS[s.color].name;
   const next = { ...s, ...patch };
-  if (patch.name === undefined && wasDefaultName) {
-    if (next.kind === 'ai') next.name = PLAYER_COLORS[next.color].name;
-    else if (patch.kind === 'human' || s.name === PLAYER_COLORS[s.color].name) next.name = `Player ${index + 1}`;
-  }
+  if (patch.name === undefined && wasDefaultName) next.name = PLAYER_COLORS[next.color].name;
   seats[index] = next;
   return { ...d, seats };
 }

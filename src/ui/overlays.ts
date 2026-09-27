@@ -1,12 +1,16 @@
 // Modal-ish layers: hand-off cover (§6.3), all-humans-out card (§4.5), confirm dialog, pause menu,
 // rules card (§7.6) and settings.
 
-import type { GameVM, SeatRef, Settings, UiIntent, ViewModel } from '../game/viewModel';
+import type { GameVM, RosterRowVM, SeatRef, Settings, UiIntent, ViewModel } from '../game/viewModel';
+
 import { PLAYER_COLORS } from '../shared/palette';
 import { Segmented, Slider, Switch, uiButton } from './controls';
 import { animateIn, emblem, h, motion, setAttr, setStyle, setText, titleText, toggle } from './dom';
 
 type Send = (i: UiIntent) => void;
+
+/** Pause → Seats (R1-22): the controller owns the copy and the intent; with no action the row doesn't render. */
+const seatAction = (r: RosterRowVM) => r.seatAction ?? null;
 
 // ---------------------------------------------------------------------------
 // Hand-off cover: mounted at full opacity in the same frame (no fade in), fades out 240 ms.
@@ -176,6 +180,9 @@ export class Overlays {
     sw: Record<string, Switch>;
   };
   private settingsBack: HTMLButtonElement;
+  private fitNote: HTMLSpanElement;
+  private seats: HTMLDivElement;
+  private seatsKey = '';
   private screen = '';
 
   constructor(private send: Send) {
@@ -197,6 +204,9 @@ export class Overlays {
       uiButton('End game now', 'menu-item quiet', () => send({ type: 'endGameNow' }), undefined, 'pause-endgame'),
     );
     this.pause.append(list);
+    // Seats: hand a seat to the AI when a friend leaves (and back). Filled from the roster in update().
+    this.seats = h('div', 'menu-seats hidden');
+    this.pause.append(this.seats);
 
     // Rules
     this.rules = h('div', 'sheet rules-sheet');
@@ -260,18 +270,20 @@ export class Overlays {
       reduceMotion: new Switch('Reduce motion', (v) => set({ reduceMotion: v })),
     };
     this.s = { anim, ai, text, vol, sw };
-    const field = (label: string, ctl: HTMLElement, detail?: string) => {
+    const field = (label: string, ctl: HTMLElement, detail?: string | HTMLElement) => {
       const f = h('div', 'field');
       const l = h('div', 'field-label');
       l.append(h('span', '', label));
-      if (detail) l.append(h('span', 'field-detail', detail));
+      if (typeof detail === 'string') l.append(h('span', 'field-detail', detail));
+      else if (detail) l.append(detail);
       f.append(l, ctl);
       return f;
     };
+    this.fitNote = h('span', 'field-detail hidden', 'fitted to this screen');
     const cols = h('div', 'settings-cols');
     const c1 = h('div', 'settings-col');
     c1.append(
-      field('Text size', text.el),
+      field('Text size', text.el, this.fitNote),
       field('Animation speed', anim.el, 'Your own turns'),
       field('AI speed', ai.el, 'How AI turns play'),
       field('Sound volume', vol.el),
@@ -282,6 +294,11 @@ export class Overlays {
     this.settings.append(sh, cols);
 
     this.el.append(this.pause, this.rules, this.settings);
+  }
+
+  /** The chosen text size was fitted down to this screen (src/ui/uiScale.ts). */
+  setFitted(on: boolean): void {
+    toggle(this.fitNote, 'hidden', !on);
   }
 
   /** Where Close / Esc goes from rules or settings: back to the pause menu only if it was opened from there. */
@@ -320,6 +337,26 @@ export class Overlays {
       for (const k of Object.keys(this.s.sw)) this.s.sw[k].set(!!st[k as keyof Settings]);
     }
     if (o === 'rules') this.renderHouse(vm);
+    if (o === 'pause') this.renderSeats(vm);
+  }
+
+  private renderSeats(vm: ViewModel): void {
+    const rows = (vm.game?.roster ?? []).filter((r) => !r.eliminated && seatAction(r));
+    const key = rows.map((r) => `${r.seat.id}:${r.seat.color}:${seatAction(r)!.label}`).join('|');
+    if (key === this.seatsKey) return;
+    this.seatsKey = key;
+    this.seats.textContent = '';
+    toggle(this.seats, 'hidden', rows.length === 0);
+    if (!rows.length) return;
+    this.seats.append(h('div', 'menu-sep'), h('div', 'menu-head', 'Seats'));
+    for (const r of rows) {
+      const a = seatAction(r)!;
+      const b = uiButton(a.label, 'menu-item quiet seat-item', () => this.send(a.intent), undefined, `pause-seat-${r.seat.id}`);
+      const emb = emblem(r.seat.color);
+      setStyle(b, '--seat-light', PLAYER_COLORS[r.seat.color].light);
+      b.prepend(emb);
+      this.seats.append(b);
+    }
   }
 
   private renderHouse(vm: ViewModel): void {

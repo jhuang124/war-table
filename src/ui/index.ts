@@ -20,8 +20,7 @@ import { Confirm, Handoff, HumansOut, Overlays } from './overlays';
 import { NewGameScreen } from './screens/newgame';
 import { TitleScreen } from './screens/title';
 import { VictoryScreen } from './screens/victory';
-
-const TEXT_SCALE = { laptop: 1, couch: 1.25, tv: 1.5 } as const;
+import { effectiveUiScale, isFitted } from './uiScale';
 
 /**
  * Battle band height. The renderer centers its tray in the band (src/render/dice.ts layout():
@@ -143,6 +142,7 @@ export const mountUi: MountUi = (host, api) => {
       inEl.classList.remove('off', 'leaving');
       if (!motion.reduced && prev) inEl.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 360, easing: 'ease-in-out' });
     }
+    if (next === 'newGame') requestAnimationFrame(() => screen === 'newGame' && !vm?.overlay && newGame.focusFirstName());
     if (next !== 'boot' && boot) {
       const b = boot;
       b.animate([{ opacity: getComputedStyle(b).opacity }, { opacity: 0 }], { duration: 240, fill: 'forwards' }).onfinish = () => b.remove();
@@ -158,6 +158,8 @@ export const mountUi: MountUi = (host, api) => {
     const { band: tray, strip } = solveBand(H, scale, W);
     root.style.setProperty('--tray', `${tray}px`);
     root.style.setProperty('--strip', `${strip}px`);
+    topBar.fit();
+    roster.fitAbove(actionBar.el.getBoundingClientRect().top - 12);
     const tb = topBar.el.getBoundingClientRect();
     const ro = roster.el.getBoundingClientRect();
     const ra = rail.el.getBoundingClientRect();
@@ -203,6 +205,33 @@ export const mountUi: MountUi = (host, api) => {
     if (pills.active && !raf) raf = requestAnimationFrame(tick);
   };
 
+  // ---- text size, fitted to the screen (src/ui/uiScale.ts) ------------------
+  let fitted = false;
+  const applyScale = (relayout: boolean) => {
+    const size = vm?.settings.textSize ?? 'laptop';
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const nextScale = effectiveUiScale(size, W, H);
+    const nextFitted = isFitted(size, W, H);
+    const fitChanged = nextFitted !== fitted;
+    fitted = nextFitted;
+    if (fitChanged && vm) {
+      title.setFitted(fitted);
+      overlays.setFitted(fitted);
+    }
+    if (nextScale === scale && document.documentElement.style.fontSize) return;
+    scale = nextScale;
+    document.documentElement.style.fontSize = `${scale * 100}%`;
+    queueMeasure();
+    if (relayout)
+      requestAnimationFrame(() => {
+        actionBar.fit();
+        victory.refreshChart();
+      });
+  };
+  const onResizeScale = () => applyScale(true);
+  window.addEventListener('resize', onResizeScale);
+
   // ---- render -------------------------------------------------------------
   let vm: ViewModel | null = null;
   const render = (next: ViewModel) => {
@@ -211,16 +240,7 @@ export const mountUi: MountUi = (host, api) => {
     if (prev === next) return;
     motion.reduced = next.reducedMotion;
     toggle(root, 'rm', next.reducedMotion);
-    if (!prev || prev.settings.textSize !== next.settings.textSize) {
-      scale = TEXT_SCALE[next.settings.textSize] ?? 1;
-      document.documentElement.style.fontSize = `${scale * 100}%`;
-      queueMeasure();
-      if (prev)
-        requestAnimationFrame(() => {
-          actionBar.fit();
-          victory.refreshChart();
-        });
-    }
+    if (!prev || prev.settings.textSize !== next.settings.textSize) applyScale(!!prev);
     showScreen(next.screen);
     toggle(root, 'in-game', next.screen === 'game');
 
@@ -240,7 +260,7 @@ export const mountUi: MountUi = (host, api) => {
       actionBar.update(g.actionBar);
       battle.update(g.battle);
       announce.update(g.turnBanner, g.banner, g.toasts);
-      tooltip.update(next.overlay ? null : g.tooltip);
+      tooltip.update(next.overlay ? null : g.tooltip, g.battle);
       pills.update(g.pills);
       humansOut.update(g.allHumansOut);
       handoff.update(g.handoff);
@@ -254,8 +274,10 @@ export const mountUi: MountUi = (host, api) => {
       battle.update(null);
       announce.update(null, null, []);
     }
-    if (!prev || prev.overlay !== next.overlay || prev.settings !== next.settings || prev.screen !== next.screen) overlays.update(next);
+    if (!prev || prev.overlay !== next.overlay || prev.settings !== next.settings || prev.screen !== next.screen || (next.overlay === 'pause' && prev.game?.roster !== next.game?.roster))
+      overlays.update(next);
     toggle(root, 'overlay-open', !!next.overlay || !!g?.confirm);
+    revalidateBubble();
   };
 
   // ---- delegated input behavior -------------------------------------------
@@ -281,19 +303,13 @@ export const mountUi: MountUi = (host, api) => {
     api.audio.play('uiClick');
   };
   const onOver = (e: PointerEvent) => {
+    // Button hover sound only; the bubble follows real pointer movement (onMove).
     const t = e.target instanceof Element ? e.target : null;
     const b = t?.closest<HTMLElement>('button');
-    const tipEl = t?.closest<HTMLElement>('[data-why], [data-tip]');
-    if (tipEl) {
-      const why = tipEl.getAttribute('aria-disabled') === 'true' ? tipEl.dataset.why : '';
-      const tip = why || tipEl.dataset.tip;
-      if (tip) showBubble(tipEl, tip, 0);
-      else hideBubble();
-    } else hideBubble();
     if (b && b !== lastHover) {
       lastHover = b;
       const now = performance.now();
-      if (b.getAttribute('aria-disabled') !== 'true' && now - lastHoverAt > 90) {
+      if (b.getAttribute('aria-disabled') !== 'true' && now - lastHoverAt > 90 && movedRecently()) {
         lastHoverAt = now;
         api.audio.play('uiHover');
       }
@@ -303,27 +319,78 @@ export const mountUi: MountUi = (host, api) => {
     e.preventDefault();
   };
 
-  // Disabled-button reasons and icon tips share one bubble, placed above the element.
+  // Disabled-button reasons and icon tips share one bubble. It follows real pointer movement only:
+  // a render that slides a disabled button under a still pointer (the turn-start case) never opens
+  // it, any move off the element (onto the board too) closes it, and every render re-checks it, so it
+  // never goes stale or outlives its reason. Action-bar bubbles sit above the whole bar, so they never
+  // cover a sibling button (e.g. the brass Trade on a forced trade).
   let bubbleTimer = 0;
   let bubbleFor: HTMLElement | null = null;
-  const showBubble = (el: HTMLElement, text: string, autoHideMs: number) => {
-    window.clearTimeout(bubbleTimer);
-    bubble.textContent = text;
-    bubble.classList.remove('hidden');
-    bubbleFor = el;
+  let bubbleText = '';
+  let lastX = -1;
+  let lastY = -1;
+  let lastMoveAt = -1e9;
+  const movedRecently = () => performance.now() - lastMoveAt < 400;
+  const tipOf = (el: HTMLElement): string => {
+    if (!el.isConnected || el.closest('.hidden, .off, .leaving')) return '';
+    const why = el.getAttribute('aria-disabled') === 'true' ? el.dataset.why : '';
+    return why || el.dataset.tip || '';
+  };
+  const placeBubble = (el: HTMLElement) => {
     const r = el.getBoundingClientRect();
     const b = bubble.getBoundingClientRect();
     let x = r.left + r.width / 2 - b.width / 2;
     x = Math.max(8, Math.min(window.innerWidth - b.width - 8, x));
-    let y = r.top - b.height - 8;
+    const bar = el.closest('.actionbar');
+    const top = bar ? bar.getBoundingClientRect().top : r.top;
+    let y = top - b.height - 8;
     if (y < 8) y = r.bottom + 8;
     bubble.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
+  };
+  const showBubble = (el: HTMLElement, text: string, autoHideMs: number) => {
+    window.clearTimeout(bubbleTimer);
+    bubbleText = text;
+    bubble.textContent = text;
+    bubble.classList.remove('hidden');
+    bubbleFor = el;
+    placeBubble(el);
     if (autoHideMs) bubbleTimer = window.setTimeout(hideBubble, autoHideMs);
   };
   const hideBubble = () => {
+    window.clearTimeout(bubbleTimer);
     if (!bubbleFor) return;
     bubbleFor = null;
+    bubbleText = '';
     bubble.classList.add('hidden');
+  };
+  /** After every render: hide if the element lost its reason, re-word it if the reason changed. */
+  const revalidateBubble = () => {
+    if (!bubbleFor) return;
+    const text = tipOf(bubbleFor);
+    if (!text) hideBubble();
+    else if (text !== bubbleText) {
+      bubbleText = text;
+      bubble.textContent = text;
+      placeBubble(bubbleFor);
+    }
+  };
+  const onMove = (e: PointerEvent) => {
+    if (e.clientX === lastX && e.clientY === lastY) return; // synthetic re-hover after a DOM change
+    lastX = e.clientX;
+    lastY = e.clientY;
+    lastMoveAt = performance.now();
+    const t = e.target instanceof Element && root.contains(e.target) ? e.target : null;
+    const tipEl = t?.closest<HTMLElement>('[data-why], [data-tip]') ?? null;
+    const text = tipEl ? tipOf(tipEl) : '';
+    if (!tipEl || !text) return hideBubble();
+    if (tipEl === bubbleFor && text === bubbleText) return;
+    showBubble(tipEl, text, 0);
+  };
+  const onDocOut = (e: PointerEvent) => {
+    if (!e.relatedTarget) hideBubble(); // the pointer left the window
+  };
+  const onAnyDown = (e: PointerEvent) => {
+    if (bubbleFor && !(e.target instanceof Node && bubbleFor.contains(e.target))) hideBubble();
   };
 
   // Keyboard: the controller owns game keys. The UI only handles keys for its own layers (menus,
@@ -371,7 +438,7 @@ export const mountUi: MountUi = (host, api) => {
     // Menu screens.
     if (focusedBtn && (e.key === 'Enter' || e.key === ' ')) return void e.stopPropagation();
     if (v.screen === 'title') {
-      if (e.key === 'Enter') (stop(), send({ type: 'nav', screen: 'newGame' }));
+      if (e.key === 'Enter') (stop(), send(v.save ? { type: 'continue' } : { type: 'nav', screen: 'newGame' }));
       else if (e.key === '?') (stop(), send({ type: 'overlay', overlay: 'rules' }));
     } else if (v.screen === 'newGame') {
       if (e.key === 'Enter') (stop(), v.newGame.canStart && send({ type: 'start' }));
@@ -392,6 +459,9 @@ export const mountUi: MountUi = (host, api) => {
   root.addEventListener('mousedown', onMouseDown);
   root.addEventListener('click', onClick);
   root.addEventListener('pointerover', onOver);
+  window.addEventListener('pointermove', onMove, { passive: true, capture: true });
+  window.addEventListener('pointerdown', onAnyDown, { capture: true });
+  document.addEventListener('pointerout', onDocOut);
   root.addEventListener('contextmenu', onContext);
   window.addEventListener('keydown', onKey, true);
 
@@ -410,9 +480,13 @@ export const mountUi: MountUi = (host, api) => {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', queueMeasure);
       window.removeEventListener('resize', refit);
+      window.removeEventListener('resize', onResizeScale);
       window.removeEventListener('pointerup', clearDown);
       window.removeEventListener('pointercancel', clearDown);
       window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('pointermove', onMove, { capture: true });
+      window.removeEventListener('pointerdown', onAnyDown, { capture: true });
+      document.removeEventListener('pointerout', onDocOut);
       root.remove();
       if (current?.root === root) current = null;
     },

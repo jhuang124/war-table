@@ -1,6 +1,7 @@
 // Things that float over the board: the territory tooltip (UX.md §7.4) and the reinforce pills (§3.2).
 
-import type { ControllerApi, PillsVM, TooltipVM, UiIntent } from '../../game/viewModel';
+import type { BattleVM, ControllerApi, PillsVM, TooltipVM, UiIntent } from '../../game/viewModel';
+import type { TerritoryId } from '../../engine/types';
 import { PLAYER_COLORS } from '../../shared/palette';
 import { emblem, h, setEmblem, setStyle, setText, toggle } from '../dom';
 
@@ -37,7 +38,12 @@ export class Tooltip {
     this.el.append(this.name, this.cont, owner, this.line);
   }
 
-  update(vm: TooltipVM | null): void {
+  /**
+   * `battle`: while an attack is armed, the source and the target already have their story in the
+   * battle panel and the bar, so hovering them shows no tooltip (it would sit on the arrow).
+   */
+  update(vm: TooltipVM | null, battle: BattleVM | null = null): void {
+    if (vm && battle && (vm.name === battle.attacker.territory || vm.name === battle.defender.territory)) vm = null;
     if (vm === this.vm) return;
     this.vm = vm;
     if (!vm) {
@@ -85,19 +91,23 @@ export class Tooltip {
       [vm.x + off, vm.y + off], // down-right
       [vm.x - off - r.width, vm.y + off], // down-left
     ];
-    const badge = vm.territory ? this.api.screenPos(vm.territory) : null;
+    // Keep off the hovered tile's badge, and off the selected source / target (the arrow or route runs
+    // between them) when the controller names them (additive TooltipVM.avoid).
+    const ids: TerritoryId[] = [...(vm.territory ? [vm.territory] : []), ...(vm.avoid ?? [])];
+    const anchors = ids.map((t) => this.api.screenPos(t)).filter((p): p is { x: number; y: number } => !!p);
     const fits = ([x, y]: [number, number]) => x >= 8 && y >= 8 && x + r.width <= W - 8 && y + r.height <= H - 8;
-    const clearOfBadge = ([x, y]: [number, number]) =>
-      !badge ||
+    const clearOf = (badge: { x: number; y: number }, [x, y]: [number, number]) =>
       x > badge.x + BADGE_HALF_W ||
       x + r.width < badge.x - BADGE_HALF_W ||
       y > badge.y + BADGE_HALF_H ||
       y + r.height < badge.y - BADGE_HALF_H;
+    const clearOfBadge = (c: [number, number]) => anchors.every((a) => clearOf(a, c));
     const av = this.avoid && !this.avoid.classList.contains('hidden') ? this.avoid.getBoundingClientRect() : null;
     const clearOfPills = ([x, y]: [number, number]) =>
       !av || !av.width || x > av.right + 4 || x + r.width < av.left - 4 || y > av.bottom + 4 || y + r.height < av.top - 4;
     const pick =
       cands.find((c) => fits(c) && clearOfBadge(c) && clearOfPills(c)) ??
+      cands.find((c) => fits(c) && (!anchors[0] || clearOf(anchors[0], c)) && clearOfPills(c)) ??
       cands.find((c) => fits(c) && clearOfPills(c)) ??
       cands.find(fits) ??
       cands[0];
@@ -157,7 +167,11 @@ export class Pills {
   }
 
   private enabled(id: 'plus5' | 'all'): boolean {
-    return !!this.vm?.buttons.find((b) => b.id === id)?.enabled;
+    return !!this.vm && this.enabledIn(this.vm, id) && !(id === 'plus5' && this.plus5.classList.contains('hidden'));
+  }
+
+  private enabledIn(vm: PillsVM, id: 'plus5' | 'all'): boolean {
+    return !!vm.buttons.find((b) => b.id === id)?.enabled;
   }
 
   private stopRepeat(): void {
@@ -174,12 +188,17 @@ export class Pills {
       this.stopRepeat();
       return;
     }
+    // With 5 or fewer left, '+5' clamps to the remainder and would duplicate 'All N': show only All.
+    const count = (id: 'plus5' | 'all') => Number(/\d+/.exec(vm.buttons.find((x) => x.id === id)?.label ?? '')?.[0] ?? NaN);
+    const allN = count('all');
+    const dupPlus5 = vm.buttons.some((x) => x.id === 'all') && (!this.enabledIn(vm, 'plus5') || !(allN > 5) || count('plus5') >= allN);
+    if (dupPlus5) this.stopRepeat();
     for (const [id, btn] of [
       ['plus5', this.plus5],
       ['all', this.all],
     ] as const) {
       const b = vm.buttons.find((x) => x.id === id);
-      toggle(btn, 'hidden', !b);
+      toggle(btn, 'hidden', !b || (id === 'plus5' && dupPlus5));
       if (!b) continue;
       setText(btn, b.label);
       toggle(btn, 'is-disabled', !b.enabled);

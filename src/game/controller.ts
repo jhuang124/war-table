@@ -40,14 +40,16 @@ import {
   type GameConfig,
   type GameEvent,
   type GameState,
+  type AiDifficulty,
   type PlayerConfig,
+  type PlayerKind,
   type PlayerId,
   type ReinforcementBreakdown,
   type TerritoryId,
 } from '../engine';
 import type { AudioEngine, PlayOptions, SfxName } from '../audio/types';
 import type { BoardHighlights, BoardView, PlayEventOptions, TerritoryPointerInfo, ViewportInsets } from '../render/BoardView';
-import { baseReceipt, buildActionBar, emptySel, selectionTargets, stagedTotal, type Sel } from './actionBar';
+import { baseReceipt, buildActionBar, dealingLine, emptySel, selectionTargets, stagedTotal, type Sel } from './actionBar';
 import { CONTINENT_ABBR, MINUS, SEP, cName, mergeBannerTitle, pName, pct, poss, seatRef, tName, upper } from './copy';
 import { applyEventToDisplay, isBlocking } from './display';
 import { clickableTerritories, explainTerritory, type ClickPlan, type ExplainUi, type Explanation } from './explain';
@@ -64,6 +66,7 @@ import {
   type NewGameDraft,
 } from './presets';
 import { reconcile } from './reconcile';
+import { effectiveUiScale } from '../ui/uiScale';
 import {
   buildAwards,
   buildRecap,
@@ -196,6 +199,8 @@ export interface RiskHooks {
 export interface GameController extends ControllerApi {
   hooks: RiskHooks;
   dispose(): void;
+  /** The in-game key handler without a DOM (unit tests); the browser path goes through keydown. */
+  handleKey(key: string, shift?: boolean, repeat?: boolean): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +245,8 @@ interface Engagement {
   endedAt: number | null;
   turn: number;
   details: string[];
+  /** An AI-vs-AI upset: no banner, a note on the log line instead. */
+  upset?: string | null;
 }
 
 interface BannerItem {
@@ -264,6 +271,8 @@ interface AiTurnCtx {
   headlineMs: number;
   /** The n-th AI-vs-AI engagement of the turn from which they play at 2×. */
   compressFrom: number;
+  /** Full-dice fights against a human played this turn (capped at AI_FULL_FIGHTS_PER_TURN). */
+  fullCount: number;
 }
 
 interface GameMeta {
@@ -308,6 +317,11 @@ const SNAP_BEAT_MS = 170;
 const AI_TURN_CAP_MS = 10_000;
 /** Past this point in an AI turn, AI-vs-AI engagements snap; fights against a human keep their weight. */
 const AI_HEADLINE_MS = 6_000;
+/** From round 4 the board is crowded and turns run long: the headline point comes sooner. */
+const AI_HEADLINE_LATE_MS = 4_000;
+const AI_HEADLINE_LATE_ROUND = 4;
+/** Full-dice fights against a human per AI turn; later ones play brief (arrow, ticks, flip, one log line). */
+const AI_FULL_FIGHTS_PER_TURN = 2;
 /** Round-1 AI turns before any human has moved: nothing is at stake yet, so they stay short. */
 const AI_OPENING_CAP_MS = 5_000;
 const TELEGRAPH_MS = 400;
@@ -429,6 +443,12 @@ class Controller {
   private guardUntil = 0;
   private holdUntil = 0;
   private spaceGuardUntil = 0;
+  /**
+   * A board click that also swapped the primary (a chain click during occupy, or an enemy click that
+   * ends reinforce) arms a new fight: Enter/Space are ignored briefly so a key meant for the old
+   * primary ('Move 9', 'Begin attack') never fires a Blitz the player hasn't seen.
+   */
+  private commitGuardUntil = 0;
 
   // Metrics
   private metricTurns: TurnMetric[] = [];
@@ -564,7 +584,8 @@ class Controller {
   private applySettingsToBoard(): void {
     const b = this.board;
     b.setShowLabels(this.settings.showLabels);
-    b.setUiScale(TEXT_SCALE[this.settings.textSize]);
+    this.lastBoardUiScale = this.boardUiScale();
+    b.setUiScale(this.lastBoardUiScale);
     b.setReducedMotion?.(this.reducedMotion());
     b.setAutoCamera?.(this.settings.autoCamera);
     this.audio.setVolume(this.settings.sfxVolume);
@@ -572,6 +593,20 @@ class Controller {
     this.audio.setMusic(this.settings.music);
     this.applyBoardSpeed();
   }
+
+  /** The text size fitted to this screen (UX.md §10.3), so badges and dice match the HUD and tray band. */
+  private boardUiScale(): number {
+    if (typeof window === 'undefined' || !window.innerWidth) return TEXT_SCALE[this.settings.textSize];
+    return effectiveUiScale(this.settings.textSize, window.innerWidth, window.innerHeight);
+  }
+
+  private lastBoardUiScale = -1;
+  private onResizeUiScale = (): void => {
+    const s = this.boardUiScale();
+    if (s === this.lastBoardUiScale) return;
+    this.lastBoardUiScale = s;
+    this.board.setUiScale(s);
+  };
 
   private aiSpeed(): AiSpeed {
     return this.sessionAiSpeed ?? this.settings.aiSpeed;
@@ -1197,13 +1232,16 @@ class Controller {
           g.conquered = true;
           if (g.winP <= 0.3) {
             const who = pName(d, ev.player);
-            this.announce({
-              tier: 1,
-              title: 'AGAINST THE ODDS',
-              subline: `${who} takes ${tName(ev.to)} at ${pct(g.winP)}%`,
-              seat: seatRef(d, ev.player),
-              parts: [{ subject: upper(who), predicate: `TAKES ${upper(tName(ev.to))} AGAINST THE ODDS` }],
-            });
+            // Tier 1 only when a human is in the fight; AI-vs-AI upsets go to the log and the awards.
+            if (this.upsetMatters(g)) {
+              this.announce({
+                tier: 1,
+                title: 'AGAINST THE ODDS',
+                subline: `${who} takes ${tName(ev.to)} at ${pct(g.winP)}%`,
+                seat: seatRef(d, ev.player),
+                parts: [{ subject: upper(who), predicate: `TOOK ${upper(tName(ev.to))} AGAINST THE ODDS` }],
+              });
+            } else g.upset = `against the odds (${pct(g.winP)}%)`;
             meta?.awards.upsets.push({ player: ev.player, kind: 'odds', pct: pct(g.winP), round: d.round });
           }
           this.finishEngagement();
@@ -1396,8 +1434,9 @@ class Controller {
     const A = pName(d, g.attacker);
     const verb = g.blitz ? 'blitzed' : 'attacked';
     const head = `${A} ${verb} ${tName(g.to)} from ${tName(g.from)}: ${g.startA} vs ${g.startD}`;
-    if (g.conquered) return `${head} → took it, lost ${g.attLost}`;
-    if (final) return `${head} → ${pName(d, g.defender)} held, ${A} lost ${g.attLost}`;
+    const upset = g.upset ? `${SEP}${g.upset}` : '';
+    if (g.conquered) return `${head} → took it, lost ${g.attLost}${upset}`;
+    if (final) return `${head} → ${pName(d, g.defender)} held, ${A} lost ${g.attLost}${upset}`;
     return `${head} → ${d.territories[g.from].armies} vs ${d.territories[g.to].armies}`;
   }
 
@@ -1423,23 +1462,32 @@ class Controller {
     const g = this.eng;
     if (!g || g.endedAt) return;
     g.endedAt = this.now();
-    this.writeEngagementLog(true);
     const d = this.disp!;
     if (!g.conquered && g.winP >= 0.75 && g.rolls > 0) {
       const D = pName(d, g.defender);
       const A = pName(d, g.attacker);
-      this.announce({
-        tier: 1,
-        title: 'HELD!',
-        subline: `${D} holds ${tName(g.to)}${SEP}${A} had ${pct(g.winP)}%`,
-        seat: seatRef(d, g.defender),
-        parts: [{ subject: upper(D), predicate: `HOLDS ${upper(tName(g.to))}` }],
-      });
+      // Tier 1 only when a human is in the fight; AI-vs-AI upsets go to the log and the awards.
+      if (this.upsetMatters(g)) {
+        this.announce({
+          tier: 1,
+          title: 'HELD!',
+          subline: `${D} holds ${tName(g.to)}${SEP}${A} had ${pct(g.winP)}%`,
+          seat: seatRef(d, g.defender),
+          // Past tense: merged with a continent line it must not read as a continent capture.
+          parts: [{ subject: upper(D), predicate: `HELD ${upper(tName(g.to))}` }],
+        });
+        if (this.isAiDriven(g.attacker)) this.narration = `${D} holds ${tName(g.to)}`;
+      } else g.upset = `an upset (${A} had ${pct(g.winP)}%)`;
       this.meta?.awards.upsets.push({ player: g.defender, kind: 'held', pct: pct(g.winP), round: d.round });
-      if (this.isAiDriven(g.attacker)) this.narration = `${D} holds ${tName(g.to)}`;
     }
+    this.writeEngagementLog(true);
     this.metricRolls.push({ blitz: g.blitz, count: g.rolls, ms: Math.round(g.lastRollEnd - g.startedAt), style: g.style });
     this.timer(() => this.invalidate(), 2600);
+  }
+
+  /** Upset banners are for fights a human is in (UX.md §5.2 tier 1); AI-vs-AI ones stay in the log. */
+  private upsetMatters(g: Engagement): boolean {
+    return this.isHumanSeat(g.attacker) || this.isHumanSeat(g.defender);
   }
 
   private closeEngagement(): void {
@@ -1557,6 +1605,9 @@ class Controller {
       this.banner = null;
       this.bannerNextAt = this.now() + 200;
     }
+    // A human's turn starts clean: tier-1 banners still queued from the AI turns before it would replay
+    // stale news after the turn banner leaves. The recap already carries what matters (R1-08).
+    if (!this.isAiDriven(player)) this.bannerQueue = this.bannerQueue.filter((x) => !(x.vm.tier === 1 && x.aiTurn !== null));
     this.turnBanner = { id: this.idSeq++, seat: seatRef(s, player), title: `${upper(poss(name))} TURN`, receipt, recap, holdMs };
     if (this.turnBannerTimer) this.clock.clearTimeout(this.turnBannerTimer);
     const id = this.turnBanner.id;
@@ -1656,7 +1707,8 @@ class Controller {
       if (ex.code) this.reject(ex.code, ex.text);
       return;
     }
-    this.rejection = null;
+    this.clearRejection();
+    if ((ex.plan.kind === 'occupyThen' && ex.plan.then) || ex.plan.kind === 'exitReinforce') this.commitGuardUntil = this.now() + 300;
     this.runPlan(ex.plan, { shift: info.shiftKey, alt: info.altKey });
     this.invalidate();
   }
@@ -1681,6 +1733,13 @@ class Controller {
     this.invalidate();
   }
 
+  /** A successful input changes the state line 1 describes: a pending rejection no longer applies. */
+  private clearRejection(): void {
+    if (!this.rejection) return;
+    this.rejection = null;
+    this.lineKey++;
+  }
+
   private rightClick(t: TerritoryId): void {
     const s = this.state!;
     const me = s.currentPlayer;
@@ -1692,6 +1751,7 @@ class Controller {
         else this.sel.staged[t] = n - 1;
         const i = this.sel.order.lastIndexOf(t);
         if (i >= 0) this.sel.order.splice(i, 1);
+        this.clearRejection();
         this.play('unplace', { volume: 0.7 });
         this.saveMeta();
         this.invalidate();
@@ -1704,6 +1764,7 @@ class Controller {
         const i = this.sel.order.lastIndexOf(t);
         if (i >= 0) this.sel.order.splice(i, 1);
         this.sel.lastPlaced = t;
+        this.clearRejection();
       }
       this.invalidate();
     }
@@ -1875,7 +1936,7 @@ class Controller {
       if (b.why) this.reject('button_disabled', b.why);
       return;
     }
-    this.rejection = null;
+    this.clearRejection();
     this.runButton(id);
     this.saveMeta();
     this.invalidate();
@@ -1996,6 +2057,7 @@ class Controller {
     const r = this.counterRange();
     if (!r) return;
     const value = Math.min(r.max, Math.max(r.min, Math.round(v)));
+    if (value !== r.value) this.clearRejection();
     if (this.state!.phase.kind === 'occupy') this.sel.occupyCount = value;
     else this.sel.fortifyCount = value;
     this.invalidate();
@@ -2021,13 +2083,17 @@ class Controller {
     if (ph.kind === 'reinforce' && !ph.mustTrade && ph.remaining > 0) {
       const n = id === 'all' ? ph.remaining : Math.min(5, ph.remaining);
       const r = this.act({ type: 'reinforce', player: s.currentPlayer, territory: t, count: n });
-      if (r.ok) for (let i = 0; i < n; i++) this.sel.order.push(t);
+      if (r.ok) {
+        for (let i = 0; i < n; i++) this.sel.order.push(t);
+        this.clearRejection();
+      }
     } else if (ph.kind === 'setup-place') {
       const left = ph.toPlace - stagedTotal(this.sel);
       if (left <= 0) return;
       const n = id === 'all' ? left : Math.min(5, left);
       this.sel.staged[t] = (this.sel.staged[t] ?? 0) + n;
       for (let i = 0; i < n; i++) this.sel.order.push(t);
+      this.clearRejection();
       this.play('place', { volume: 0.8 });
       this.saveMeta();
     }
@@ -2115,6 +2181,7 @@ class Controller {
         return true;
       }
       if (this.interactive() && this.backOut()) {
+        this.clearRejection();
         this.invalidate();
         return true;
       }
@@ -2143,6 +2210,7 @@ class Controller {
         this.skipWatched();
         return true;
       }
+      if (this.now() < this.commitGuardUntil && !this.kbFocus) return true;
       if (key === ' ') {
         if (this.now() < this.spaceGuardUntil) return true;
         if (this.busyBlocking()) {
@@ -2164,9 +2232,12 @@ class Controller {
         this.onBoardClick({ territory: t, clientX: 0, clientY: 0, shiftKey: false, altKey: false, metaKey: false, button: 0 });
         return true;
       }
+      // Enter means the primary the player is looking at now. If a click-through changes it before the
+      // key runs (a chain click turned 'Move 9' into 'Blitz'), the key is spent, not redirected.
+      const seen = this.primaryButton()?.id ?? null;
       const run = () => {
         const p = this.primaryButton();
-        if (p) this.pressButton(p.id);
+        if (p && p.id === seen) this.pressButton(p.id);
       };
       if (this.busyBlocking()) this.clickThrough(run);
       else run();
@@ -2363,6 +2434,9 @@ class Controller {
         }
         break;
       }
+      case 'setController':
+        this.setSeatController(i.player, i.kind, i.difficulty);
+        break;
       case 'saveAndQuit':
         this.save();
         this.wakeAll();
@@ -2386,6 +2460,42 @@ class Controller {
         break;
     }
     this.invalidate();
+  }
+
+  /**
+   * Hand a seat to the AI or back (R1-22). Applied at a safe point: never inside an AI beat or while
+   * events are still playing, so the display and the engine agree on who drives the turn.
+   */
+  private setSeatController(player: PlayerId, kind: PlayerKind, difficulty?: AiDifficulty): void {
+    const epoch = this.epoch;
+    const tryApply = () => {
+      const s = this.state;
+      if (epoch !== this.epoch || !s || this.screen !== 'game' || s.phase.kind === 'game-over') return;
+      const p = s.players[player];
+      if (!p || p.eliminated || p.kind === kind) return;
+      if (this.aiBusy || this.pumping || this.queue.length || this.inflight > 0) {
+        this.timer(tryApply, 60);
+        return;
+      }
+      const r = this.applyRaw({ type: 'setController', player, kind, ...(kind === 'ai' ? { difficulty: difficulty ?? 'normal' } : {}) });
+      if (!r.ok) {
+        this.toast(r.error);
+        return;
+      }
+      if (player === s.currentPlayer) {
+        // Whoever takes over starts from a clean selection (staged armies were never committed).
+        this.sel = emptySel();
+        this.frozenSel = null;
+        this.aiCtx = null;
+      }
+      this.enqueue(r.events.map((ev, i) => ({ ev, after: r.state, end: i === r.events.length - 1 })), { ai: false });
+      const name = p.name;
+      this.log('system', player, kind === 'ai' ? `The AI plays ${name}'s seat` : `${name} takes the seat back`, []);
+      this.applyBoardSpeed();
+      this.invalidate();
+      this.scheduleAi();
+    };
+    tryApply();
   }
 
   private standingsOrder(s: GameState): PlayerId[] {
@@ -2512,8 +2622,9 @@ class Controller {
         capped: false,
         capMs: opening ? AI_OPENING_CAP_MS : AI_TURN_CAP_MS,
         // Round 1 is a land grab: AI-vs-AI fights are pure headline there.
-        headlineMs: s.round <= 1 ? AI_OPENING_CAP_MS * 0.6 : AI_HEADLINE_MS,
+        headlineMs: s.round <= 1 ? AI_OPENING_CAP_MS * 0.6 : s.round >= AI_HEADLINE_LATE_ROUND ? AI_HEADLINE_LATE_MS : AI_HEADLINE_MS,
         compressFrom: s.round <= 1 ? 2 : 3,
+        fullCount: 0,
       };
       this.aiCtx = fresh;
       if (s.turn > 0) this.timer(() => this.capAiTurn(fresh), fresh.capMs);
@@ -2588,7 +2699,8 @@ class Controller {
       const a0 = this.chooseFor(s);
       if (isAttackAction(a0)) {
         // Once AI-vs-AI fights are compressed (2× / snapped), the pause between them shrinks too.
-        const between = ctx.briefCount >= ctx.compressFrom ? THINK_BETWEEN_COMPRESSED : THINK_BETWEEN;
+        const late = this.now() - ctx.startedAt > ctx.headlineMs;
+        const between = ctx.briefCount >= ctx.compressFrom || late ? THINK_BETWEEN_COMPRESSED : THINK_BETWEEN;
         await this.sleep((ctx.first ? THINK_TURN_START : between) * k);
         ctx.first = false;
         if (this.state !== s || !this.aiShouldAct()) return;
@@ -2672,7 +2784,9 @@ class Controller {
     // Fights against a human get the full show; once the turn is past its headline point, later ones
     // play brief (still visible: arrow, badge ticks, flip) instead of stalling the room.
     const pastHeadline = this.now() - ctx.startedAt > ctx.headlineMs;
-    const full = speed === 'watch' && this.isHumanSeat(defender, s0) && !this.autoplayOn && !pastHeadline;
+    const full =
+      speed === 'watch' && this.isHumanSeat(defender, s0) && !this.autoplayOn && !pastHeadline && ctx.fullCount < AI_FULL_FIGHTS_PER_TURN;
+    if (full) ctx.fullCount++;
     const vsHuman = this.isHumanSeat(defender, s0) && !this.autoplayOn;
     const style: 'full' | 'brief' = full ? 'full' : 'brief';
     const collected: { ev: GameEvent; after: GameState; end: boolean }[] = [];
@@ -2715,13 +2829,17 @@ class Controller {
     if (this.state !== planned) return;
     this.invalidate();
     // Weight follows stakes: AI-vs-AI fights are headlines. From the third one in a turn they run at 2×,
-    // and once the turn is past 6 s they snap (the result still lands, with a short beat).
+    // and once the turn is past its headline point (6 s; 4 s from round 4) they snap (the result still lands).
     let boardSpeed: number | undefined;
     let snap = false;
     if (!full && !vsHuman) {
       ctx.briefCount++;
       if (ctx.briefCount >= ctx.compressFrom && speed === 'watch') boardSpeed = 2;
       if (pastHeadline) snap = true;
+    } else if (!full && vsHuman && speed === 'watch') {
+      // Past the headline point or the full-fight cap, fights against a human stay visible (arrow, ticks,
+      // flip; never snapped) but run at 2×, so a rampage doesn't stall the room. The recap lists them.
+      boardSpeed = 2;
     }
     // (A snapped conquest still gets the instant-speed 250 ms beat in the pump.)
     this.enqueue(collected, { ai: true, style, speed: snap ? 0 : boardSpeed });
@@ -2884,8 +3002,21 @@ class Controller {
         cardState: cards >= 5 ? 'mustTrade' : cards === 4 ? 'warn' : 'normal',
         underAttack: underAttack === p.id && p.kind === 'human',
         highlighted: this.seatHighlight === p.id,
+        seatAction: this.seatActionFor(d, p.id),
       };
     });
+  }
+
+  /** Pause → Seats (R1-22): hand a human seat to the AI, or give a seat that started human back. */
+  private seatActionFor(d: GameState, id: PlayerId): RosterRowVM['seatAction'] {
+    const p = d.players[id];
+    if (!p || p.eliminated || d.phase.kind === 'game-over' || this.autoplayOn) return null;
+    const startedHuman = d.config.players[id]?.kind === 'human';
+    if (p.kind === 'human') {
+      return { label: `Let the AI play ${p.name}${SEP}Normal`, intent: { type: 'setController', player: id, kind: 'ai', difficulty: 'normal' } };
+    }
+    if (startedHuman) return { label: `${p.name} takes the seat back`, intent: { type: 'setController', player: id, kind: 'human' } };
+    return null;
   }
 
   private buildBar(d: GameState, sel: Sel, interactive: boolean): GameVM['actionBar'] {
@@ -2912,13 +3043,20 @@ class Controller {
               : d.phase.kind === 'setup-claim'
                 ? d.config.setupMode === 'draft'
                   ? `${name} is claiming`
-                  : 'Dealing territories and starting armies'
+                  : dealingLine(d)
                 : d.phase.kind === 'fortify'
                   ? `${name} is fortifying`
                   : `${name} is attacking`);
       }
     }
     const knock = meta.knockout && meta.knockout.by === me ? { victim: meta.knockout.victim, cards: meta.knockout.cards } : null;
+    // The armed target has fallen on the displayed board while the conquest still plays: the frozen
+    // selection would describe a half-moved board ('Attacking from New Guinea (1)').
+    const took =
+      interactive && this.frozenSel && sel === this.frozenSel && d.phase.kind === 'attack' && sel.selected && sel.target &&
+      d.territories[sel.selected].owner === me && d.territories[sel.target].owner === me
+        ? sel.target
+        : null;
     const bar = buildActionBar({
       s: d,
       sel,
@@ -2934,6 +3072,7 @@ class Controller {
       midTurn: knock,
       idleLine: idle,
       lineKey: this.lineKey,
+      took,
     });
     if (this.now() < this.holdUntil && bar.buttons.length) {
       bar.buttons = bar.buttons.map((b) => (b.brass ? { ...b, busy: true } : b));
@@ -2947,19 +3086,28 @@ class Controller {
     const now = this.now();
     let pair: { from: TerritoryId; to: TerritoryId } | null = null;
     let useEng = false;
+    // A pair is only a fight while the two tiles have different owners on the displayed board.
+    const contested = (p: { from: TerritoryId; to: TerritoryId }) => {
+      const o = d.territories[p.from].owner;
+      return o >= 0 && d.territories[p.to].owner !== o;
+    };
     const armed =
       interactive && d.phase.kind === 'attack' && sel.selected && sel.target && d.territories[sel.selected].owner === d.currentPlayer
         ? { from: sel.selected, to: sel.target }
         : null;
-    if (g && !g.endedAt && g.style === 'full') {
+    // A decided full fight lingers 2.5 s, only inside the turn it was fought in.
+    const lingering = !!g && !!g.endedAt && g.style === 'full' && g.turn === d.turn && now - g.endedAt < 2500;
+    const preview = this.aiPreview;
+    const previewIsEng = !!preview && !!g && g.from === preview.from && g.to === preview.to && g.turn === d.turn && (!!g.endedAt || g.conquered);
+    if (g && !g.endedAt && g.style === 'full' && g.turn === d.turn) {
       pair = g;
       useEng = true;
-    } else if (armed) {
+    } else if (armed && contested(armed)) {
       pair = armed;
       useEng = !!g && g.from === armed.from && g.to === armed.to && g.turn === d.turn && !g.conquered;
-    } else if (this.aiPreview) {
-      pair = this.aiPreview;
-    } else if (g && g.endedAt && g.style === 'full' && now - g.endedAt < 2500) {
+    } else if (preview && !previewIsEng && contested(preview)) {
+      pair = preview;
+    } else if (lingering) {
       pair = g;
       useEng = true;
     }
@@ -2967,10 +3115,13 @@ class Controller {
     const { from, to } = pair;
     const attacker = useEng && g ? g.attacker : d.territories[from].owner;
     const defender = useEng && g ? g.defender : d.territories[to].owner;
-    if (attacker < 0 || defender < 0 || !d.players[attacker] || !d.players[defender]) return null;
-    const a = d.territories[from].armies;
-    const def = d.territories[to].owner === defender ? d.territories[to].armies : 0;
-    const live = def > 0 && a >= 2 && d.territories[to].owner !== attacker;
+    if (attacker < 0 || defender < 0 || attacker === defender || !d.players[attacker] || !d.players[defender]) return null;
+    // A decided engagement renders from its own record (the armies when the verdict landed), never from
+    // the board after the occupy march has moved troops or the tile has changed hands.
+    const decided = useEng && !!g && (!!g.endedAt || g.conquered);
+    const a = decided ? g!.startA - g!.attLost : d.territories[from].armies;
+    const def = decided ? Math.max(0, g!.startD - g!.defLost) : d.territories[to].owner === defender ? d.territories[to].armies : 0;
+    const live = !decided && def > 0 && a >= 2 && d.territories[to].owner !== attacker;
     const p = live ? winProbability(a, def) : null;
     const hintsOn = this.meta?.hints[d.currentPlayer] ?? true;
     const tally =
@@ -3064,8 +3215,13 @@ class Controller {
     const s = this.state!;
     const ts = d.territories[t];
     const c = TERRITORIES[t].continent;
+    const sel = this.sel;
+    // The selected fortify source is already named by the bar; a tooltip there would sit on the route (R1-18).
+    if (s.phase.kind === 'fortify' && sel.selected === t && this.hover?.visible && !this.kbFocus) return null;
     const ex = explainTerritory(s, this.explainUi(), t);
+    const avoid = [sel.selected, sel.target].filter((x): x is TerritoryId => !!x && x !== t);
     return {
+      ...(avoid.length ? { avoid } : {}),
       x,
       y,
       name: tName(t),
@@ -3109,6 +3265,8 @@ class Controller {
     const own = () => TERRITORY_IDS.filter((t) => d.territories[t].owner === me);
     switch (ph.kind) {
       case 'setup-claim':
+        // A random deal is playing: nothing to claim, so nothing glows.
+        if (d.config.setupMode !== 'draft') return {};
         return { selectable: TERRITORY_IDS.filter((t) => d.territories[t].owner === UNCLAIMED) };
       case 'setup-place': {
         const left = ph.toPlace - stagedTotal(sel);
@@ -3262,6 +3420,7 @@ class Controller {
     window.addEventListener('pointerdown', onPointer, true);
     window.addEventListener('pointerup', onPointer, true);
     window.addEventListener('wheel', onPointer, { capture: true, passive: true });
+    window.addEventListener('resize', this.onResizeUiScale);
     const mq = typeof matchMedia !== 'undefined' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
     const onMq = () => {
       this.applySettingsToBoard();
@@ -3275,6 +3434,7 @@ class Controller {
       window.removeEventListener('pointerdown', onPointer, true);
       window.removeEventListener('pointerup', onPointer, true);
       window.removeEventListener('wheel', onPointer, true);
+      window.removeEventListener('resize', this.onResizeUiScale);
       mq?.removeEventListener?.('change', onMq);
     });
   }
@@ -3459,6 +3619,7 @@ export function createController(opts: { board: BoardView; audio: AudioEngine } 
     audio: c.audio,
     hooks,
     dispose: () => c.dispose(),
+    handleKey: (key, shift, repeat) => c.handleKey(key, shift, repeat),
   };
 }
 

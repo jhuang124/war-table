@@ -27,10 +27,13 @@ export class TopBar {
   private vm: TopBarVM | null = null;
   private lastPulse = -1;
   private lastPlayer = -1;
+  private left: HTMLDivElement;
+  private right: HTMLDivElement;
+  private fitKey = '';
 
   constructor(send: (i: UiIntent) => void) {
     this.el = h('header', 'topbar panel-strip');
-    const left = h('div', 'tb-left');
+    const left = (this.left = h('div', 'tb-left'));
     this.chip = h('div', 'player-chip');
     this.chipEmb = emblem('crimson', 'emb', 'ink');
     this.chipName = h('span', 'pc-name');
@@ -50,7 +53,7 @@ export class TopBar {
       this.stepper.append(el);
     });
 
-    const right = h('div', 'tb-right');
+    const right = (this.right = h('div', 'tb-right'));
     this.nextSet = h('div', 'nextset-chip');
     this.aiWrap = h('div', 'ai-speed');
     this.aiWrap.append(h('span', 'ai-speed-label', 'AI'));
@@ -121,5 +124,35 @@ export class TopBar {
 
     toggle(this.aiWrap, 'hidden', vm.aiSpeed === null);
     if (vm.aiSpeed) this.ai.set(vm.aiSpeed);
+    const key = [vm.player.name, vm.player.kind, vm.round, vm.step === 'setup', vm.nextSet?.label ?? '', vm.aiSpeed === null].join('|');
+    if (key !== this.fitKey) {
+      this.fitKey = key;
+      this.fit();
+    }
+  }
+
+  /**
+   * When the sides would run into the centered phase stepper (big text on a narrow screen), the
+   * stepper collapses to the current phase, then the 'AI' label goes. Runs on content change and resize.
+   */
+  fit(): void {
+    // The side columns are 1fr (min auto), so they grow under the stepper rather than overflow: compare
+    // the content edges with the stepper's instead.
+    const edge = (wrap: HTMLElement, side: 'first' | 'last') => {
+      const kids = [...wrap.children].filter((k) => (k as HTMLElement).offsetParent !== null);
+      const k = side === 'first' ? kids[0] : kids[kids.length - 1];
+      return k ? k.getBoundingClientRect() : null;
+    };
+    const crowded = () => {
+      if (this.stepper.offsetParent === null) return false;
+      const st = this.stepper.getBoundingClientRect();
+      const l = edge(this.left, 'last');
+      const r = edge(this.right, 'first');
+      return (!!l && l.right > st.left - 12) || (!!r && r.left < st.right + 12);
+    };
+    this.el.classList.remove('tb-compact', 'tb-tight');
+    if (!this.el.isConnected || !crowded()) return;
+    this.el.classList.add('tb-compact');
+    if (crowded()) this.el.classList.add('tb-tight');
   }
 }

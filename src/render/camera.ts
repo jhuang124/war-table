@@ -6,7 +6,8 @@ import { clamp, ease, lerp } from './anim';
 import { FRAME_W, FRAME_H } from './scene';
 
 const DEG = Math.PI / 180;
-export const HOME_PITCH = 55;
+/** Home pitch: steep enough that the board fills the table, shallow enough that the pieces stand up. */
+export const HOME_PITCH = 64;
 const BASE_FOV = 36;
 
 interface Pose {
@@ -128,61 +129,127 @@ export class CameraRig {
     cam.updateMatrixWorld(true);
   }
 
-  /** Fit the board (plus frame) into the free region with a 4% margin at pitch 55, azimuth 0. */
+  /**
+   * Home view: as large as the HUD allows at HOME_PITCH, azimuth 0.
+   * - The land (every territory, with its badge) sits inside the HUD-free region with the 4% margin, so
+   *   nothing you play on is ever under the HUD, and it stays above the battle band (dice never cover
+   *   a territory).
+   * - The frame and the outer ocean may run past that region: under the roster / rail edges, and down
+   *   into the battle band (the tray only shows during fights, over open ocean and frame). The frame
+   *   stays on the canvas, below the top bar and above the action bar.
+   * The board is width-bound at most sizes, so fitting the land (not the frame) is what buys size.
+   */
   recomputeHome(): void {
     const wasHome = this.isHome(0.02);
-    const { x0, y0, x1, y1 } = this.region();
-    const rw = x1 - x0;
-    const rh = y1 - y0;
-    const availW = rw * 0.92;
-    const availH = rh * 0.92;
-    const hw = this.boardW / 2 + FRAME_W;
-    const hh = this.boardH / 2 + FRAME_W;
-    const corners = [
-      [-hw, 0, -hh],
-      [hw, 0, -hh],
-      [-hw, 0, hh],
-      [hw, 0, hh],
-      [-hw, FRAME_H, -hh],
-      [hw, FRAME_H, -hh],
-      [-hw, FRAME_H, hh],
-      [hw, FRAME_H, hh],
-    ];
-    const pose: Pose = { tx: 0, tz: 0, dist: 90, pitch: HOME_PITCH, az: 0 };
-    const cam = this.camera.clone();
-    for (let it = 0; it < 40; it++) {
-      this.place(pose, cam);
-      let minX = Infinity;
-      let maxX = -Infinity;
-      let minY = Infinity;
-      let maxY = -Infinity;
-      for (const c of corners) {
-        this.tmp.set(c[0], c[1], c[2]).project(cam);
-        const px = (this.tmp.x * 0.5 + 0.5) * this.W;
-        const py = (-this.tmp.y * 0.5 + 0.5) * this.H;
-        minX = Math.min(minX, px);
-        maxX = Math.max(maxX, px);
-        minY = Math.min(minY, py);
-        maxY = Math.max(maxY, py);
-      }
-      const bw = maxX - minX;
-      const bh = maxY - minY;
-      const s = Math.max(bw / availW, bh / availH);
-      const offY = (minY + maxY) / 2 - (y0 + y1) / 2;
-      // px → world units at the target (approx)
-      const unitsPerPx = (2 * pose.dist * Math.tan((BASE_FOV * DEG) / 2)) / this.H;
-      pose.tz += (offY * unitsPerPx) / Math.sin(HOME_PITCH * DEG);
-      pose.dist *= 1 + (s - 1) * 0.9;
-      if (Math.abs(s - 1) < 0.001 && Math.abs(offY) < 0.3) break;
-    }
-    this.home = pose;
+    this.home = this.solveHome();
     if (wasHome || !this.initialized) {
-      this.cur = { ...pose };
-      this.goal = { ...pose };
+      this.cur = { ...this.home };
+      this.goal = { ...this.home };
       this.initialized = true;
     }
   }
+
+  /** Land and frame points (world) for the home fit. */
+  private fitPoints(): { land: number[][]; frame: number[][] } {
+    const hw = this.boardW / 2 + FRAME_W;
+    const hh = this.boardH / 2 + FRAME_W;
+    const frame: number[][] = [];
+    for (const x of [-hw, hw]) for (const z of [-hh, hh]) for (const y of [0, FRAME_H]) frame.push([x, y, z]);
+    const ring = this.landHull ?? [
+      [0, 0],
+      [this.boardW, 0],
+      [this.boardW, this.boardH],
+      [0, this.boardH],
+    ];
+    // board coords (origin bottom-left, +y north) → world (x east, z south), at the tile tops
+    const land = ring.map(([bx, by]) => [bx - this.boardW / 2, 0.55, this.boardH / 2 - by]);
+    return { land, frame };
+  }
+
+  /** Convex hull of every territory outline, board coords (set once by the view). */
+  landHull: [number, number][] | null = null;
+
+  private project(pts: number[][], cam: THREE.PerspectiveCamera): { x0: number; y0: number; x1: number; y1: number } {
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    for (const c of pts) {
+      this.tmp.set(c[0], c[1], c[2]).project(cam);
+      const px = (this.tmp.x * 0.5 + 0.5) * this.W;
+      const py = (-this.tmp.y * 0.5 + 0.5) * this.H;
+      x0 = Math.min(x0, px);
+      x1 = Math.max(x1, px);
+      y0 = Math.min(y0, py);
+      y1 = Math.max(y1, py);
+    }
+    return { x0, y0, x1, y1 };
+  }
+
+  private solveHome(): Pose {
+    const r = this.region();
+    const mx = (r.x1 - r.x0) * 0.04;
+    const my = (r.y1 - r.y0) * 0.04;
+    // land limits: the HUD-free region with a 4% margin
+    const L = { x0: r.x0 + mx, x1: r.x1 - mx, y0: r.y0 + my, y1: r.y1 - my };
+    // frame limits: on the canvas, under the top bar's edge at most, above the action bar
+    const i = this.insets;
+    const barTop = this.H - clamp(i.bottom - Math.max(0, i.trayBand), 0, this.H * 0.5);
+    const edge = Math.max(6, this.W * 0.006);
+    const F = { x0: edge, x1: this.W - edge, y0: r.y0 + 4, y1: Math.max(r.y1, barTop - 10) };
+    const pts = this.fitPoints();
+    const cam = this.camera.clone();
+    const pose: Pose = { tx: 0, tz: 0, dist: 90, pitch: HOME_PITCH, az: 0 };
+    const pr = HOME_PITCH * DEG;
+    // Place the pose at `dist`, centre the land vertically in its limits, then slide within the slack the
+    // frame limits leave. Returns false if it can't fit at this distance.
+    const fitAt = (dist: number): boolean => {
+      pose.dist = dist;
+      pose.tz = 0;
+      const unitsPerPx = (2 * dist * Math.tan((BASE_FOV * DEG) / 2)) / this.H / Math.sin(pr);
+      for (let it = 0; it < 8; it++) {
+        this.place(pose, cam);
+        const l = this.project(pts.land, cam);
+        const off = (l.y0 + l.y1) / 2 - (L.y0 + L.y1) / 2;
+        if (Math.abs(off) < 0.2) break;
+        pose.tz += off * unitsPerPx;
+      }
+      for (let pass = 0; pass < 3; pass++) {
+        this.place(pose, cam);
+        const l = this.project(pts.land, cam);
+        const f = this.project(pts.frame, cam);
+        if (l.x0 < L.x0 - 0.5 || l.x1 > L.x1 + 0.5 || f.x0 < F.x0 - 0.5 || f.x1 > F.x1 + 0.5) return false;
+        if (l.y1 - l.y0 > L.y1 - L.y0 + 0.5 || f.y1 - f.y0 > F.y1 - F.y0 + 0.5) return false;
+        // allowed downward (+) / upward (−) screen shift
+        const lo = Math.max(L.y0 - l.y0, F.y0 - f.y0);
+        const hi = Math.min(L.y1 - l.y1, F.y1 - f.y1);
+        if (lo > hi + 0.5) return false;
+        const shift = clamp(0, lo, hi);
+        if (Math.abs(shift) < 0.3) return true;
+        pose.tz -= shift * unitsPerPx;
+      }
+      return true;
+    };
+    // Largest board that fits: bisect the distance (feasibility is monotone in it).
+    let lo = 20;
+    let hi = 400;
+    for (let it = 0; it < 40 && !fitAt(hi); it++) hi *= 1.5;
+    for (let it = 0; it < 32; it++) {
+      const mid = (lo + hi) / 2;
+      if (fitAt(mid)) hi = mid;
+      else lo = mid;
+    }
+    fitAt(hi);
+    return { ...pose };
+  }
   private initialized = false;
+
+  /** A camera parked at the home pose (for layout that is decided at the home view). */
+  homeCamera(): THREE.PerspectiveCamera {
+    const cam = this.camera.clone();
+    this.place(this.home, cam);
+    return cam;
+  }
 
   isHome(tol = 0.1): boolean {
     const c = this.goal;

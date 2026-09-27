@@ -71,6 +71,16 @@ export interface BarInput {
   /** Idle line (game over, etc.). */
   idleLine: string | null;
   lineKey: number;
+  /**
+   * A conquest is on screen but the selection that armed it hasn't caught up (the flood and march are
+   * still playing): line 1 says what happened instead of describing a half-moved board.
+   */
+  took?: TerritoryId | null;
+}
+
+/** Line 1 while the opening deal plays (a random deal: nothing to click, a click only skips it). */
+export function dealingLine(s: GameState): string {
+  return s.config.initialPlacement === 'auto' ? `Dealing territories and starting armies` : `Dealing territories`;
 }
 
 function btn(
@@ -158,6 +168,7 @@ export function buildActionBar(inp: BarInput): ActionBarVM {
   const ph = s.phase;
   switch (ph.kind) {
     case 'setup-claim':
+      if (s.config.setupMode !== 'draft') return base('setup-claim', dealingLine(s), 'Territories are dealt at random.');
       return base('setup-claim', `Claim a territory${SEP}click any parchment tile`, 'Take turns until all 42 are claimed.');
     case 'setup-place': {
       const staged = stagedTotal(sel);
@@ -258,7 +269,7 @@ export function buildActionBar(inp: BarInput): ActionBarVM {
         const line1 = `Attack ${tName(to)} from ${tName(from)}`;
         const hint = sel.auto
           ? `Click another of yours to switch.`
-          : `Blitz keeps rolling until ${tName(to)} falls or ${tName(from)} is down to 1.`;
+          : `Blitz rolls until they fall or you're down to 1.`;
         return base('attack', line1, hint, {
           chips: [cardChip],
           dice: ok ? { value: dice, max: max as 1 | 2 | 3 } : null,
@@ -275,6 +286,12 @@ export function buildActionBar(inp: BarInput): ActionBarVM {
         btn('roll', 'Roll', 'secondary', { enabled: false, why }),
         btn('blitz', 'Blitz', 'primary', { enabled: false, why, keycap: 'Space' }),
       ];
+      if (inp.took && s.territories[inp.took].owner === me) {
+        return base('attack', `You took ${tName(inp.took)}`, '', {
+          chips: [cardChip],
+          buttons: [...disabledFight('Pick a target first'), ...exits(false)],
+        });
+      }
       if (sel.selected && s.territories[sel.selected].owner === me) {
         const from = sel.selected;
         return base('attack', `Attacking from ${tName(from)} (${s.territories[from].armies})${SEP}click a glowing enemy`, '', {
@@ -298,6 +315,8 @@ export function buildActionBar(inp: BarInput): ActionBarVM {
       const value = Math.min(ph.max, Math.max(ph.min, sel.occupyCount ?? d.count));
       const minWord = ph.min === 1 ? 'At least 1, for the die you rolled.' : `At least ${ph.min}, one per die you rolled.`;
       return base('occupy', `You took ${tName(ph.to)}${SEP}move armies in`, `${minWord} 1 stays in ${tName(ph.from)}.`, {
+        // Card status stays on screen through the whole attack phase (UX.md §3.3).
+        chips: [{ id: 'card', label: 'Card earned ✓', tone: 'success' }],
         counter: { value, min: ph.min, max: ph.max, note: d.note },
         buttons: [
           btn('min', `Min ${ph.min}`, 'secondary', { enabled: value > ph.min, why: 'Already at the minimum' }),

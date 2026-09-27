@@ -53,7 +53,7 @@ class Row {
     const bar = h('div', 'r-bar');
     this.barFill = h('div', 'r-bar-fill');
     bar.append(this.barFill);
-    const l2 = h('div', 'r-line');
+    const l2 = h('div', 'r-line r-armline');
     const armWrap = h('span', 'r-arm');
     this.armies = h('span', 'num');
     armWrap.append(this.armies, h('span', 'dim', ' armies'));
@@ -126,6 +126,14 @@ class Row {
 
 export class Roster {
   readonly el: HTMLElement;
+  /**
+   * Compact rows (no armies line) when the full roster would reach down to the action bar, e.g. four
+   * seats at a large text size on a short screen. Measured by the UI root on every layout change.
+   */
+  fitAbove(limitY: number): void {
+    this.el.classList.remove('compact');
+    if (this.el.getBoundingClientRect().bottom > limitY) this.el.classList.add('compact');
+  }
   private rows: Row[] = [];
   private vm: RosterRowVM[] | null = null;
 

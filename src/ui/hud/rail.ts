@@ -313,8 +313,14 @@ export class LogDrawer {
     return this.drawer.el;
   }
 
+  private open = false;
+
   update(open: boolean, lines: LogLineVM[]): void {
     this.drawer.show(open);
+    const opening = open && !this.open;
+    this.open = open;
+    // Opening shows the newest lines (a hidden drawer can't hold a scroll position).
+    if (opening) this.toBottom();
     if (this.vm === lines) return;
     this.vm = lines;
     const sc = this.drawer.body;
@@ -347,7 +353,13 @@ export class LogDrawer {
     for (const [id, ln] of this.lines) if (!seen.has(id)) (ln.el.remove(), this.lines.delete(id));
     for (const [r, el] of this.rounds) if (!seenRounds.has(r)) (el.remove(), this.rounds.delete(r));
     toggle(this.empty, 'hidden', lines.length > 0);
-    if (atBottom || !open) requestAnimationFrame(() => (sc.scrollTop = sc.scrollHeight));
+    if (atBottom || !open || opening) this.toBottom();
+  }
+
+  private toBottom(): void {
+    const sc = this.drawer.body;
+    sc.scrollTop = sc.scrollHeight;
+    requestAnimationFrame(() => (sc.scrollTop = sc.scrollHeight));
   }
 
   /** Test/gallery hook: expand the first engagement line. */

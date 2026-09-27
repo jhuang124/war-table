@@ -14,13 +14,13 @@ import type {
   ViewportInsets,
 } from './BoardView';
 import type { GameEvent, GameState, PlayerId, TerritoryId } from '../engine/types';
-import { TERRITORY_IDS } from '../engine/mapData';
+import { TERRITORIES, TERRITORY_IDS } from '../engine/mapData';
 import type { AudioEngine, PlayOptions, SfxName } from '../audio/types';
 import { PLAYER_COLORS, type PlayerPalette } from '../shared/palette';
 import { Animator, ease, clamp, type Run } from './anim';
 import { buildScene } from './scene';
 import { TileSet, type Tile, type RimMode } from './tiles';
-import { PieceSystem } from './pieces';
+import { FIGURE_H, FORMATION_D, FORMATION_W, PieceSystem } from './pieces';
 import { Overlay } from './overlay';
 import { Continents } from './continents';
 import { AttackArrow, FortifyRoute, Particles, Ripples, SeaLanes } from './fx';
@@ -31,6 +31,7 @@ import {
   IVORY,
   TILE_DEPTH,
   TILE_TOP,
+  convexHull,
   distToRing,
   hexToRgb,
   paletteOf,
@@ -78,7 +79,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   await loadFonts();
 
   // --- renderer -------------------------------------------------------------
-  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', alpha: false });
+  const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true, powerPreference: 'high-performance', alpha: false });
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -127,6 +128,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   const overlay = new Overlay(container, G, tiles, anim);
   const tray = new DiceTray(anim, parts.envTexture, parts.walnut);
   const rig = new CameraRig(G.width, G.height);
+  // The home view fits the land (not the frame) inside the HUD-free region.
+  rig.landHull = convexHull(TERRITORY_IDS.flatMap((id) => G.territories[id].polygons.flatMap((p) => p.outer)));
   const camera = rig.camera;
 
   // --- displayed board state --------------------------------------------------
@@ -297,9 +300,13 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         arrowSource = null;
       }
     }
-    // A selection change ends the dice linger.
+    // A selection change ends the dice linger, except the controller's auto-chain after a conquest:
+    // with no arrow and the selection on the last engagement's own pair, the deciding roll keeps its
+    // moment until the linger timer or the next roll ends it (R1-07).
     const selKey = (x: BoardHighlights) => `${x.selected ?? ''}|${x.arrow ? `${x.arrow.from}>${x.arrow.to}` : ''}`;
-    if (selKey(h) !== selKey(prev) && tray.visible && rolling === 0) tray.hide(200);
+    const [pairFrom, pairTo] = lastPairKey.split('>');
+    const autoChain = !h.arrow && !!h.selected && (h.selected === pairFrom || h.selected === pairTo);
+    if (selKey(h) !== selKey(prev) && tray.visible && rolling === 0 && !autoChain) tray.hide(200);
   };
 
   // --- hover / picking -----------------------------------------------------------------
@@ -1096,6 +1103,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     for (const m of route.mats) m.resolution.set(W, H);
     particles.setViewportHeight(H * renderer.getPixelRatio(), camera.fov);
     layoutTray();
+    placeFormations();
   };
   const layoutTray = () => {
     let bandTop = H - insets.bottom;
@@ -1106,6 +1114,116 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     }
     tray.layout(W, H, bandTop, bandH, uiScale);
   };
+  // --- formations beside their badges ------------------------------------------------------------
+  // Decided at the home view (where the room reads the board): each formation stands north of its
+  // badge, or to one side, wherever it covers the fewest other badges and names and stays on its tile.
+  const placeFormations = () => {
+    const cam = rig.homeCamera();
+    const v = new THREE.Vector3();
+    const proj = (x: number, y: number, z: number): [number, number] => {
+      v.set(x, y, z).project(cam);
+      return [(v.x * 0.5 + 0.5) * W, (-v.y * 0.5 + 0.5) * H];
+    };
+    const bw = 46 * uiScale;
+    const bh = 22 * uiScale;
+    type Box = [number, number, number, number];
+    const badgeBox = new Map<TerritoryId, Box>();
+    const labelBox = new Map<TerritoryId, Box>();
+    for (const t of tiles.list) {
+      const [x, y] = proj(t.anchorW.x, TILE_TOP, t.anchorW.z + t.badgeDz);
+      badgeBox.set(t.id, [x - bw / 2, y - bh / 2, x + bw / 2, y + bh / 2]);
+      const name = TERRITORIES[t.id].name;
+      const lines = name.length > 13 && name.includes(' ') ? 2 : 1;
+      const lw = Math.min(13, Math.ceil(name.length / lines)) * 6.4 * uiScale;
+      labelBox.set(t.id, [x - lw / 2, y + bh / 2 + 2, x + lw / 2, y + bh / 2 + 2 + lines * 10 * uiScale]);
+    }
+    const overlap = (a: Box, b: Box) =>
+      Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) * Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+    const footprint = (cx: number, cz: number): Box => {
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      const hw = FORMATION_W / 2;
+      const hd = FORMATION_D / 2;
+      for (const [dx, dz, y] of [
+        [-hw, -hd, TILE_TOP + FIGURE_H],
+        [hw, -hd, TILE_TOP + FIGURE_H],
+        [-hw, hd, TILE_TOP],
+        [hw, hd, TILE_TOP],
+      ]) {
+        const [px, py] = proj(cx + dx, y, cz + dz);
+        x0 = Math.min(x0, px);
+        x1 = Math.max(x1, px);
+        y0 = Math.min(y0, py);
+        y1 = Math.max(y1, py);
+      }
+      return [x0, y0, x1, y1];
+    };
+    const placed: Box[] = [];
+    // Small tiles first: they have the fewest good spots.
+    const order = [...tiles.list].sort((a, b) => a.clearance - b.clearance);
+    for (const t of order) {
+      const a = t.anchorW;
+      const bz = a.z + t.badgeDz;
+      const [, y0] = proj(a.x, TILE_TOP, bz);
+      const [, y1] = proj(a.x, TILE_TOP, bz - 1);
+      const [x1] = proj(a.x + 1, TILE_TOP, bz);
+      const pxZ = Math.max(1e-3, y0 - y1);
+      const pxX = Math.max(1e-3, x1 - proj(a.x, TILE_TOP, bz)[0]);
+      // North: the front bases tuck behind the badge's top edge, the bodies stand clear above it.
+      // Owner colour on the wrong tile misreads as ownership, so staying on the own tile outranks
+      // everything but covering another badge; names are DOM and stay legible over pieces.
+      const northZ = (tuck: number) => bz - (bh / 2 - tuck * uiScale) / pxZ - FORMATION_D / 2;
+      const sideX = (bw / 2 + 2) / pxX + FORMATION_W / 2;
+      const sideZ = bz - FORMATION_D * 0.3;
+      const cands: [number, number, number][] = [
+        [0, northZ(3), 0],
+        [0, northZ(9), 25],
+        [-0.4 * bw / pxX, northZ(3), 30],
+        [0.4 * bw / pxX, northZ(3), 30],
+        [-0.4 * bw / pxX, northZ(9), 50],
+        [0.4 * bw / pxX, northZ(9), 50],
+        [-sideX, sideZ, 120],
+        [sideX, sideZ, 200], // east is where the +N ghost chip hangs
+      ];
+      const own = badgeBox.get(t.id)!;
+      let best = cands[0];
+      let bestScore = Infinity;
+      const S = [-0.5, 0, 0.5];
+      for (const c of cands) {
+        const cx = a.x + c[0];
+        const cz = c[1];
+        const box = footprint(cx, cz);
+        let score = c[2];
+        score += overlap(box, own) * 1.5;
+        for (const o of tiles.list) {
+          if (o.id === t.id) continue;
+          score += overlap(box, badgeBox.get(o.id)!) * 3;
+          if (overlay.labelsOn) score += overlap(box, labelBox.get(o.id)!) * 0.4;
+        }
+        for (const p of placed) score += overlap(box, p) * 1.5;
+        // stay on your own tile: sample a 3 × 3 grid over the footprint
+        const area = (box[2] - box[0]) * (box[3] - box[1]);
+        let off = 0;
+        for (const fx of S)
+          for (const fz of S) {
+            const [bx, by] = toBoard(cx + fx * FORMATION_W, cz + fz * FORMATION_D);
+            if (!t.rings.some((r) => pointInRing(bx, by, r))) off++;
+          }
+        score += (off / 9) * area * 3;
+        if (score < bestScore) {
+          bestScore = score;
+          best = c;
+        }
+      }
+      t.formDx = best[0];
+      t.formDz = a.z - best[1];
+      placed.push(footprint(a.x + best[0], best[1]));
+    }
+    pieces.markDirty();
+  };
+
   const ro = new ResizeObserver(() => resize());
   ro.observe(container);
   resize();
@@ -1237,7 +1355,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         }
       }
     },
-    setHighlights(h: BoardHighlights) {
+    setHighlights(hl: BoardHighlights) {
+      const h = hl ?? {};
       const prev = lastHl;
       lastHl = { ...h, targets: h.targets ? [...h.targets] : undefined };
       applyHighlights(h, prev);
@@ -1269,16 +1388,19 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     },
     setShowLabels(on: boolean) {
       overlay.setShowLabels(on);
+      placeFormations();
     },
     setViewportInsets(i: ViewportInsets) {
       insets = { ...i };
       rig.setInsets(insets);
       layoutTray();
+      placeFormations();
     },
     setUiScale(scale: number) {
       uiScale = clamp(scale || 1, 0.75, 2);
       overlay.uiScale = uiScale;
       layoutTray();
+      placeFormations();
     },
     setReducedMotion(on: boolean) {
       reduced = on;

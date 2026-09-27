@@ -73,6 +73,16 @@ class SeatRow {
     this.el.append(this.num, sw, this.name, this.kind.el, this.diffWrap, this.remove);
   }
 
+  /** Focus the name with its text selected, so typing replaces the default (UX: people skip it otherwise). */
+  focusName(): void {
+    this.name.focus({ preventScroll: true });
+    this.name.select();
+  }
+
+  get kindValue(): PlayerKind | null {
+    return this.seat?.kind ?? null;
+  }
+
   update(seat: SeatDraft, taken: Set<PlayerColorId>, canRemove: boolean, clash: boolean): void {
     this.seat = seat;
     setStyle(this.el, '--seat', PLAYER_COLORS[seat.color].base);
@@ -220,6 +230,12 @@ export class NewGameScreen {
     this.houseBtn.setAttribute('aria-expanded', String(on));
     toggle(this.house, 'hidden', !on);
     if (on) animateIn(this.house, { dy: -6 });
+  }
+
+  /** On entering the screen: the first human seat's name, selected. */
+  focusFirstName(): void {
+    const row = this.rows.find((r) => r.kindValue === 'human');
+    row?.focusName();
   }
 
   update(vm: NewGameVM): void {

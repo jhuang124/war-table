@@ -160,3 +160,82 @@ function disposeMaterial(m: THREE.Material): void {
   for (const v of Object.values(m)) if (v instanceof THREE.Texture) v.dispose();
   m.dispose();
 }
+
+/** Convex hull (monotone chain), counter-clockwise, no repeated end point. */
+export function convexHull(points: Vec2[]): Vec2[] {
+  const p = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (p.length < 3) return p;
+  const cross = (o: Vec2, a: Vec2, b: Vec2) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower: Vec2[] = [];
+  for (const q of p) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop();
+    lower.push(q);
+  }
+  const upper: Vec2[] = [];
+  for (let i = p.length - 1; i >= 0; i--) {
+    const q = p[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop();
+    upper.push(q);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
+/** Signed-area magnitude of a ring (board units²). */
+export function ringArea(r: Vec2[]): number {
+  let a = 0;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) a += r[j][0] * r[i][1] - r[i][0] * r[j][1];
+  return Math.abs(a / 2);
+}
+
+/** Douglas–Peucker on a closed ring: drops coastline detail finer than `tol` (board units). */
+export function simplifyRing(r: Vec2[], tol: number): Vec2[] {
+  if (r.length < 8) return r;
+  const seg = (pts: Vec2[], a: number, b: number, keep: boolean[]) => {
+    const stack: [number, number][] = [[a, b]];
+    while (stack.length) {
+      const [i0, i1] = stack.pop()!;
+      const [ax, ay] = pts[i0];
+      const [bx, by] = pts[i1];
+      const dx = bx - ax;
+      const dy = by - ay;
+      const l2 = dx * dx + dy * dy || 1e-12;
+      let best = -1;
+      let bd = tol * tol;
+      for (let i = i0 + 1; i < i1; i++) {
+        let t = ((pts[i][0] - ax) * dx + (pts[i][1] - ay) * dy) / l2;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const ex = ax + t * dx - pts[i][0];
+        const ey = ay + t * dy - pts[i][1];
+        const d = ex * ex + ey * ey;
+        if (d > bd) {
+          bd = d;
+          best = i;
+        }
+      }
+      if (best >= 0) {
+        keep[best] = true;
+        stack.push([i0, best], [best, i1]);
+      }
+    }
+  };
+  // split at the vertex farthest from the first one
+  let far = 0;
+  let fd = -1;
+  for (let i = 1; i < r.length; i++) {
+    const d = (r[i][0] - r[0][0]) ** 2 + (r[i][1] - r[0][1]) ** 2;
+    if (d > fd) {
+      fd = d;
+      far = i;
+    }
+  }
+  const pts = [...r, r[0]];
+  const keep = new Array(pts.length).fill(false);
+  keep[0] = keep[far] = keep[pts.length - 1] = true;
+  seg(pts, 0, far, keep);
+  seg(pts, far, pts.length - 1, keep);
+  const out = pts.filter((_, i) => keep[i]);
+  out.pop();
+  return out.length >= 3 ? out : r;
+}

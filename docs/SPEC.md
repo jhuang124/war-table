@@ -224,8 +224,10 @@ to touch, not a sci-fi hologram and not a flat web map.
   At one territory short, the label adds `· 1 AWAY` in that player's light tint (should).
   Crossfade the change over 300 ms.
 - **Camera**: perspective ~35–40° FOV.
-  - **Home view** frames the whole board inside the HUD-free region (`setViewportInsets`, §11.2) with a
-    4% margin, at pitch 55° and azimuth 0. The bottom inset includes the battle-panel band.
+  - **Home view** fits the land (every territory) inside the HUD-free region (`setViewportInsets`,
+    §11.2) with a 4% margin, at pitch 64° and azimuth 0. The frame and ocean rim may run under HUD
+    edges and into the battle-panel band; dice never cover a territory. (Review r1: was "the whole
+    board at 55°", which left the board at ~45% of the screen height.)
   - User controls: left-drag orbits, right-drag pans, the wheel zooms toward the cursor.
     Clamps: pitch 35–80°, azimuth ±25°, zoom 0.9–3.5× of home, pan so the board center stays on
     screen. Damping 0.12.
@@ -710,6 +712,14 @@ fewer log lines and simpler replays.
 - **Pan clamp**: keeps the look-at point on the board (a literal "board centre on screen" would forbid
   inspecting corners at 3.5×). The ≤ 8° pitch limit applies to framing moves; the turn-start return
   home restores home pitch (≤ 45°/s peak).
+- **Selection rims** (review r1): drawn just above the tile top (not at the bevel shoulder), stencilled
+  so each pixel takes a stroke once (no bright stipple at segment joints), Douglas-Peucker simplified
+  (0.12 units); islets under 1.5 units² get no rim.
+- **Piece formations** (review r1): placed beside their badge at the home view (scored against covering
+  other badges and names and against leaving the tile), re-placed on resize, insets, UI scale and
+  labels. Lacquered figures at `PIECE_SCALE` 4.2; 1/5/10 denominations, the 10s stand tallest.
+- **Dice linger**: a selection change ends it, except the controller's auto-chain after a conquest
+  (no arrow, selection on the last engagement's pair), so the deciding roll keeps its moment.
 - **Territory names** (setting on by default): a name that would overlap another badge or name sits
   above its badge instead, or hides; hover tooltips always name the tile.
 - **Test hooks**: dev builds also expose `window.__board` (the BoardView, for its `__debug` layout

@@ -46,18 +46,29 @@ interface Traveler {
   alive: boolean;
 }
 
-// Formation positions (dx east, dz south) in board units relative to the anchor. Back row first.
-/** Miniature scale (geometry is modelled at ~0.6 units tall). */
-export const PIECE_SCALE = 2.25;
+/**
+ * Miniature scale (geometry is modelled at ~0.6 units tall). Chunky on purpose: at the home view a
+ * figure is ~15 px wide, so the room reads "armies on a board", not "badges on a map".
+ */
+export const PIECE_SCALE = 4.2;
+/** Unit of the formation grid (board units): roughly one base diameter. */
+const U = PIECE_SCALE * 0.37;
+// Formation positions (dx east, dz south) relative to the formation centre, in U. Back row first:
+// the big pieces (artillery, cavalry) stand behind, infantry in front, so strength reads as height.
 const BACK: [number, number][] = [
-  [0, -0.78],
-  [-0.84, -0.6],
-  [0.84, -0.6],
+  [0, -0.42],
+  [-0.92, -0.3],
+  [0.92, -0.3],
 ];
 const FRONT: [number, number][] = [
-  [-0.44, 0.04],
-  [0.44, 0.04],
+  [-0.47, 0.36],
+  [0.47, 0.36],
 ];
+/** Formation footprint (board units) the view uses to place it beside the badge. */
+export const FORMATION_W = U * 2.84;
+export const FORMATION_D = U * 1.78;
+/** Tallest figure (board units), for the placement's screen height estimate. */
+export const FIGURE_H = 0.62 * PIECE_SCALE * 1.12;
 
 export function composition(n: number): PieceType[] {
   if (n <= 0) return [];
@@ -76,10 +87,16 @@ export function composition(n: number): PieceType[] {
   return out;
 }
 
+/** Per-type size: the 10s stand tallest, so a big stack reads big before you read its badge. */
+const TYPE_SCALE = [1.0, 1.06, 1.12];
+
 function layout(types: PieceType[]): [number, number][] {
   const back = [...BACK];
   const front = [...FRONT];
-  return types.map((t) => (t > 0 ? (back.shift() ?? front.shift()!) : (front.shift() ?? back.shift()!)));
+  return types.map((t) => {
+    const [x, z] = t > 0 ? (back.shift() ?? front.shift()!) : (front.shift() ?? back.shift()!);
+    return [x * U, z * U] as [number, number];
+  });
 }
 
 function bannerHeight(n: number): number {
@@ -113,27 +130,31 @@ function baseDisc(r: number): THREE.BufferGeometry {
 }
 
 function infantryGeo(): THREE.BufferGeometry {
+  // A stocky toy soldier: flared greatcoat, broad shoulders, round head, wide helmet brim.
   const p = [
     [0.0, 0.06],
-    [0.1, 0.06],
-    [0.115, 0.14],
-    [0.12, 0.27],
-    [0.15, 0.31],
-    [0.13, 0.35],
-    [0.07, 0.37],
-    [0.075, 0.4],
-    [0.098, 0.45],
-    [0.09, 0.5],
-    [0.125, 0.515],
-    [0.11, 0.545],
-    [0.075, 0.585],
-    [0.0, 0.6],
+    [0.14, 0.06],
+    [0.15, 0.1],
+    [0.13, 0.2],
+    [0.125, 0.28],
+    [0.16, 0.32],
+    [0.15, 0.36],
+    [0.08, 0.385],
+    [0.085, 0.41],
+    [0.105, 0.45],
+    [0.1, 0.49],
+    [0.155, 0.5],
+    [0.15, 0.525],
+    [0.105, 0.55],
+    [0.07, 0.59],
+    [0.0, 0.605],
   ].map(([x, y]) => new THREE.Vector2(x, y));
-  const body = new THREE.LatheGeometry(p, 10);
-  // rifle
-  const rifle = new THREE.CylinderGeometry(0.014, 0.014, 0.42, 5);
-  rifle.translate(0.135, 0.36, 0.03);
-  return mergeGeometries([colored(baseDisc(0.17), 0.55), colored(body, 1), colored(rifle, 0.35)])!;
+  const body = new THREE.LatheGeometry(p, 12);
+  // shouldered rifle
+  const rifle = new THREE.CylinderGeometry(0.024, 0.026, 0.46, 6);
+  rifle.rotateZ(-0.18);
+  rifle.translate(0.15, 0.4, 0.02);
+  return mergeGeometries([colored(baseDisc(0.19), 0.5), colored(body, 1), colored(rifle, 0.4)])!;
 }
 
 function cavalryGeo(): THREE.BufferGeometry {
@@ -158,37 +179,38 @@ function cavalryGeo(): THREE.BufferGeometry {
   ].map(([x, y]) => new THREE.Vector2(x, y));
   const shape = new THREE.Shape(pts);
   const head = new THREE.ExtrudeGeometry(shape, {
-    depth: 0.1,
+    depth: 0.14,
     bevelEnabled: true,
-    bevelThickness: 0.025,
-    bevelSize: 0.02,
-    bevelSegments: 1,
+    bevelThickness: 0.035,
+    bevelSize: 0.028,
+    bevelSegments: 2,
   });
-  head.translate(0, 0, -0.05);
-  return mergeGeometries([colored(baseDisc(0.19), 0.55), colored(head, 1)])!;
+  head.translate(0, 0, -0.07);
+  return mergeGeometries([colored(baseDisc(0.2), 0.5), colored(head, 1)])!;
 }
 
 function artilleryGeo(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  const base = baseDisc(0.21);
-  parts.push(colored(base, 0.55));
-  const barrel = new THREE.CylinderGeometry(0.045, 0.062, 0.5, 8);
-  barrel.rotateZ(Math.PI / 2 - 0.22);
-  barrel.translate(0.05, 0.26, 0);
+  const base = baseDisc(0.22);
+  parts.push(colored(base, 0.5));
+  // barrel cocked up, so the cannon has a silhouette from above and the side
+  const barrel = new THREE.CylinderGeometry(0.058, 0.078, 0.52, 10);
+  barrel.rotateZ(Math.PI / 2 - 0.42);
+  barrel.translate(0.06, 0.3, 0);
   parts.push(colored(barrel, 1));
-  const muzzle = new THREE.TorusGeometry(0.048, 0.014, 5, 10);
+  const muzzle = new THREE.TorusGeometry(0.06, 0.018, 6, 12);
   muzzle.rotateY(Math.PI / 2);
-  muzzle.rotateZ(-0.22);
-  muzzle.translate(0.29, 0.315, 0);
+  muzzle.rotateZ(-0.42);
+  muzzle.translate(0.29, 0.405, 0);
   parts.push(colored(muzzle, 1));
   for (const z of [-0.1, 0.1]) {
-    const w = new THREE.CylinderGeometry(0.12, 0.12, 0.035, 12);
+    const w = new THREE.CylinderGeometry(0.14, 0.14, 0.045, 14);
     w.rotateX(Math.PI / 2);
-    w.translate(-0.02, 0.185, z);
+    w.translate(-0.02, 0.2, z * 1.1);
     parts.push(colored(w, 0.62));
     const hub = new THREE.CylinderGeometry(0.03, 0.03, 0.05, 6);
     hub.rotateX(Math.PI / 2);
-    hub.translate(-0.02, 0.185, z * 1.15);
+    hub.translate(-0.02, 0.2, z * 1.3);
     parts.push(colored(hub, 0.35));
   }
   const trail = new THREE.BoxGeometry(0.28, 0.05, 0.08);
@@ -252,7 +274,28 @@ export class PieceSystem {
     private anim: Animator,
     private tiles: TileSet,
   ) {
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.3, metalness: 0.08, envMapIntensity: 1.4 });
+    // Lacquered miniatures: a glossy clearcoat over the owner's deep shade, plus a warm fresnel rim so
+    // each figure separates from a tile top of the same hue.
+    const mat = new THREE.MeshPhysicalMaterial({
+      vertexColors: true,
+      roughness: 0.34,
+      metalness: 0.04,
+      clearcoat: 1,
+      clearcoatRoughness: 0.14,
+      envMapIntensity: 1.25,
+    });
+    mat.onBeforeCompile = (sh) => {
+      sh.fragmentShader = sh.fragmentShader.replace(
+        '#include <lights_fragment_end>',
+        `#include <lights_fragment_end>
+        {
+          float rimF = 1.0 - saturate(dot(normalize(normal), normalize(vViewPosition)));
+          rimF = rimF * rimF * rimF;
+          totalEmissiveRadiance += vec3(1.0, 0.9, 0.74) * rimF * (0.22 + 0.5 * dot(diffuseColor.rgb, vec3(0.3333)));
+        }`,
+      );
+    };
+    mat.customProgramCacheKey = () => 'piece-lacquer-v1';
     const flagMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, side: THREE.DoubleSide });
     const poleMat = new THREE.MeshStandardMaterial({ color: '#d8c7a0', roughness: 0.35, metalness: 0.6 });
     this.materials.push(mat, flagMat, poleMat);
@@ -485,8 +528,8 @@ export class PieceSystem {
     const trav: Traveler[] = types.map((type, i) => ({
       type,
       color: adjust(color, 1.08, 0.66),
-      from: a.clone().add(new THREE.Vector3((i - 1) * 0.55, 0, -this.tiles.get(from).formDz)),
-      to: b.clone().add(new THREE.Vector3((i - 1) * 0.55, 0, -this.tiles.get(to).formDz)),
+      from: a.clone().add(new THREE.Vector3((i - 1) * 0.8 * U + this.tiles.get(from).formDx, 0, -this.tiles.get(from).formDz)),
+      to: b.clone().add(new THREE.Vector3((i - 1) * 0.8 * U + this.tiles.get(to).formDx, 0, -this.tiles.get(to).formDz)),
       via,
       t: 0,
       arc,
@@ -526,7 +569,7 @@ export class PieceSystem {
       if (!f.slots.length && !f.leaving.length) continue;
       const tile = this.tiles.get(f.id);
       const baseY = tile.pivot.position.y + TILE_TOP;
-      const ax = tile.anchorW.x;
+      const ax = tile.anchorW.x + tile.formDx;
       const az = tile.anchorW.z - tile.formDz;
       this.c.setRGB(f.color[0], f.color[1], f.color[2], THREE.SRGBColorSpace);
       const draw = (s: Slot) => {
@@ -539,7 +582,7 @@ export class PieceSystem {
           this.tq.setFromAxisAngle(this.tmpV.set(0, 0, 1), s.tilt);
           this.q.multiply(this.tq);
         }
-        const sc = s.scale * PIECE_SCALE * (s.type === 2 ? 0.95 : 1.0);
+        const sc = s.scale * PIECE_SCALE * TYPE_SCALE[s.type];
         this.s.set(sc, sc, sc);
         m.compose(this.p, this.q, this.s);
         im.setMatrixAt(idx, m);
@@ -549,13 +592,13 @@ export class PieceSystem {
       for (const s of f.leaving) draw(s);
       if (f.banner > 0.02 && f.slots.length) {
         const h = f.banner;
-        this.p.set(ax + 0.42, baseY, az - 1.3);
+        this.p.set(ax + 0.5 * U, baseY, az - 0.95 * U);
         this.q.identity();
         this.s.set(PIECE_SCALE * 0.9, h * PIECE_SCALE * 0.9, PIECE_SCALE * 0.9);
         m.compose(this.p, this.q, this.s);
         this.pole.setMatrixAt(poles, m);
         this.pole.setColorAt(poles, this.c.setRGB(1, 1, 1));
-        this.p.set(ax + 0.42, baseY + h * PIECE_SCALE * 0.9, az - 1.3);
+        this.p.set(ax + 0.5 * U, baseY + h * PIECE_SCALE * 0.9, az - 0.95 * U);
         this.s.set(PIECE_SCALE * 0.9, PIECE_SCALE * 0.9, PIECE_SCALE * 0.9);
         m.compose(this.p, this.q, this.s);
         this.flag.setMatrixAt(poles, m);
@@ -601,7 +644,7 @@ export class PieceSystem {
   /** World position just above a territory's formation (for dust). */
   dustPoint(id: TerritoryId, out: THREE.Vector3): THREE.Vector3 {
     const t = this.tiles.get(id);
-    return out.set(t.anchorW.x, TILE_TOP + t.pivot.position.y + 0.02, t.anchorW.z - 0.4);
+    return out.set(t.anchorW.x + t.formDx, TILE_TOP + t.pivot.position.y + 0.02, t.anchorW.z - t.formDz + 0.3 * U);
   }
 
   dispose(): void {

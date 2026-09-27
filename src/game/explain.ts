@@ -195,7 +195,33 @@ export function explainTerritory(state: GameState, ui: ExplainUi, t: TerritoryId
       }
       const select = autoChain(post, ph.from, ph.to);
       const inner = explainAttack(post, { ...ui, selected: select, target: null }, t);
-      if (!inner.ok) return inner;
+      if (!inner.ok) {
+        // The click is about `from` (an enemy next to it, or `from` itself) and the pending count
+        // would strip it to 1. Keep the stack at home: move only the minimum, then act from `from`.
+        const aboutFrom = t === ph.from || (ts.owner !== me && ADJACENCY[ph.from].includes(t));
+        if (aboutFrom && count > ph.min) {
+          const lo = applyAction(state, { type: 'occupy', player: me, count: ph.min });
+          if (lo.ok && lo.state.phase.kind === 'attack' && canAttackFrom(lo.state, ph.from, me)) {
+            const alt = explainAttack(lo.state, { ...ui, selected: ph.from, target: null }, t);
+            if (alt.ok && alt.plan) {
+              const keep = `Click: move ${ph.min} in${SEP}`;
+              if (alt.plan.kind === 'deselect') {
+                const v = `${keep}keep attacking from ${tName(ph.from)}`;
+                return ok(v, { kind: 'occupyThen', count: ph.min, select: ph.from, then: null });
+              }
+              const v = oddsVerb(lo.state, ph.from, t, ui, `${keep}attack from ${tName(ph.from)}`);
+              return { ...alt, verb: v, text: v, plan: { kind: 'occupyThen', count: ph.min, select: ph.from, then: alt.plan } };
+            }
+          }
+        }
+        if (aboutFrom && ts.owner !== me) {
+          return no(
+            'no_source_for_target',
+            `Moving ${count} into ${tName(ph.to)} leaves ${tName(ph.from)} with 1${SEP}lower the move to attack ${tName(t)}`,
+          );
+        }
+        return inner;
+      }
       // Clicking the chained source itself just confirms the move (it stays selected).
       if (inner.plan?.kind === 'deselect') {
         return ok(`Click: move ${count} in`, { kind: 'occupyThen', count, select, then: null });
