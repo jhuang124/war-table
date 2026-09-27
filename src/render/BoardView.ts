@@ -42,6 +42,29 @@ export interface BoardStats {
   frameMsP95: number;
   drawCalls: number;
   triangles: number;
+  activeTweens?: number;
+  cameraMoving?: boolean;
+  particles?: number;
+}
+
+export interface PlayEventOptions {
+  /** 'full' (default): dice tray + full timings. 'brief': AI-vs-AI; no dice, <= 0.8 s per engagement. */
+  style?: 'full' | 'brief';
+  /**
+   * For consecutive diceRolled events of one engagement (blitz or repeated rolls): 0-based index and
+   * total count, so the renderer can compress to the blitz cap and slow the final roll.
+   */
+  seq?: { index: number; count: number };
+}
+
+/** HUD-covered edges in CSS px. The home view frames the board inside the rest; the dice tray sits
+ *  in a band of height `trayBand` just above `bottom`. */
+export interface ViewportInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+  trayBand: number;
 }
 
 export interface BoardView {
@@ -53,7 +76,7 @@ export interface BoardView {
    * so after the promise resolves the board matches the state right after this event.
    * `stateAfter` is the final state of the whole action batch, for reference only.
    */
-  playEvent(event: GameEvent, stateAfter: GameState): Promise<void>;
+  playEvent(event: GameEvent, stateAfter: GameState, opts?: PlayEventOptions): Promise<void>;
   /** 1 = normal, 2 = fast, 0 = instant (no tweens; resolve at once). */
   setAnimationSpeed(multiplier: number): void;
   /** Finish every running animation immediately. */
@@ -69,6 +92,10 @@ export interface BoardView {
   /** Slow cinematic orbit for the title screen / victory. */
   setAttractMode(on: boolean): void;
   setShowLabels(on: boolean): void;
+  /** Tell the board which screen edges the HUD covers (re-sent on resize / text-size change). */
+  setViewportInsets(insets: ViewportInsets): void;
+  /** UI text-size multiplier (1, 1.25, 1.5) for badges, the dice tray and DOM labels. */
+  setUiScale(scale: number): void;
 
   /** Screen position (client px) of a territory's army anchor, or null if off-screen. */
   getScreenPosition(t: TerritoryId): { x: number; y: number } | null;
