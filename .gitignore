@@ -13,3 +13,4 @@ artifacts/game/
 artifacts/integration/
 artifacts/review/
 .claude/worktrees/
+artifacts/soak/
