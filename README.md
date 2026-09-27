@@ -34,26 +34,24 @@ against three AIs.
 | Setup | What happens |
 |---|---|
 | Quick deal (default) | Territories dealt at random, armies placed for you. You're playing in seconds. |
-| Place your own | Territories dealt at random; you place your starting armies in two passes. Clicks stage armies, right-click takes one back, **Confirm placement** commits them. |
+| Place your own | Territories dealt at random; you place your starting armies in two passes. Pick a territory, choose how many, **Place**; **Done** commits the pass. |
 
-**A turn.** The bar at the bottom always says what to do, in words, with real names and numbers.
+**A turn.** The strip at the bottom shows the step (Place · Attack · Fortify), one line saying what to
+do, and at most two buttons. The top strip shows each player and how many territories they hold.
 
-1. **Reinforce.** Click your territories to place armies (+1 per click). After the first click, `+5`
-   and `All N` pills appear under the tile. Right-click takes one back. Holding a card set? The
-   `Trade 3 cards · +8` chip trades your best set in one click (at 5 cards you must trade first).
-2. **Attack.** Click an enemy next to you — the game picks your strongest neighbour as the attacker
-   (click another of yours to switch). The battle panel shows the odds and what's at stake. **Blitz**
-   (Space) keeps rolling until it falls; **Roll** (or clicking the target again) rolls once. After a
-   win, just click your next target: the move-in uses a sensible default. Take at least one territory
-   to earn a card.
+1. **Place.** Click one of your territories, pick how many armies (defaults to all), press **Place**.
+   **Undo** takes back the last placement. Holding a card set? **Trade cards +8** cashes your best set
+   (at 5 cards you must). **Attack →** when you're done.
+2. **Attack.** Click an enemy next to you; your strongest neighbour attacks (click another of yours to
+   switch). The line shows the odds. **Blitz** keeps rolling until it falls; **Roll** rolls once. After
+   a win, pick how many to move in (a sensible default is set) or just click your next target.
+   Conquer at least one territory to earn a card.
 3. **Fortify.** One move through your own territories, then the turn ends. Or **End turn**.
 
-AI turns play as a short highlight reel: fights against a human get the full dice, AI-vs-AI fights are
-headlines. The top bar's `AI: watch · fast · skip` toggle changes the pace at any time. A click during
-an AI turn skips the current fight; a click during your own animation finishes it and does what you
-clicked.
+AI turns play as a short highlight reel. Change their pace in Settings. A click during an AI turn skips
+the current fight; a click during your own animation finishes it.
 
-**Ending.** First to the goal wins, or Pause (Esc) → **End game now** calls it for whoever holds the
+**Ending.** First to the goal wins, or the menu (≡ or Esc) → **End game now** calls it for whoever holds the
 most territories. Victory shows awards (Nemesis, Hot/Cursed dice, Biggest cash-in), a territories
 chart, and **Rematch** (same seats, new dice).
 
@@ -61,19 +59,16 @@ The game autosaves after every action. Close the tab, come back, press **Continu
 
 ## Controls
 
+Everything works with the mouse and the on-screen buttons. A few keys speed things up:
+
 | Input | Does |
 |---|---|
-| Click a tile | The action the bar describes (hover a tile to see what a click will do) |
-| Right-click a tile | Take back one army placed this turn |
-| Left-drag / right-drag / wheel | Orbit / pan / zoom the camera (it returns home at your next turn) |
+| Click a tile | What the bottom line says |
+| Double-click your tile (Place) | Place all remaining armies there |
+| Left-drag / right-drag / wheel | Orbit / pan / zoom (the camera returns home at your next turn) |
 | Enter | The brass button |
-| Space | Blitz · confirm a move or placement (never ends a phase) |
-| E | Fortify → / End turn |
-| B · 1 2 3 | Blitz · number of dice |
-| Shift / Alt + click | +5 / all remaining |
-| Tab · F | Cycle clickable tiles · focus the selection |
-| L · M · ? | Territory names · mute · rules card |
-| Esc | Back out one step, then pause |
+| Space | Blitz, or confirm a move / placement |
+| Esc | Back out one step, then the menu |
 
 ## House rules (New game → House rules)
 
@@ -96,7 +91,7 @@ reduce motion (also follows the system setting).
 - **Blank or black screen**: the board needs WebGL. Check `chrome://gpu` (or try another browser);
   on some machines hardware acceleration is turned off in the browser's settings. As a fallback,
   `http://127.0.0.1:5273/?stub` plays on a flat 2D board.
-- **No sound**: browsers only start audio after the first click or key press. Check the mute toggle (M)
+- **No sound**: browsers only start audio after the first click or key press. Check mute
   and the volume in Settings.
 - **Port 5273 is busy**: another dev server is running. Stop it, or run `npx vite --port 5280`.
 - **Everything is tiny on the TV**: Text size → TV on the title screen (or Settings).

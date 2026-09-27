@@ -55,6 +55,7 @@ if (!early) {
   await page.keyboard.press('Escape');
   // Settings has AI speed.
   await clickBtn(page, 'pause-settings');
+  await page.waitForSelector('[data-testid="settings"] [data-testid="ai-watch"]', { state: 'visible', timeout: 3000 }).catch(() => {});
   check((await page.locator('[data-testid="settings"] [data-testid="ai-watch"]').count()) === 1, 'AI speed lives in Settings', results);
   await page.keyboard.press('Escape');
   await page.waitForSelector('[data-testid="pause"]', { timeout: 3000 });

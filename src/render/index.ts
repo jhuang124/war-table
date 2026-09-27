@@ -405,7 +405,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     audio?.unlock?.();
     canvas.setPointerCapture?.(e.pointerId);
     const id = pick(e.clientX, e.clientY, true);
-    down = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button, tile: id, id: e.pointerId };
+    down = { x: e.clientX, y: e.clientY, t: e.timeStamp, button: e.button, tile: id, id: e.pointerId };
     lastMove = { x: e.clientX, y: e.clientY };
     dragging = false;
     if (id && clickable.has(id) && (e.button === 0 || e.button === 2)) {
@@ -461,7 +461,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       setHovered(id, e);
       return;
     }
-    const dt = performance.now() - d.t;
+    const dt = e.timeStamp - d.t; // event timestamps: a main-thread stall between press and release must not eat a real click
     const moved = Math.hypot(e.clientX - d.x, e.clientY - d.y);
     if (dt > 350 || moved > 6) return;
     const id = pick(e.clientX, e.clientY, true);

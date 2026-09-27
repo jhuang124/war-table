@@ -59,11 +59,12 @@ const kbd = await page.evaluate(() => [...document.querySelectorAll('#ui .hud kb
 check(kbd === 0, `no keycaps on screen (${kbd})`, results);
 
 // Enter = the brass primary (End turn) → AI turns; a click during an AI turn only skips.
-await page.keyboard.press('Escape');
+// (Nothing is selected here, so another Esc would open the menu — Enter must then do nothing.)
 u = await ui(page);
 check(u.primary === 'End turn', `nothing armed: primary ${u.primary}`, results);
 await page.keyboard.press('Enter');
-await page.waitForTimeout(200);
+// Wait for the turn to actually pass before sampling the AI narration.
+await page.waitForFunction(() => (window.__risk.getState()?.currentPlayer ?? 0) !== 0, null, { timeout: 8000 });
 const narr: string[] = [];
 const steps = new Set<string>();
 const t0 = Date.now();
@@ -84,7 +85,7 @@ while (Date.now() - t0 < 60_000) {
   await page.waitForTimeout(60);
 }
 console.log('   narration:', narr.slice(0, 8).join(' | '));
-check(narr.some((l) => /^\w+ (is reinforcing|trades cards)$/.test(l)), 'narration: “Cobalt is reinforcing”', results);
+check(narr.some((l) => /^\w+ (is reinforcing|is placing armies|trades cards)$/.test(l)), 'narration: “Cobalt is reinforcing”', results);
 check(narr.some((l) => /^\w+ attacks [\w ]+$/.test(l)), 'narration: “Cobalt attacks Siam”', results);
 check([...steps].some((x) => /^\w+'s turn$/.test(x)), `step indicator names the AI seat (${[...steps].join(', ')})`, results);
 const m = await page.evaluate(() => window.__risk.metrics());

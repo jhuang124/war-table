@@ -957,6 +957,7 @@ class Controller {
         }
         const e = this.queue.shift()!;
         const epoch = this.epoch;
+        try {
         this.currentBeat = e.beat;
         if (e.delayMs && !this.isSkipping(e)) await this.sleep(e.delayMs);
         if (epoch !== this.epoch || !this.disp) continue;
@@ -1007,6 +1008,15 @@ class Controller {
         if (!earlyDisplay) this.applyDisplay(e);
         this.onEventEnd(e, skip);
         this.invalidate();
+        } catch (err) {
+          // Never let one event's HUD bookkeeping freeze the game: log it, drop to the true state,
+          // and keep draining so the turn (and the AI) can continue.
+          console.error('[risk] event failed', e.ev.type, err);
+          this.blockingNow = null;
+          this.rolling = false;
+          if (this.state) this.disp = cloneState(this.state);
+          this.boardStale = true;
+        }
       }
     } finally {
       this.pumping = false;
@@ -1083,11 +1093,28 @@ class Controller {
 
   /** Click-through on your own turn: finish the running animation, then do what was clicked. */
   private clickThrough(fn: () => void): void {
+    // The engine may already be on the next turn while the board still plays the last one (a fortify
+    // march, an AI's final fight). Input now was aimed at what's on screen: finish the animation, but
+    // never carry the input over as the next player's first move.
+    if (this.screenBehindTurn()) {
+      this.inputDropped++;
+      this.skipAll = true;
+      this.board.skipAnimations();
+      this.wakeAll();
+      this.invalidate();
+      return;
+    }
     this.pendingInputs.push({ fn, at: this.now() });
     this.skipAll = true;
     this.board.skipAnimations();
     this.wakeAll();
     this.invalidate();
+  }
+
+  private screenBehindTurn(): boolean {
+    const s = this.state;
+    const d = this.disp;
+    return !!s && !!d && s.turn > 0 && (d.turn !== s.turn || d.currentPlayer !== s.currentPlayer);
   }
 
   /** Watched turns: a click skips the current engagement only. */
