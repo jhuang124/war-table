@@ -1,0 +1,326 @@
+// Offline measurement: the team's ears. Pure functions over channel data (no WebAudio needed).
+//
+// Loudness uses ITU-R BS.1770 K-weighting (high-shelf + RLB high-pass) with a sliding window.
+// `lk200` (200 ms window, close to the ear's temporal integration) is what we normalise on; `lufsM`
+// is the standard 400 ms momentary loudness for reference.
+
+export interface SoundStats {
+  sampleRate: number;
+  renderSec: number;
+  /** Time until the signal last exceeds −60 dBFS. */
+  durationSec: number;
+  /** First sample above peak − 40 dB, ms. */
+  onsetMs: number;
+  /** Onset → peak sample, ms. */
+  attackMs: number;
+  peakDb: number;
+  /** RMS over onset..duration. */
+  rmsDb: number;
+  /** Max 200 ms K-weighted loudness, LUFS. */
+  lk200: number;
+  /** Max 400 ms (momentary) K-weighted loudness, LUFS. */
+  lufsM: number;
+  /** lk200 as heard through laptop speakers (2nd-order high-pass at 180 Hz before K-weighting). */
+  lkLaptop: number;
+  crestDb: number;
+  /** Largest |mean| of any channel over the active region. */
+  dc: number;
+  clipped: number;
+  nan: number;
+  /** |x[0]| — must be ~0 (no click at the start). */
+  startAbs: number;
+  /** RMS of the last 10 ms of the render, dBFS — must be silent (the tail finished). */
+  endDb: number;
+  centroidHz: number;
+  /** Energy share < 40 Hz (sub rumble; should be tiny). */
+  subShare: number;
+  /** Energy share 150 Hz – 5 kHz (what laptop speakers reproduce). */
+  laptopShare: number;
+  /** Energy share 2.5–5 kHz (harshness band). */
+  harshShare: number;
+  /** Energy share > 8 kHz (fizz / sibilance). */
+  hfShare: number;
+}
+
+const db = (x: number) => (x > 0 ? 20 * Math.log10(x) : -Infinity);
+
+interface Biquad {
+  b0: number;
+  b1: number;
+  b2: number;
+  a1: number;
+  a2: number;
+}
+
+/** BS.1770 K-weighting at any sample rate (libebur128 formulation). */
+export function kWeightingFilters(fs: number): [Biquad, Biquad] {
+  let f0 = 1681.974450955533;
+  const G = 3.999843853973347;
+  let Q = 0.7071752369554196;
+  let K = Math.tan((Math.PI * f0) / fs);
+  const Vh = Math.pow(10, G / 20);
+  const Vb = Math.pow(Vh, 0.4996667741545416);
+  let a0 = 1 + K / Q + K * K;
+  const shelf: Biquad = {
+    b0: (Vh + (Vb * K) / Q + K * K) / a0,
+    b1: (2 * (K * K - Vh)) / a0,
+    b2: (Vh - (Vb * K) / Q + K * K) / a0,
+    a1: (2 * (K * K - 1)) / a0,
+    a2: (1 - K / Q + K * K) / a0,
+  };
+  f0 = 38.13547087602444;
+  Q = 0.5003270373238773;
+  K = Math.tan((Math.PI * f0) / fs);
+  a0 = 1 + K / Q + K * K;
+  const hp: Biquad = { b0: 1, b1: -2, b2: 1, a1: (2 * (K * K - 1)) / a0, a2: (1 - K / Q + K * K) / a0 };
+  return [shelf, hp];
+}
+
+function runBiquad(x: Float32Array | Float64Array, f: Biquad): Float64Array {
+  const y = new Float64Array(x.length);
+  let x1 = 0,
+    x2 = 0,
+    y1 = 0,
+    y2 = 0;
+  for (let i = 0; i < x.length; i++) {
+    const x0 = x[i];
+    const y0 = f.b0 * x0 + f.b1 * x1 + f.b2 * x2 - f.a1 * y1 - f.a2 * y2;
+    x2 = x1;
+    x1 = x0;
+    y2 = y1;
+    y1 = y0;
+    y[i] = y0;
+  }
+  return y;
+}
+
+/** RBJ high-pass, used to approximate small laptop/TV speakers (little below ~180 Hz). */
+export function speakerHighpass(fs: number, f = 180, q = 0.707): Biquad {
+  const w0 = (2 * Math.PI * f) / fs;
+  const cw = Math.cos(w0);
+  const alpha = Math.sin(w0) / (2 * q);
+  const a0 = 1 + alpha;
+  return { b0: (1 + cw) / 2 / a0, b1: -(1 + cw) / a0, b2: (1 + cw) / 2 / a0, a1: (-2 * cw) / a0, a2: (1 - alpha) / a0 };
+}
+
+/** Max windowed K-weighted loudness (LUFS) for a window length in seconds. */
+export function maxWindowLoudness(channels: Float32Array[], sr: number, windowSec: number, hopSec = 0.01, laptop = false): number {
+  const [shelf, hp] = kWeightingFilters(sr);
+  const spk = speakerHighpass(sr);
+  const n = channels[0].length;
+  const prefix = new Float64Array(n + 1);
+  for (const ch of channels) {
+    const src = laptop ? runBiquad(ch, spk) : ch;
+    const z = runBiquad(runBiquad(src, shelf), hp);
+    let acc = 0;
+    for (let i = 0; i < n; i++) {
+      acc += z[i] * z[i];
+      prefix[i + 1] += acc;
+    }
+  }
+  const W = Math.max(1, Math.round(windowSec * sr));
+  const H = Math.max(1, Math.round(hopSec * sr));
+  let best = 0;
+  for (let s = 0; s + W <= n || s === 0; s += H) {
+    const e = Math.min(n, s + W);
+    const ms = (prefix[e] - prefix[s]) / W;
+    if (ms > best) best = ms;
+    if (e === n) break;
+  }
+  return best > 0 ? -0.691 + 10 * Math.log10(best) : -Infinity;
+}
+
+// ---------------------------------------------------------------------------
+// FFT (radix-2, in place)
+// ---------------------------------------------------------------------------
+
+export function fft(re: Float64Array, im: Float64Array): void {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      [re[i], re[j]] = [re[j], re[i]];
+      [im[i], im[j]] = [im[j], im[i]];
+    }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (-2 * Math.PI) / len;
+    const wr = Math.cos(ang),
+      wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1,
+        ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const a = i + k,
+          b = a + len / 2;
+        const tr = re[b] * cr - im[b] * ci;
+        const ti = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - tr;
+        im[b] = im[a] - ti;
+        re[a] += tr;
+        im[a] += ti;
+        const nr = cr * wr - ci * wi;
+        ci = cr * wi + ci * wr;
+        cr = nr;
+      }
+    }
+  }
+}
+
+/** Averaged power spectrum (Hann, 2048, hop 1024) of a mono signal over [from, to). */
+export function powerSpectrum(x: Float32Array, from: number, to: number, N = 2048): Float64Array {
+  const P = new Float64Array(N / 2);
+  const win = new Float64Array(N);
+  for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (N - 1));
+  const re = new Float64Array(N);
+  const im = new Float64Array(N);
+  for (let s = from; s < Math.max(from + 1, to); s += N / 2) {
+    for (let i = 0; i < N; i++) {
+      const k = s + i;
+      re[i] = k < x.length ? x[k] * win[i] : 0;
+      im[i] = 0;
+    }
+    fft(re, im);
+    for (let k = 0; k < N / 2; k++) P[k] += re[k] * re[k] + im[k] * im[k];
+  }
+  return P;
+}
+
+// ---------------------------------------------------------------------------
+
+export function analyze(channels: Float32Array[], sr: number): SoundStats {
+  const n = channels[0].length;
+  let peak = 0,
+    nan = 0,
+    clipped = 0,
+    peakIdx = 0;
+  for (const ch of channels) {
+    for (let i = 0; i < n; i++) {
+      const v = ch[i];
+      if (!Number.isFinite(v)) {
+        nan++;
+        continue;
+      }
+      const a = Math.abs(v);
+      if (a > peak) {
+        peak = a;
+        peakIdx = i;
+      }
+      if (a >= 0.999) clipped++;
+    }
+  }
+  const onsetThr = peak * Math.pow(10, -40 / 20);
+  const endThr = Math.pow(10, -60 / 20);
+  let onset = n,
+    last = 0;
+  for (const ch of channels) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.abs(ch[i]);
+      if (a > onsetThr && i < onset) onset = i;
+      if (a > endThr) last = Math.max(last, i);
+    }
+  }
+  if (onset === n) onset = 0;
+  const from = onset;
+  const to = Math.max(from + 1, last + 1);
+
+  let e = 0;
+  let dc = 0;
+  for (const ch of channels) {
+    let sum = 0;
+    for (let i = from; i < to; i++) {
+      e += ch[i] * ch[i];
+      sum += ch[i];
+    }
+    dc = Math.max(dc, Math.abs(sum / (to - from)));
+  }
+  const rms = Math.sqrt(e / ((to - from) * channels.length));
+
+  const tail = Math.max(1, Math.round(0.01 * sr));
+  let te = 0;
+  for (const ch of channels) for (let i = n - tail; i < n; i++) te += ch[i] * ch[i];
+  const endRms = Math.sqrt(te / (tail * channels.length));
+
+  // spectrum of the mono mix over the active region
+  const mono = new Float32Array(n);
+  for (const ch of channels) for (let i = 0; i < n; i++) mono[i] += ch[i] / channels.length;
+  const N = 2048;
+  const P = powerSpectrum(mono, from, to, N);
+  let tot = 0,
+    wsum = 0,
+    sub = 0,
+    lap = 0,
+    harsh = 0,
+    hf = 0;
+  for (let k = 1; k < N / 2; k++) {
+    const f = (k * sr) / N;
+    const p = P[k];
+    tot += p;
+    wsum += f * p;
+    if (f < 40) sub += p;
+    if (f >= 150 && f <= 5000) lap += p;
+    if (f >= 2500 && f <= 5000) harsh += p;
+    if (f > 8000) hf += p;
+  }
+  tot = tot || 1;
+
+  const lk200 = maxWindowLoudness(channels, sr, 0.2);
+  return {
+    sampleRate: sr,
+    renderSec: n / sr,
+    durationSec: (last + 1) / sr,
+    onsetMs: (onset / sr) * 1000,
+    attackMs: (Math.max(0, peakIdx - onset) / sr) * 1000,
+    peakDb: db(peak),
+    rmsDb: db(rms),
+    lk200,
+    lufsM: maxWindowLoudness(channels, sr, 0.4),
+    lkLaptop: maxWindowLoudness(channels, sr, 0.2, 0.01, true),
+    crestDb: db(peak) - db(rms),
+    dc,
+    clipped,
+    nan,
+    startAbs: Math.max(...channels.map((c) => Math.abs(c[0]))),
+    endDb: db(endRms),
+    centroidHz: wsum / tot,
+    subShare: sub / tot,
+    laptopShare: lap / tot,
+    harshShare: harsh / tot,
+    hfShare: hf / tot,
+  };
+}
+
+/** 16-bit PCM WAV. */
+export function encodeWav(channels: Float32Array[], sr: number): ArrayBuffer {
+  const nch = channels.length;
+  const n = channels[0].length;
+  const buf = new ArrayBuffer(44 + n * nch * 2);
+  const v = new DataView(buf);
+  const str = (o: number, s: string) => {
+    for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i));
+  };
+  str(0, 'RIFF');
+  v.setUint32(4, 36 + n * nch * 2, true);
+  str(8, 'WAVE');
+  str(12, 'fmt ');
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, nch, true);
+  v.setUint32(24, sr, true);
+  v.setUint32(28, sr * nch * 2, true);
+  v.setUint16(32, nch * 2, true);
+  v.setUint16(34, 16, true);
+  str(36, 'data');
+  v.setUint32(40, n * nch * 2, true);
+  let o = 44;
+  for (let i = 0; i < n; i++) {
+    for (let c = 0; c < nch; c++) {
+      const s = Math.max(-1, Math.min(1, channels[c][i]));
+      v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      o += 2;
+    }
+  }
+  return buf;
+}

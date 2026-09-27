@@ -233,6 +233,141 @@ Projection (also stored in `BOARD.projection`):
 - Island stretches (along/across the island's long axis): Iceland 1.5/2.3, GB 1.3/1.75, Japan 1.05/3.4, Madagascar 1.15/2.15.
 - All tunables live in scripts/map/config.ts. Run `npm run build:map && npm run verify:map` after any change. `verify:map -- --no-preview` skips the Playwright screenshots.
 
+## audio (landed after the build started)
+
+### summary
+Sound for Risk: War Table is finished and the full verification passes (exit 0) from a cold start. Nobody has listened to it yet: every sound was checked only by measurement and spectrogram images. WAVs are in `artifacts/audio/wav/` for John to listen to.
+
+- **What's built:** all 17 sounds, synthesized in WebAudio with no audio files, plus an optional ambient music bed (default off). `audio.html` is the dev page: a button per sound, volume, mute, music, rate/pan/duration/variant controls, seven timed game-beat scenarios, and spectrogram views.
+- **Direction:**
+  - wooden piece clacks;
+  - dice rattling in a cup, then each die landing on felt;
+  - a low distant-cannon hit, pushed into the 150–300 Hz band so it still reads on laptop speakers;
+  - paper card slides;
+  - horn-like brass stingers in D.
+- **Music:** a slow D-dorian pad with an occasional distant drum. It sits about 12 dB under board sounds and ducks under the stingers.
+- **Loudness:** measured and set per tier, following UX.md's "weight follows stakes": routine sounds stay quiet so continent, elimination and victory stand out. `uiHover` is 18 dB under `uiClick`, as UX §5.4 asks. Sounds must also hold up on laptop speakers; that check made me reshape the cannon, turn-start and elimination sounds.
+- **Engine behaviour:**
+  - Unlocks on the first pointerdown/keydown. play() before that does nothing and never throws, including under Node.
+  - A master limiter is added that doesn't change normal levels (+0.02 dB).
+  - Per-sound voice caps, retrigger gaps and priority stealing, so a blitz can't stack 60 dice.
+  - Repeated overlapping sounds get automatically quieter.
+- **CPU fix:** after the first click, a background sound bank pre-renders a few variations of each sound in about 2.2 s. play() then costs 0.1–0.2 ms instead of up to 45 ms (victory), and banked playback matches live synthesis exactly.
+- **UX.md changed mid-task.** Following its timing table, `diceLand` is now one die per call, `diceShake` and `march` follow the animation's length without changing pitch, and `turnStart` has the brighter variant UX §3.1 asks for.
+- **Bug fixed:** timing jitter could schedule the first note of the victory fanfare slightly before the cue started, which would have silently dropped the whole fanfare. A 20-seed sweep now guards against this.
+
+### verification
+**Final run:** `npx tsx src/audio/verify.ts`. My dev server on :5283 was killed first; the script started its own and shut it down (port clear afterwards). Result: exit 0, "PASS — all audio checks". `npx tsc --noEmit` is clean.
+
+**What the script checks:**
+- **Live, in headless Chromium with the Metal flags:**
+  - play() before a click does nothing (state `locked`, 0 played, no throw).
+  - One real click unlocks the context (`running`) and all 17 sounds play.
+  - 60 same-frame dice plus 30 hits are thinned to 2 dice voices and 1 hit voice (89 of 90 dropped).
+  - Delayed sounds are cancelled by stopAll (2 scheduled → 0 left).
+  - Twelve rapid music toggles land in the right state; odd inputs (NaN volume, rate 0, pan −99) are harmless.
+  - The console has no errors or warnings.
+- **Offline:** every sound rendered with 6 seeds through the real mixer at 48 kHz. Every sound passes all of:
+  - no NaN or clipping; peak ≤ −1 dBFS;
+  - loudness within ±1.5 dB of its tier target, varying ≤ 3 dB across seeds;
+  - DC offset < 0.002; no click at the start; tail below −70 dBFS at the end;
+  - spectral centroid < 3.5 kHz; < 3% of energy above 8 kHz; < 5% below 40 Hz;
+  - ≥ 45% of energy in the laptop band, and no more than 4 dB quieter through a laptop-speaker model;
+  - starts within 12 ms (40 ms for stingers, 80 ms for whoosh).
+- **Robustness sweep:** every sound × variant × rate/duration extreme × 20 seeds built cleanly.
+
+**Measured stats** (loudness in LUFS over a 200 ms window, K-weighted / peak dBFS / length ms / spectral centroid Hz / % energy in the laptop band 150 Hz–5 kHz):
+
+| Sound | Loudness | Peak | Length | Centroid | Laptop % |
+|---|---|---|---|---|---|
+| uiClick | −27.0 | −9.3 | 311 | 797 | 100 |
+| uiHover | −45.0 | −25.0 | 15 | 1454 | 100 |
+| uiError | −27.0 | −16.4 | 441 | 239 | 99 |
+| whoosh | −27.0 | −18.9 | 708 | 1484 | 96 |
+| place | −22.0 | −4.1 | 556 | 611 | 99 |
+| unplace | −22.0 | −7.4 | 477 | 1451 | 99 |
+| march | −22.0 | −4.9 | 1054 | 800 | 94 |
+| diceShake | −22.0 | −6.7 | 580 | 835 | 100 |
+| diceLand (one die) | −27.0 | −9.5 | 427 | 307 | 93 |
+| cardDraw | −22.0 | −10.4 | 546 | 1509 | 98 |
+| hit | −21.0 | −9.5 | 863 | 204 | 65 |
+| conquer | −21.0 | −9.8 | 977 | 401 | 83 |
+| cardTrade | −21.0 | −9.8 | 927 | 482 | 100 |
+| turnStart | −21.0 | −12.7 | 900 | 272 | 95 |
+| continent | −19.0 | −9.3 | 1585 | 559 | 85 |
+| eliminated | −18.0 | −8.4 | 2083 | 275 | 66 |
+| victory | −17.0 | −6.2 | 5385 | 593 | 88 |
+
+Lengths include the room reverb tail.
+
+**Composites:**
+- A 5-die roll comes out at −21.6 LUFS, peak −9.2 (board level, as intended).
+- **Stress storm** (1126 requests over 4 s through the limiter): 550 played, 576 dropped, 466 stolen, at most 20 at once, peak −1.9 dBFS.
+- **Limiter:** a −20 dBFS sine passes at +0.023 dB; a +6 dBFS sine comes out at peak 0.763.
+- **Music, 60 s:** −33.7 LUFS momentary, peak −25.9, quietest 2 s window −43.9 dBFS (no gaps).
+- **Variants:** turnStart bright −19.5; conquer somber −21.4; continent somber −21.3.
+- **Durations:** diceShake, march and whoosh track the requested length.
+
+**Sound bank:**
+- Banked playback differs from direct synthesis by 0.000 dB, and the 10 impact sounds stay mono in the bank.
+- Warm-up takes 2206 ms after the first click with no main-thread blocking.
+- play() costs 0.1–0.2 ms median (0.4 ms max) for all 17 sounds after warm-up. Before the bank it measured 5–9 ms for hit, 12 ms for continent and 34–45 ms for victory.
+
+**Screenshots viewed:** spectrograms.png, music.png, lab.png. Each sound's shape matches its design, and nothing sits above ~5 kHz. From these I brightened the brass and loosened the march timing.
+
+**Confirmed on a blank page with no game code:** Chrome's first AudioContext costs about 117 ms of main-thread time.
+
+### knownIssues
+- No human has heard any of this yet. The measurements show levels, balance and spectrum are clean; they can't tell you whether the brass voicing or the cannon character is good. WAVs for listening are in `artifacts/audio/wav/` and `artifacts/tmp/audio/music-30s.wav`.
+- The first click in the app stalls the main thread for about 120–150 ms, once. This is Chrome opening the audio device for the page's first AudioContext (a blank page shows the same ~117 ms); our unlock work is about 14 ms of it. I unlock on pointerdown, so it mostly overlaps the user's own press (actions dispatch on pointer-up). Creating the context at page load instead would hide it, but in real Chrome that prints an autoplay warning every load, so I didn't.
+- `uiHover` sits at −45 LUFS because UX §5.4 asks for −18 dB under `uiClick`. In a chatty room that is close to inaudible, which is the intent. If the UI wants it more present, change its tier target in `types.ts` and its trim in `sounds/index.ts`; don't attenuate it at the call site.
+- UX.md conflicts with itself on one point. §8.1 says a click's sound should land within 50 ms, while §5.4 says `place` fires when the piece touches down, which is 200 ms after the click. I recommend the touch-down timing.
+- UX's cardTrade rate floor of 0.72 plays the brass off-key against the music bed. 0.75 (exactly a fourth down) stays in key, and that is what my recommended mapping uses.
+- Somber variants of conquer/continent are about 2.3 dB quieter than the normal versions (darker by design). A 0.6 s dice shake is about 1.8 dB louder than the 150 ms default because it contains more shaking strokes.
+- The sound bank holds roughly 15–20 MB of decoded buffers at most (48 keys: impact sounds mono, brass stereo, long cues 2 variations each). Fine on a desktop. A sound's first play() at an unusual `duration` synthesizes live (1–4 ms) and is cached after that.
+- `audio.html` is a dev page only; it is not included in the production build.
+
+### requests
+- package.json (lead): add a script, e.g. `"verify:audio": "tsx src/audio/verify.ts"`. It reuses a server on :5283 or starts and stops its own, and exits 1 on any failure. If you prefer, move it to tests/e2e/ (it imports from src/audio only through the page).
+- Repository (lead): decide whether to commit `artifacts/audio/wav/` (5.3 MB of WAVs for John to listen to) or add it to .gitignore. The 30 s music WAV is already in gitignored `artifacts/tmp/audio/`.
+- Controller (src/game): call `audio.stopAll()` inside skip / click-through. For playerEliminated, call `stopAll()` then `play('eliminated', { delay: 0.15 })` (UX's 150 ms of silence). On gameOver, call `stopAll()` then `play('victory')`. Use `delay` to land sounds on the moment of contact (die settles, piece touches down) instead of setTimeout. At 2× speed, halve delays and durations; never use `rate` for speed.
+- UI (src/ui): create the engine once at boot with the saved settings, e.g. `createAudio({ volume: settings.sfxVolume ?? 0.8, music: settings.music ?? false })`. Wire the SFX volume slider to setVolume, the music toggle to setMusic and the M key to setMuted. Play `uiHover` on buttons only, never on tiles; the engine already throttles it to one per 90 ms. The 70 ms-per-tile limit on rapid `place` sounds is a caller rule (the engine only enforces 30 ms across all tiles).
+- Renderer/UI: pan board sounds by the territory's screen position, e.g. `pan = clamp(((x / innerWidth) * 2 - 1) * 0.6, -1, 1)`. Dice: pan −0.3 for attacker dice and +0.3 for defender dice.
+- No contract files were touched. SfxName, AudioEngine and createAudio match SPEC §8 exactly; everything extra is additive and optional (see API notes).
+
+### apiNotes
+**Import** from `src/audio` (index.ts). The top of that file also carries the full recommended event→sound mapping as a comment for integrators.
+
+```ts
+createAudio(opts?: { volume?: number /*0.8*/; muted?: boolean; music?: boolean /*false*/; musicVolume?: number /*0.7*/; autoUnlock?: boolean /*true*/ }): AudioEngine
+interface AudioEngine {
+  unlock(): void; play(name: SfxName, opts?: PlayOptions): void; setVolume(v: number): void; setMuted(m: boolean): void; setMusic(on: boolean): void;  // spec §8
+  setMusicVolume(v: number): void; stopAll(): void; isUnlocked(): boolean; stats(): AudioStats; dispose(): void;  // extras
+}
+PlayOptions = { volume?: 0..2; pan?: -1..1; rate?: 0.5..2 (pitch+time, tape-style); delay?: seconds (sample-accurate, cancelled by stopAll); duration?: seconds (motion-following sounds only: diceShake 0.06–1.5 default 0.15, march 0.12–1.2 default 0.5, whoosh 0.2–1.5 default 0.6; pitch unchanged); variant?: 'bright' | 'somber' }
+AudioStats = { state: 'locked'|'suspended'|'running'|'closed'|'unavailable'; voices; voicesByName; played; dropped; stolen; music; banked }
+```
+
+**Gotchas:**
+- **Call at volume 1.** Loudness is normalised inside the engine; only scale for context, e.g. AI-vs-AI at 0.6.
+- **Per die:** `diceLand` is ONE die. Play it per die, 40 ms apart (the engine allows 6 at once); in a compressed blitz, play one per roll.
+- **Variants:** `'bright'` is for turnStart after AI turns; `'somber'` works on conquer and continent. Other sounds ignore `variant`.
+- **Volume curve:** setVolume is perceptual (gain = v²).
+- **Mute:** setMuted mutes SFX and music together.
+- **Music:** setMusic can be called before unlock and starts on unlock. The bed fades in over 5 s and out over 1.5 s. It ducks automatically: 3 dB for routine cues, 6 for continent, 8 for elimination, 12 for victory.
+- **Never throws:** play() is safe anywhere, including Node/vitest (state `unavailable`, every call a no-op).
+- **Voice limits built in:**
+  - global cap 20;
+  - dice 6 at once, 12 ms apart;
+  - hit 3 at once, 60 ms apart;
+  - place 5 at once, 30 ms apart;
+  - uiHover 1, 90 ms apart;
+  - stingers 1 each.
+- **Stealing:** lower-priority UI/board sounds are cut before stingers.
+- **Density:** overlapping repeats of the same sound get automatically quieter (hit −2.5 dB per overlapping voice, up to −6).
+
+**Dev page:** http://127.0.0.1:5283/audio.html (run `npx vite --port 5283`). Its `window.__audioLab` exposes the analysis API that verify.ts uses.
+
 ## Lead notes (2026-09-27, after reviewing the above)
 
 - Map preview reviewed: passes. Recognizable classic board; keep it.
