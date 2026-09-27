@@ -4,6 +4,7 @@
 
 import type { GameEvent, GameState, TerritoryId } from '../engine/types';
 import type { BoardGeometry } from '../map/types';
+import type { AudioEngine } from '../audio/types';
 
 export interface BoardViewOptions {
   /** Element the WebGL canvas fills (position: absolute; inset: 0). */
@@ -45,6 +46,11 @@ export interface BoardStats {
   activeTweens?: number;
   cameraMoving?: boolean;
   particles?: number;
+  /**
+   * Additive (controller builder): the fastest automatic camera rotation seen so far, in °/s (SPEC §10:
+   * ≤ 45). Read by __risk.metrics().maxCameraDegPerSec.
+   */
+  maxCameraDegPerSec?: number;
 }
 
 export interface PlayEventOptions {
@@ -55,6 +61,13 @@ export interface PlayEventOptions {
    * total count, so the renderer can compress to the blitz cap and slow the final roll.
    */
   seq?: { index: number; count: number };
+  /**
+   * Additive (controller builder): set on an `armiesMoved` (reason 'occupy') that follows its conquest
+   * with no human choice in between (the AI's occupy, or an engine auto-occupy). It IS the conquest's
+   * march (UX.md §6.1, §8.2 "Conquest ~650 ms … march starting at +150"), not a separate 400 ms move:
+   * fold it into the running conquest animation and resolve as soon as the pieces land.
+   */
+  inlineMarch?: boolean;
 }
 
 /** HUD-covered edges in CSS px. The home view frames the board inside the rest; the dice tray sits
@@ -96,6 +109,24 @@ export interface BoardView {
   setViewportInsets(insets: ViewportInsets): void;
   /** UI text-size multiplier (1, 1.25, 1.5) for badges, the dice tray and DOM labels. */
   setUiScale(scale: number): void;
+
+  /**
+   * Additive (renderer builder): effective reduced-motion flag (settings.reduceMotion ||
+   * prefers-reduced-motion). Steady outlines instead of pulses, no automatic camera moves (200 ms
+   * crossfade cuts instead), dice fade in on their faces, the flood becomes a 250 ms crossfade.
+   * Defaults to the `prefers-reduced-motion` media query until called.
+   */
+  setReducedMotion?(on: boolean): void;
+  /**
+   * Additive (renderer builder): hand the board the audio engine so motion-bound SFX land on their
+   * contact frames. When set, the BOARD plays: place, unplace, diceShake, diceLand, hit, conquer,
+   * march, whoosh (and calls audio.stopAll() inside skipAnimations). The controller must NOT play
+   * those; it keeps turnStart, cardDraw, cardTrade, continent, eliminated, victory and UI sounds.
+   * null = the board stays silent.
+   */
+  setAudio?(audio: AudioEngine | null): void;
+  /** Additive (renderer builder): settings.autoCamera — return home at turn start if displaced. Default true. */
+  setAutoCamera?(on: boolean): void;
 
   /** Screen position (client px) of a territory's army anchor, or null if off-screen. */
   getScreenPosition(t: TerritoryId): { x: number; y: number } | null;

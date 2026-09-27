@@ -3,12 +3,60 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
     <title>Risk · War Table</title>
+    <!-- Fonts: the @fontsource files, copied to public/fonts so they can be preloaded at stable URLs
+         with font-display: block (SPEC §8.8: no font swap on a cold load). -->
+    <link rel="preload" href="/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/cinzel-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/cinzel-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <style>
+      @font-face {
+        font-family: 'Inter Variable';
+        font-style: normal;
+        font-display: block;
+        font-weight: 100 900;
+        src: url(/fonts/inter-latin-wght-normal.woff2) format('woff2-variations');
+      }
+      @font-face {
+        font-family: 'Cinzel';
+        font-style: normal;
+        font-display: block;
+        font-weight: 600;
+        src: url(/fonts/cinzel-latin-600-normal.woff2) format('woff2');
+      }
+      @font-face {
+        font-family: 'Cinzel';
+        font-style: normal;
+        font-display: block;
+        font-weight: 700;
+        src: url(/fonts/cinzel-latin-700-normal.woff2) format('woff2');
+      }
+      html { background: #0c0f13; }
+      /* Boot splash: invisible for the first 600 ms, so fast boots never flash it (UX.md §8.8). */
+      #boot-splash {
+        position: fixed; inset: 0; display: grid; place-content: center; justify-items: center;
+        gap: 18px; color: #f3ead8; font: 600 28px/1 'Cinzel', serif; letter-spacing: 0.32em;
+        opacity: 0; animation: boot-in 300ms ease-out 600ms forwards; pointer-events: none;
+      }
+      #boot-splash i {
+        display: block; width: 220px; height: 1px; background: rgba(194, 160, 98, 0.22);
+        position: relative; overflow: hidden;
+      }
+      #boot-splash i::after {
+        content: ''; position: absolute; inset: 0; background: #c2a062; transform-origin: left;
+        transform: scaleX(0); animation: boot-fill 2.4s cubic-bezier(0.2, 0.7, 0.2, 1) 600ms forwards;
+      }
+      @keyframes boot-in { to { opacity: 1; } }
+      @keyframes boot-fill { to { transform: scaleX(0.92); } }
+    </style>
   </head>
   <!-- Contract: #board (WebGL canvas container) sits under #ui (HTML overlay). src/main.ts boots both. -->
   <body style="margin:0;background:#0c0f13;overflow:hidden">
     <div id="board" style="position:fixed;inset:0"></div>
-    <div id="ui" style="position:fixed;inset:0;pointer-events:none"></div>
+    <div id="ui" style="position:fixed;inset:0;pointer-events:none">
+      <div id="boot-splash" aria-hidden="true">RISK · WAR TABLE<i></i></div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

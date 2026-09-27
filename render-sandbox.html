@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Risk · War Table — render sandbox</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0c0f13; overflow: hidden; }
+      #board { position: fixed; inset: 0; }
+      #hud { position: fixed; inset: 0; pointer-events: none; }
+      #hud .zone { position: absolute; background: rgba(12,15,19,.55); border: 1px solid rgba(194,160,98,.25); box-sizing: border-box; }
+      #hud .band { position: absolute; border: 1px dashed rgba(243,234,216,.25); box-sizing: border-box; }
+      #hud .txt { position: absolute; left: 0; right: 0; text-align: center; color: #f3ead8; font: 600 15px 'Inter Variable', Inter, system-ui; letter-spacing: .02em; text-shadow: 0 1px 3px #000; }
+      #panel { position: fixed; right: 8px; top: 8px; width: 214px; max-height: calc(100% - 16px); overflow: auto; background: rgba(12,15,19,.86);
+        color: #e8e0cf; font: 12px/1.35 system-ui, sans-serif; border: 1px solid rgba(194,160,98,.35); border-radius: 8px; padding: 8px; z-index: 10; user-select: none; }
+      #panel.hidden { display: none; }
+      #panel h4 { margin: 8px 0 4px; font-size: 11px; color: #c2a062; text-transform: uppercase; letter-spacing: .08em; }
+      #panel button, #panel select { font: 12px system-ui; margin: 2px 2px 2px 0; background: #1d2229; color: #eee; border: 1px solid #3a414b; border-radius: 4px; padding: 3px 6px; cursor: pointer; }
+      #panel button.on { background: #6b5630; border-color: #c2a062; }
+      #stats { font: 11px ui-monospace, monospace; white-space: pre; color: #b9c3cc; }
+    </style>
+  </head>
+  <body>
+    <div id="board"></div>
+    <div id="hud"></div>
+    <div id="panel"></div>
+    <script type="module" src="/src/render/sandbox.ts"></script>
+  </body>
+</html>

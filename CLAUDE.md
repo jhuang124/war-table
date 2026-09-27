@@ -6,10 +6,13 @@
 
 ## Commands
 - `npm run dev` — dev server at http://127.0.0.1:5273
-- `npm test` — vitest (engine)
+- `npm test` — vitest (engine, controller, pure helpers)
+- `npm run test:e2e [flow ...]` — every Playwright flow in `tests/e2e/` on the real board + HUD (own
+  server on :5290, no HMR; logs in `artifacts/e2e/`). Tools, not in the suite: `tests/e2e/screens.ts`
+  (screenshot sweep), `tests/e2e/perf.ts` (frame times); both need a server on `RISK_URL`.
 - `npm run typecheck` — tsc
 - `npm run build:map` / `npm run verify:map` — regenerate / check `src/map/board.json`
-- `npm run sim` — AI-vs-AI soak
+- `npm run sim [games]` — AI-vs-AI soak + rounds-to-threshold table (paste into `src/game/presets.ts`)
 - `npm run build` — production build to `dist/`
 
 ## Rules for agents working here

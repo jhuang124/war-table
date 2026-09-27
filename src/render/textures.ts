@@ -1,0 +1,591 @@
+// Procedural canvas textures: walnut, felt, paint grain, the ocean chart, dice faces, text.
+import * as THREE from 'three';
+import type { BoardGeometry, Vec2 } from '../map/types';
+
+export const FONT_SERIF_CAPS = "'Cinzel', 'Cormorant Garamond Variable', Georgia, serif";
+export const FONT_ITALIC = "'Cormorant Garamond Variable', 'Cormorant Garamond', Georgia, serif";
+export const FONT_SANS = "'Inter Variable', 'Inter', system-ui, -apple-system, sans-serif";
+
+// ---------------------------------------------------------------------------
+// Noise
+// ---------------------------------------------------------------------------
+
+function hash(x: number, y: number, seed: number): number {
+  let h = (x * 374761393 + y * 668265263 + seed * 2147483647) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h = h ^ (h >>> 16);
+  return (h >>> 0) / 4294967295;
+}
+
+function vnoise(x: number, y: number, seed: number, wrapX = 0, wrapY = 0): number {
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const xf = x - xi;
+  const yf = y - yi;
+  const w = (v: number, m: number) => (m ? ((v % m) + m) % m : v);
+  const a = hash(w(xi, wrapX), w(yi, wrapY), seed);
+  const b = hash(w(xi + 1, wrapX), w(yi, wrapY), seed);
+  const c = hash(w(xi, wrapX), w(yi + 1, wrapY), seed);
+  const d = hash(w(xi + 1, wrapX), w(yi + 1, wrapY), seed);
+  const u = xf * xf * (3 - 2 * xf);
+  const v = yf * yf * (3 - 2 * yf);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+
+function fbm(x: number, y: number, seed: number, oct = 4, wrapX = 0, wrapY = 0): number {
+  let s = 0;
+  let amp = 0.5;
+  let f = 1;
+  for (let i = 0; i < oct; i++) {
+    s += amp * vnoise(x * f, y * f, seed + i * 17, wrapX ? wrapX * f : 0, wrapY ? wrapY * f : 0);
+    amp *= 0.5;
+    f *= 2;
+  }
+  return s / (1 - Math.pow(0.5, oct));
+}
+
+function canvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d')!;
+  return [c, ctx];
+}
+
+function tex(c: HTMLCanvasElement, srgb = true, repeat = false): THREE.CanvasTexture {
+  const t = new THREE.CanvasTexture(c);
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  if (repeat) t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 8;
+  t.needsUpdate = true;
+  return t;
+}
+
+// ---------------------------------------------------------------------------
+// Wood / felt / grain
+// ---------------------------------------------------------------------------
+
+/** Dark walnut, grain running along x. Tiles seamlessly. */
+export function walnutTexture(size = 1024): THREE.CanvasTexture {
+  const [c, ctx] = canvas(size, size);
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  const base = [52, 33, 21];
+  const dark = [24, 14, 9];
+  const light = [92, 60, 38];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+      const v = y / size;
+      // Long, mostly straight grain with gentle waviness (walnut plank, not burl).
+      const warp = fbm(u * 2, v * 3, 3, 4, 2, 3) * 1.2;
+      const g = fbm(u * 3, v * 40 + warp * 2.5, 7, 3, 3, 40);
+      const ring = Math.pow(0.5 + 0.5 * Math.sin((v * 64 + warp * 2.2 + g * 2.4) * Math.PI), 3);
+      const fine = vnoise(u * 900, v * 60, 11, 900, 60);
+      const t = Math.min(1, Math.max(0, g * 0.8 + ring * 0.25 - 0.15));
+      const k = (i: number) => {
+        let col = base[i] + (dark[i] - base[i]) * ring * 0.8;
+        col += (light[i] - base[i]) * t * 0.55;
+        col *= 0.92 + fine * 0.16;
+        return col;
+      };
+      const o = (y * size + x) * 4;
+      d[o] = k(0);
+      d[o + 1] = k(1);
+      d[o + 2] = k(2);
+      d[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return tex(c, true, true);
+}
+
+export function feltTexture(size = 256): THREE.CanvasTexture {
+  const [c, ctx] = canvas(size, size);
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const n = hash(x, y, 5) * 0.5 + fbm(x / 24, y / 24, 9, 3, size / 24, size / 24) * 0.5;
+      const o = (y * size + x) * 4;
+      d[o] = 30 + n * 18;
+      d[o + 1] = 62 + n * 22;
+      d[o + 2] = 64 + n * 22;
+      d[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return tex(c, true, true);
+}
+
+/** Near-white matte paint grain for tile tops (multiplied by the owner color). */
+export function paintGrainTexture(size = 512): THREE.CanvasTexture {
+  const [c, ctx] = canvas(size, size);
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const n = fbm(x / 64, y / 64, 21, 4, size / 64, size / 64);
+      const f = hash(x, y, 2);
+      const brush = vnoise(x / 3, y / 90, 4, size / 3, size / 90);
+      const v = 0.9 + (n - 0.5) * 0.1 + (f - 0.5) * 0.045 + (brush - 0.5) * 0.04;
+      const o = (y * size + x) * 4;
+      const g = Math.round(Math.min(1, v) * 255);
+      d[o] = g;
+      d[o + 1] = g;
+      d[o + 2] = g - 3;
+      d[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return tex(c, true, true);
+}
+
+// ---------------------------------------------------------------------------
+// Ocean chart
+// ---------------------------------------------------------------------------
+
+function tracePolys(ctx: CanvasRenderingContext2D, polys: Vec2[][], s: number, h: number): void {
+  ctx.beginPath();
+  for (const ring of polys) {
+    ring.forEach(([x, y], i) => {
+      const px = x * s;
+      const py = (h - y) * s;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.closePath();
+  }
+}
+
+export function allLandRings(g: BoardGeometry): Vec2[][] {
+  const rings: Vec2[][] = [];
+  for (const t of Object.values(g.territories)) for (const p of t.polygons) rings.push(p.outer);
+  for (const p of g.decorativeLand) rings.push(p.outer);
+  return rings;
+}
+
+/** The engraved sea chart under the tiles. Width in px; height follows the board aspect. */
+export function oceanChartTexture(g: BoardGeometry, W = 4096): THREE.CanvasTexture {
+  const s = W / g.width;
+  const H = Math.round(g.height * s);
+  const [c, ctx] = canvas(W, H);
+  const land = allLandRings(g);
+
+  // Base: deep ink-teal, a little lighter toward the middle.
+  const grad = ctx.createRadialGradient(W * 0.5, H * 0.48, H * 0.1, W * 0.5, H * 0.5, W * 0.62);
+  grad.addColorStop(0, '#15454b');
+  grad.addColorStop(0.55, '#10373d');
+  grad.addColorStop(1, '#0a262c');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Mottled paper-like variation (low contrast).
+  {
+    const [nc, nctx] = canvas(256, 128);
+    const img = nctx.createImageData(256, 128);
+    for (let y = 0; y < 128; y++)
+      for (let x = 0; x < 256; x++) {
+        const n = fbm(x / 22, y / 22, 31, 4);
+        const o = (y * 256 + x) * 4;
+        img.data[o] = img.data[o + 1] = img.data[o + 2] = n * 255;
+        img.data[o + 3] = 255;
+      }
+    nctx.putImageData(img, 0, 0);
+    ctx.save();
+    ctx.globalAlpha = 0.07;
+    ctx.globalCompositeOperation = 'overlay';
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(nc, 0, 0, W, H);
+    ctx.restore();
+  }
+
+  // Graticule: engraved (dark line + faint light line beside it).
+  ctx.save();
+  const step = g.width / 18;
+  for (let i = 1; i < 18; i++) {
+    const x = Math.round(i * step * s) + 0.5;
+    ctx.strokeStyle = 'rgba(0,10,12,0.35)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(190,225,215,0.07)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x + 2, 0);
+    ctx.lineTo(x + 2, H);
+    ctx.stroke();
+  }
+  for (let j = 1; j < 9; j++) {
+    const y = Math.round((j * g.height * s) / 9) + 0.5;
+    ctx.strokeStyle = 'rgba(0,10,12,0.35)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(190,225,215,0.07)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, y + 2);
+    ctx.lineTo(W, y + 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // Shallow shelf glow around every coast.
+  ctx.save();
+  ctx.shadowColor = 'rgba(70,140,140,0.55)';
+  ctx.shadowBlur = 1.4 * s;
+  ctx.fillStyle = 'rgba(40,100,104,0.55)';
+  tracePolys(ctx, land, s, g.height);
+  ctx.fill('nonzero');
+  ctx.restore();
+
+  // Engraved water lines hugging the coasts (vintage chart ripples).
+  const rings = [0.42, 0.78, 1.2];
+  const [lc, lctx] = canvas(W, H);
+  rings.forEach((r, i) => {
+    lctx.globalCompositeOperation = 'source-over';
+    lctx.clearRect(0, 0, W, H);
+    lctx.lineJoin = 'round';
+    lctx.strokeStyle = '#000';
+    tracePolys(lctx, land, s, g.height);
+    lctx.lineWidth = 2 * r * s;
+    lctx.stroke();
+    lctx.globalCompositeOperation = 'destination-out';
+    lctx.lineWidth = 2 * r * s - 3.2;
+    lctx.stroke();
+    lctx.fill('nonzero');
+    lctx.globalCompositeOperation = 'source-in';
+    lctx.fillStyle = `rgba(200,232,222,${0.2 - i * 0.05})`;
+    lctx.fillRect(0, 0, W, H);
+    ctx.drawImage(lc, 0, 0);
+  });
+
+  // Compass rose in the south Pacific.
+  drawCompass(ctx, 8.6 * s, (g.height - 8.4) * s, 3.6 * s);
+
+  // Ocean labels: italic, letter-spaced, pale.
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const l of g.oceanLabels) {
+    const px = l.at[0] * s;
+    const py = (g.height - l.at[1]) * s;
+    const size = l.size * s * 0.92;
+    ctx.font = `italic 500 ${size}px ${FONT_ITALIC}`;
+    const spaced = l.text.split('').join('  ');
+    ctx.fillStyle = 'rgba(0,12,14,0.5)';
+    ctx.fillText(spaced, px, py + size * 0.05);
+    ctx.fillStyle = 'rgba(206,226,214,0.42)';
+    ctx.fillText(spaced, px, py);
+  }
+  ctx.restore();
+
+  // Vignette toward the frame.
+  const vg = ctx.createRadialGradient(W / 2, H / 2, H * 0.45, W / 2, H / 2, W * 0.6);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,6,8,0.35)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+
+  const t = tex(c, true, false);
+  t.anisotropy = 16;
+  t.generateMipmaps = true;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  return t;
+}
+
+function drawCompass(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number): void {
+  ctx.save();
+  ctx.translate(cx, cy);
+  const ink = 'rgba(214,230,216,0.34)';
+  const inkSoft = 'rgba(214,230,216,0.16)';
+  const dark = 'rgba(0,12,14,0.35)';
+  ctx.lineWidth = r * 0.012;
+  ctx.strokeStyle = ink;
+  for (const k of [1, 0.93, 0.62]) {
+    ctx.beginPath();
+    ctx.arc(0, 0, r * k, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  // Tick ring
+  for (let i = 0; i < 64; i++) {
+    const a = (i / 64) * Math.PI * 2;
+    const r0 = r * (i % 4 === 0 ? 0.86 : 0.9);
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0);
+    ctx.lineTo(Math.cos(a) * r * 0.93, Math.sin(a) * r * 0.93);
+    ctx.stroke();
+  }
+  const point = (a: number, len: number, w: number, lightSide: boolean) => {
+    const tipX = Math.cos(a) * len;
+    const tipY = Math.sin(a) * len;
+    const lx = Math.cos(a + Math.PI / 2) * w;
+    const ly = Math.sin(a + Math.PI / 2) * w;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(tipX, tipY);
+    ctx.lineTo(lx, ly);
+    ctx.closePath();
+    ctx.fillStyle = lightSide ? ink : dark;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(tipX, tipY);
+    ctx.lineTo(-lx, -ly);
+    ctx.closePath();
+    ctx.fillStyle = lightSide ? dark : inkSoft;
+    ctx.fill();
+  };
+  for (let i = 0; i < 8; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / 4 + Math.PI / 8;
+    point(a, r * 0.5, r * 0.06, i % 2 === 0);
+  }
+  for (let i = 0; i < 4; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / 2 + Math.PI / 4;
+    point(a, r * 0.62, r * 0.08, true);
+  }
+  for (let i = 0; i < 4; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / 2;
+    point(a, r * 0.98, r * 0.11, true);
+  }
+  ctx.fillStyle = ink;
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 0.035, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.font = `600 ${r * 0.26}px ${FONT_SERIF_CAPS}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('N', 0, -r * 1.06);
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Continent halo (white alpha; tinted by the material)
+// ---------------------------------------------------------------------------
+
+export interface HaloTex {
+  texture: THREE.CanvasTexture;
+  /** Board-space rectangle the texture covers. */
+  minX: number;
+  minY: number;
+  w: number;
+  h: number;
+}
+
+export function haloTexture(rings: Vec2[][], pad = 2.2, ppu = 12): HaloTex {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const r of rings)
+    for (const [x, y] of r) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  minX -= pad;
+  minY -= pad;
+  maxX += pad;
+  maxY += pad;
+  const w = maxX - minX;
+  const h = maxY - minY;
+  const W = Math.ceil(w * ppu);
+  const H = Math.ceil(h * ppu);
+  const [c, ctx] = canvas(W, H);
+  const path = () => {
+    ctx.beginPath();
+    for (const ring of rings) {
+      ring.forEach(([x, y], i) => {
+        const px = (x - minX) * ppu;
+        const py = (maxY - y) * ppu;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.closePath();
+    }
+  };
+  ctx.lineJoin = 'round';
+  // Soft glow
+  ctx.save();
+  ctx.shadowColor = 'rgba(255,255,255,0.9)';
+  ctx.shadowBlur = 0.9 * ppu;
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = 0.5 * ppu;
+  path();
+  ctx.stroke();
+  ctx.restore();
+  // Crisp contour band hugging the coast (outer half shows beyond the tiles).
+  ctx.strokeStyle = 'rgba(255,255,255,1)';
+  ctx.lineWidth = 0.44 * ppu;
+  path();
+  ctx.stroke();
+  const t = tex(c, true, false);
+  return { texture: t, minX, minY, w, h };
+}
+
+// ---------------------------------------------------------------------------
+// Text planes
+// ---------------------------------------------------------------------------
+
+export interface TextPart {
+  text: string;
+  font: string;
+  /** letter spacing in em */
+  tracking?: number;
+}
+
+/** White text with an engraved under-shadow, on transparent. Returns the texture and its aspect. */
+export function textTexture(parts: TextPart[], pxHeight = 128): { texture: THREE.CanvasTexture; aspect: number } {
+  const [m, mctx] = canvas(8, 8);
+  void m;
+  const pad = pxHeight * 0.16;
+  let width = 0;
+  const widths: number[] = [];
+  for (const p of parts) {
+    mctx.font = p.font.replace('{px}', String(pxHeight));
+    const chars = p.text.split('');
+    const track = (p.tracking ?? 0) * pxHeight;
+    let w = 0;
+    for (const ch of chars) w += mctx.measureText(ch).width + track;
+    widths.push(w);
+    width += w;
+  }
+  const W = Math.ceil(width + pad * 2);
+  const H = Math.ceil(pxHeight * 1.3);
+  const [c, ctx] = canvas(W, H);
+  ctx.textBaseline = 'middle';
+  const draw = (dy: number, style: string) => {
+    let x = pad;
+    parts.forEach((p) => {
+      ctx.font = p.font.replace('{px}', String(pxHeight));
+      const track = (p.tracking ?? 0) * pxHeight;
+      ctx.fillStyle = style;
+      for (const ch of p.text.split('')) {
+        ctx.fillText(ch, x, H / 2 + dy);
+        x += ctx.measureText(ch).width + track;
+      }
+    });
+  };
+  draw(pxHeight * 0.045, 'rgba(0,0,0,0.75)');
+  draw(0, '#ffffff');
+  const t = tex(c, true, false);
+  return { texture: t, aspect: W / H };
+}
+
+// ---------------------------------------------------------------------------
+// Dice faces
+// ---------------------------------------------------------------------------
+
+const PIPS: Record<number, [number, number][]> = {
+  1: [[0.5, 0.5]],
+  2: [
+    [0.27, 0.27],
+    [0.73, 0.73],
+  ],
+  3: [
+    [0.26, 0.26],
+    [0.5, 0.5],
+    [0.74, 0.74],
+  ],
+  4: [
+    [0.28, 0.28],
+    [0.72, 0.28],
+    [0.28, 0.72],
+    [0.72, 0.72],
+  ],
+  5: [
+    [0.27, 0.27],
+    [0.73, 0.27],
+    [0.5, 0.5],
+    [0.27, 0.73],
+    [0.73, 0.73],
+  ],
+  6: [
+    [0.28, 0.24],
+    [0.72, 0.24],
+    [0.28, 0.5],
+    [0.72, 0.5],
+    [0.28, 0.76],
+    [0.72, 0.76],
+  ],
+};
+
+/** One face texture: owner color with ink pips (slightly recessed look). */
+export function diceFaceTexture(value: number, base: string, ink: string, size = 128): THREE.CanvasTexture {
+  const [c, ctx] = canvas(size, size);
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, size, size);
+  // faint edge darkening so the rounded corners read
+  const g = ctx.createRadialGradient(size / 2, size / 2, size * 0.3, size / 2, size / 2, size * 0.75);
+  g.addColorStop(0, 'rgba(255,255,255,0.05)');
+  g.addColorStop(1, 'rgba(0,0,0,0.18)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const r = size * (value === 1 ? 0.12 : 0.092);
+  for (const [px, py] of PIPS[value]) {
+    const x = px * size;
+    const y = py * size;
+    ctx.beginPath();
+    ctx.arc(x, y + r * 0.12, r * 1.08, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = ink;
+    ctx.fill();
+    const pg = ctx.createRadialGradient(x - r * 0.3, y - r * 0.35, r * 0.1, x, y, r);
+    pg.addColorStop(0, 'rgba(0,0,0,0.35)');
+    pg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = pg;
+    ctx.fill();
+  }
+  const t = tex(c, true, false);
+  t.anisotropy = 4;
+  return t;
+}
+
+/** A jagged crack decal (dark line with a light chipped edge), transparent. */
+export function crackTexture(size = 128): THREE.CanvasTexture {
+  const [c, ctx] = canvas(size, size);
+  const pts: [number, number][] = [
+    [0.08, 0.2],
+    [0.3, 0.36],
+    [0.42, 0.33],
+    [0.55, 0.52],
+    [0.68, 0.55],
+    [0.8, 0.74],
+    [0.95, 0.82],
+  ];
+  const stroke = (w: number, style: string, dy: number) => {
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * size, y * size + dy) : ctx.moveTo(x * size, y * size + dy)));
+    ctx.moveTo(0.55 * size, 0.52 * size + dy);
+    ctx.lineTo(0.5 * size, 0.78 * size + dy);
+    ctx.lineTo(0.42 * size, 0.9 * size + dy);
+    ctx.strokeStyle = style;
+    ctx.lineWidth = w;
+    ctx.lineJoin = 'miter';
+    ctx.stroke();
+  };
+  stroke(size * 0.05, 'rgba(255,255,255,0.35)', size * 0.02);
+  stroke(size * 0.035, 'rgba(10,8,6,0.9)', 0);
+  return tex(c, true, false);
+}
+
+/** Soft round sprite for dust. */
+export function softDotTexture(size = 64): THREE.CanvasTexture {
+  const [c, ctx] = canvas(size, size);
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.4, 'rgba(255,255,255,0.45)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return tex(c, true, false);
+}

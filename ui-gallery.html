@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>War Table · UI gallery</title>
+    <link rel="preload" href="/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/cinzel-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/cinzel-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <style>
+      @font-face { font-family: 'Inter Variable'; font-style: normal; font-display: block; font-weight: 100 900; src: url(/fonts/inter-latin-wght-normal.woff2) format('woff2-variations'); }
+      @font-face { font-family: 'Cinzel'; font-style: normal; font-display: block; font-weight: 600; src: url(/fonts/cinzel-latin-600-normal.woff2) format('woff2'); }
+      @font-face { font-family: 'Cinzel'; font-style: normal; font-display: block; font-weight: 700; src: url(/fonts/cinzel-latin-700-normal.woff2) format('woff2'); }
+      html { background: #0c0f13; }
+      /* Stand-in board: dark walnut table, the map preview as a tilted slab with a brass frame. */
+      .g-table {
+        position: absolute; inset: 0; overflow: hidden; perspective: 1400px;
+        background:
+          radial-gradient(ellipse at 50% 42%, rgba(0, 0, 0, 0) 30%, rgba(0, 0, 0, 0.62) 100%),
+          repeating-linear-gradient(94deg, rgba(255, 220, 170, 0.018) 0 3px, rgba(0, 0, 0, 0.04) 3px 9px),
+          linear-gradient(180deg, #2a1c13, #1c130d 60%, #140e0a);
+      }
+      .g-table.g-shot { background-size: cover; background-position: center; }
+      .g-table.g-shot .g-slab img, .g-table.g-shot .g-slab { opacity: 0; }
+      .g-stage { position: absolute; transform-style: preserve-3d; }
+      .g-slab {
+        position: absolute; inset: 0; transform: rotateX(24deg); transform-origin: 50% 60%;
+        border-radius: 6px; padding: 0;
+        box-shadow: 0 0 0 6px #6b5230, 0 0 0 8px #b6955c, 0 0 0 11px #3b2a17, 0 40px 80px rgba(0, 0, 0, 0.6);
+        background: #0f2e33;
+      }
+      .g-slab img { display: block; width: 100%; height: 100%; object-fit: fill; filter: saturate(0.85) brightness(0.9); border-radius: 4px; }
+      .g-mark { position: absolute; width: 2px; height: 2px; margin: -1px 0 0 -1px; }
+      .g-tray {
+        position: fixed; left: 50%; transform: translateX(-50%); width: min(720px, 70vw); display: flex; justify-content: center; align-items: center; gap: 14%;
+        pointer-events: none; z-index: 1; border-radius: 18px; background: radial-gradient(ellipse at 50% 40%, #1d5a58, #103a3b);
+        box-shadow: inset 0 0 0 10px #4a3322, inset 0 0 0 12px #6b4c33, inset 0 6px 16px rgba(0,0,0,.5), 0 10px 26px rgba(0,0,0,.5);
+      }
+      .g-tray:empty { display: none; }
+      .g-dice { display: flex; gap: 10px; }
+      .g-die { position: relative; border-radius: 16%; box-shadow: inset 0 -4px 0 rgba(0, 0, 0, 0.25), inset 0 2px 0 rgba(255, 255, 255, 0.25), 0 6px 12px rgba(0, 0, 0, 0.5); }
+      .g-die i { position: absolute; width: 17%; height: 17%; margin: -8.5% 0 0 -8.5%; border-radius: 50%; }
+      .g-index {
+        position: fixed; z-index: 1000; inset: 20px auto 20px 20px; width: 380px; overflow: auto; padding: 18px 20px; display: none;
+        background: rgba(10, 12, 15, 0.97); border: 1px solid rgba(194, 160, 98, 0.35); border-radius: 12px; color: #f3ead8;
+        font: 14px/1.5 'Inter Variable', system-ui, sans-serif;
+      }
+      .g-index.open { display: block; }
+      .g-index h1 { font: 600 20px 'Cinzel', serif; letter-spacing: 0.08em; margin: 0 0 6px; }
+      .g-index h2 { font-size: 13px; color: #dcc08a; margin: 14px 0 4px; }
+      .g-index p { color: rgba(243, 234, 216, 0.6); margin: 0; }
+      .g-index ul { margin: 0; padding: 0; list-style: none; }
+      .g-index a { color: #f3ead8; text-decoration: none; }
+      .g-index a:hover { text-decoration: underline; }
+      .g-index a.tv { color: rgba(243, 234, 216, 0.45); font-size: 12px; margin-left: 6px; }
+      .g-index code { color: #dcc08a; }
+    </style>
+  </head>
+  <body style="margin:0;background:#0c0f13;overflow:hidden">
+    <div id="board" style="position:fixed;inset:0"></div>
+    <div id="ui" style="position:fixed;inset:0;pointer-events:none"></div>
+    <script type="module" src="/src/ui/gallery/main.ts"></script>
+  </body>
+</html>

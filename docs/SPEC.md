@@ -650,10 +650,14 @@ stop it when done.
 Everything else in the UX plan is derived UI-side from existing state, events and helpers. These are
 the only contract or tooling changes it needs. All are additive.
 
-### 11.1 Sim: rounds to threshold (`scripts/simulate.ts`; applied at integration — the engine agent started before this was written)
+### 11.1 Sim: rounds to threshold (`scripts/simulate.ts`; APPLIED at integration)
 Print the mean and p90 of the rounds until any player first reaches 60% / 70% / 100% of territories,
 split by 2 / 3 / 4 players, for normal-difficulty AIs. The New game length estimates are relabeled from
 these × measured seconds per round.
+- As built: `npm run sim` prints mean / median / p90 for 60 / 70 / 75 / 80 / 100% (75/80 are the
+  2-player presets) over `max(40, N/2)` random-deal games per player count. The table is pasted into
+  `src/game/presets.ts` (`ROUNDS`); the estimate multiplies it by 80 s per human turn and 5 s per AI
+  turn (measured at `watch`).
 
 ### 11.2 `src/render/BoardView.ts` (APPLIED by the lead)
 ```ts
@@ -687,7 +691,27 @@ needed.
   `#8a5ad6` is ΔE00 2.7 from cobalt for protanopes (UX.md §10.1). Do not change emerald.
 - Add `export const DEFAULT_SEAT_COLORS: PlayerColorId[] = ['crimson', 'cobalt', 'amber', 'rose'];`
 
-### 11.4 AI behavior (soft request; applied at integration or review; no contract change)
+### 11.4 AI behavior (soft request; VERIFIED at integration; no contract change)
 Prefer one `reinforce` with a count over many single-army actions, and `blitz` over repeated single
 attacks when the intent is "take it". The controller coalesces either way; fewer events just means
 fewer log lines and simpler replays.
+- As built: the engine AI already does both. `npm run sim` now prints the action shape and fails if
+  single rolls exceed 5% of blitzes (200-game run: 9.1 armies per reinforce action, 128 454 blitzes,
+  0 single rolls).
+
+### 11.5 As built (integration notes; where the build differs from the letter above)
+- **Dice tray**: its own pixel-mapped scene drawn after a depth clear (not a camera-attached group in
+  the main scene), with matching lights, so it sits exactly in the UI's CSS-px band. The UI sizes the
+  band (`solveBand` in `src/ui/index.ts`) with the renderer's tray formula (`src/render/dice.ts`
+  `layout()`); change both together. `tests/e2e/feel` checks the alignment at every target size.
+- **Shadows**: three r186 removed `PCFSoftShadowMap`; shadows use `PCFShadowMap` with a blur radius.
+- **Bloom**: not built (optional); rims, dice verdicts and the continent flare use emissive/ivory.
+- **Long blitzes** (~15+ rolls): the 3.0 s cap wins over the 120 ms middle-roll floor.
+- **Pan clamp**: keeps the look-at point on the board (a literal "board centre on screen" would forbid
+  inspecting corners at 3.5×). The ≤ 8° pitch limit applies to framing moves; the turn-start return
+  home restores home pitch (≤ 45°/s peak).
+- **Territory names** (setting on by default): a name that would overlap another badge or name sits
+  above its badge instead, or hides; hover tooltips always name the tile.
+- **Test hooks**: dev builds also expose `window.__board` (the BoardView, for its `__debug` layout
+  data) and `window.__audio`. `npm run test:e2e` runs every flow in `tests/e2e/` on the real board and
+  HUD (own server on :5290).

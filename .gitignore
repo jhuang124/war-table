@@ -5,3 +5,10 @@ test-results
 playwright-report
 artifacts/tmp
 *.log
+# Regenerated screenshots/logs (big; re-run the scripts to get them back)
+artifacts/ui/
+artifacts/render/
+artifacts/e2e/
+artifacts/game/
+artifacts/integration/
+artifacts/review/

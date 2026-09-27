@@ -34,7 +34,11 @@ interface GameResult {
   reach: Record<number, number>;
 }
 
-const THRESHOLDS = [60, 70, 100];
+/** Win thresholds the New game presets use (3–4p: 60 / 70 / 100; 2p: 75 / 80 / 100). */
+const THRESHOLDS = [60, 70, 75, 80, 100];
+
+/** SPEC §11.4: how the AI shapes its actions (bulk placements, blitz over single rolls). */
+const shape = { reinforceActions: 0, reinforceArmies: 0, attack: 0, blitz: 0 };
 
 const decisionTimes: number[] = [];
 const failures: string[] = [];
@@ -81,6 +85,11 @@ function playGame(config: GameConfig, label: string): GameResult {
     const t0 = performance.now();
     const action = chooseAiAction(state, me);
     decisionTimes.push(performance.now() - t0);
+    if (action.type === 'reinforce') {
+      shape.reinforceActions++;
+      shape.reinforceArmies += action.count ?? 1;
+    } else if (action.type === 'attack') shape.attack++;
+    else if (action.type === 'blitz') shape.blitz++;
     const res = applyAction(state, action);
     if (!res.ok) throw new Error(`${label}: applyAction rejected ${JSON.stringify(action)}: ${res.error}`);
     if (res.events.length === 0) throw new Error(`${label}: action produced no events ${JSON.stringify(action)}`);
@@ -202,18 +211,31 @@ const mixed = run('4p-hard+3normal', M, (i) => {
 const hw = mixed.filter((g) => g.players[g.winner].difficulty === 'hard').length;
 console.log(`  4p 1 hard + 3 normal: hard wins ${hw}/${mixed.length} (${pct(hw, mixed.length)}; fair share 25%)`);
 
-// --- Game length by win condition (normal AIs, full-conquest games; humans will be slower) ----
-console.log(`\n=== Rounds until someone first holds X% (normal AIs; median / p90) ===`);
+// --- Game length by win condition (SPEC §11.1; normal AIs, full-conquest games) ----------------
+// The New game length estimates (src/game/presets.ts ROUNDS) are these numbers × measured seconds per
+// round. Humans are slower and less eager than the sim's AIs; presets.ts scales for that.
+const L = Math.max(40, Math.round(N / 2));
+console.log(`\n=== Rounds until someone first holds X% (normal AIs, ${L} games each; mean / median / p90) ===`);
 for (const n of [2, 3, 4]) {
-  const res = run(`len-${n}p`, M, (i) =>
-    makeConfig(i, seats(Array.from({ length: n }, () => 'normal' as AiDifficulty)), { turnLimit: null, dominationPercent: 100 }),
+  const res = run(`len-${n}p`, L, (i) =>
+    makeConfig(i, seats(Array.from({ length: n }, () => 'normal' as AiDifficulty)), {
+      turnLimit: null,
+      dominationPercent: 100,
+      setupMode: 'random',
+    }),
   );
   const cells = THRESHOLDS.map((pct) => {
     const xs = res.map((g) => g.reach[pct]).filter((x): x is number => x !== undefined).sort((a, b) => a - b);
-    return `${pct}%: ${median(xs)} / ${xs[Math.floor(xs.length * 0.9)] ?? '—'}`;
+    const mean = xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
+    return `${pct}%: ${mean.toFixed(1)} / ${median(xs)} / ${xs[Math.floor(xs.length * 0.9)] ?? '—'}`;
   });
   console.log(`  ${n}p  ${cells.join('   ')}`);
 }
+
+console.log(
+  `\n=== AI action shape (SPEC §11.4): ${shape.reinforceActions} reinforce actions, ${(shape.reinforceArmies / Math.max(1, shape.reinforceActions)).toFixed(1)} armies each; attacks: ${shape.blitz} blitz vs ${shape.attack} single rolls ===`,
+);
+if (shape.attack > shape.blitz * 0.05) failures.push(`AI rolled single attacks ${shape.attack} times vs ${shape.blitz} blitzes (SPEC §11.4 wants blitz)`);
 
 // --- Timing ---------------------------------------------------------------------------------------
 const sorted = [...decisionTimes].sort((a, b) => a - b);

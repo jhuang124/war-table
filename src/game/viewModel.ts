@@ -153,6 +153,8 @@ export interface ButtonVM {
   brass: boolean;
   enabled: boolean;
   why: string | null; // disabled reason shown on hover, e.g. 'Place 3 more'
+  /** Additive (UI): a 2 px brass underline sweeps and clicks are ignored (UX.md §8.9 'busy'). */
+  busy?: boolean;
 }
 
 export interface ActionBarVM {
@@ -267,6 +269,8 @@ export interface TooltipVM {
   armies: number;
   line: string; // from explainTerritory: a verb or the reason
   ok: boolean;
+  /** Additive (UI): the hovered tile, so the tooltip can flip away from its badge (UX.md §7.4). */
+  territory?: TerritoryId;
 }
 
 export interface PillsVM {
@@ -290,6 +294,8 @@ export interface GameVM {
   handoff: { seat: SeatRef; subline: string } | null; // 'Pass to Sam' cover
   allHumansOut: boolean; // non-modal card with Watch / End game
   confirm: { kind: 'endGame' | 'restart'; text: string } | null;
+  /** Additive (integration): this game's house rules, for the rules card (the New game draft may differ). */
+  house?: { cardBonus: 'progressive' | 'fixed'; fortifyRule: 'connected' | 'adjacent' };
 }
 
 // ---------------------------------------------------------------------------

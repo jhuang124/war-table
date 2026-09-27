@@ -156,8 +156,10 @@ New game screen, top to bottom:
    - `Evening · 70% of the world · ~60–90 min` (**default**): `dominationPercent 70`
    - `Full conquest · every territory · 2–3 h`: `dominationPercent 100`
 
-   The minute figures are placeholders until the sim reports rounds-to-threshold (SPEC §11.1). Relabel
-   them then.
+   As built: the estimate is computed per draft from `npm run sim`'s rounds-to-threshold table (median
+   to p90, × 1.3 for human pace) × seconds per round (80 s per human turn, 5 s per AI turn measured at
+   `watch`), so 1 human + 3 AI reads `~20–35 min` for Evening and 4 humans read `~1–2 h`
+   (`src/game/presets.ts`). For 2 players Quick is 75% or 12 rounds and Evening 80% (50% is dealt).
 3. **Setup** (segmented):
    - `Quick deal · armies placed for you` (**default**): random deal + auto placement.
    - `Place your own · ~3 min`: random deal + manual placement in **two passes**. The controller sets
@@ -328,6 +330,11 @@ the turn plays at instant.
 - **Think time only at decision points**: 350 ms at turn start, 200 ms between engagements, 0 ms
   inside an engagement, during reinforce, or before occupy. No "thinking…" label unless a pause runs
   over 400 ms, which shouldn't happen.
+  - As built (integration): once AI-vs-AI fights run compressed (from the 3rd in a turn, the 2nd in
+    round 1) the gap between them is 140 ms, and a snapped AI-vs-AI conquest past the turn's headline
+    point (6 s; 3 s in round 1) gets a 170 ms beat instead of 250 ms. Fights against a human play full
+    until the headline point, then brief. Round-1 AI turns before any human has moved are capped at
+    5 s. Measured: AI turns at `watch` median ≈ 2.6–5 s, p95 ≈ 8 s (tests/e2e/game, round).
 - **Style by stakes** (`playEvent` option `style`, SPEC §11.2):
   - `full`, when the defender is human: telegraph the arrow and battle panel for 400 ms, then dice at
     the blitz timing (§8.2).
@@ -415,7 +422,7 @@ chip in the bar toggles them for the current seat with one click, stored in UI m
 | mid-turn trade | `You knocked out Sam and took 4 cards · trade down to 4, then keep attacking` | none |
 | attack, nothing selected | `Attack · click an enemy territory next to yours` | `You need 2+ armies to attack, because 1 always stays behind.` |
 | attack, source picked | `Attacking from Ural (8) · click a glowing enemy` | none |
-| attack, auto-picked source | `Attack Brazil from Venezuela (6) · click another of yours to switch` | none |
+| attack, auto-picked source | `Attack Brazil from Venezuela` (counts live in the battle panel) | `Click another of yours to switch.` |
 | attack, armed | `Attack Siberia from Ural` | `Blitz keeps rolling until Siberia falls or Ural is down to 1.` |
 | attack, no sources | `No attacks left · every border army is down to 1` | none |
 | occupy | `You took Siberia · move armies in` | `At least 3, one per die you rolled. 1 stays in Ural.` |

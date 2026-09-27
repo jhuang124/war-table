@@ -1,0 +1,77 @@
+// Pause → End game now → confirm → Victory (called in round N) with award cards, the territories chart
+// and standings → Rematch (same seats, new seed, one click). The game is played by the AIs for a few
+// rounds first (autoplay at fast) so the award ledgers have something to say.
+import { ART, check, clearStorage, clickBtn, finish, open, rendered, state, ui } from './lib';
+
+const results: string[] = [];
+const { browser, page, errors } = await open();
+await clearStorage(page);
+await page.reload();
+await page.waitForFunction(() => window.__risk?.ui().screen === 'title');
+await clickBtn(page, 'title-new');
+await page.locator('[data-testid="seat-name-0"]').fill('John');
+await page.locator('[data-testid="seat-name-0"]').press('Enter');
+await clickBtn(page, 'house-toggle');
+await page.locator('[data-testid="house-seed"]').fill('777');
+await page.locator('[data-testid="house-seed"]').press('Enter');
+await clickBtn(page, 'ng-start');
+await page.waitForFunction(() => window.__risk.getState()?.phase.kind === 'reinforce', null, { timeout: 30_000 });
+await page.evaluate(() => {
+  window.__risk.setSpeed(2, 'fast');
+  window.__risk.autoplay(true);
+});
+await page.waitForFunction(() => (window.__risk.getState()?.round ?? 0) >= 5 || window.__risk.ui().screen === 'victory', null, { timeout: 240_000, polling: 200 });
+await page.evaluate(() => window.__risk.autoplay(false));
+const early = (await ui(page)).screen === 'victory';
+if (!early) {
+  await page.waitForFunction(
+    () => {
+      const s = window.__risk.getState();
+      return !s || window.__risk.ui().screen !== 'game' || (s.currentPlayer === 0 && window.__risk.isIdle()) || s.players[0].eliminated;
+    },
+    null,
+    { timeout: 120_000, polling: 100 },
+  );
+}
+const s0 = (await state(page))!;
+const round = s0.round;
+if (!early) {
+  await rendered(page);
+  // Esc opens the pause menu (nothing is selected at turn start).
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('[data-testid="pause"]', { timeout: 3000 });
+  check(true, 'Esc → pause menu', results);
+  await page.screenshot({ path: `${ART}/endgame-pause.png` });
+  await clickBtn(page, 'pause-endgame');
+  await page.waitForSelector('[data-testid="confirm-yes"]', { state: 'visible', timeout: 3000 });
+  const text = await page.locator('.confirm-text').textContent();
+  check(/^End the game now\? \w+ wins on territories \(\d+ of 42\)\.$/.test(text ?? ''), `confirm: ${text}`, results);
+  await clickBtn(page, 'confirm-yes');
+  await page.waitForFunction(() => window.__risk.ui().screen === 'victory', null, { timeout: 10_000 });
+  const save = await page.evaluate(() => localStorage.getItem('risk3d.save.v1'));
+  check(!save, 'the save is cleared', results);
+}
+await page.screenshot({ path: `${ART}/endgame-banner.png` });
+await page.waitForTimeout(3600); // 2.5 s banner + awards dealt 250 ms apart
+const v = await page.evaluate(() => {
+  const root = document.querySelector('[data-testid="victory"]');
+  return {
+    text: root?.textContent ?? '',
+    awards: root ? root.querySelectorAll('.award').length : 0,
+    chart: root ? root.querySelectorAll('.chart svg path, .chart svg polyline').length : 0,
+    standings: root ? root.querySelectorAll('.standings li').length : 0,
+  };
+});
+check(early || new RegExp(`Called in round ${round}`).test(v.text), `subline: ${early ? 'won outright' : `Called in round ${round}`}`, results);
+check(v.awards >= 1, `${v.awards} award card(s)`, results);
+check(v.chart >= 4, `territories chart drawn (${v.chart} series paths)`, results);
+check(v.standings === 4, `standings: ${v.standings} seats`, results);
+await page.screenshot({ path: `${ART}/endgame-victory.png` });
+const seed0 = s0.config.seed;
+await clickBtn(page, 'rematch');
+await page.waitForFunction(() => window.__risk.ui().screen === 'game');
+const r = (await state(page))!;
+check(r.players.map((p) => `${p.name}:${p.kind}`).join(',') === s0.players.map((p) => `${p.name}:${p.kind}`).join(','), `Rematch: same seats (${r.players.map((p) => p.name).join(', ')})`, results);
+check(r.config.seed !== seed0 && r.round <= 1, `Rematch: new seed (${seed0} → ${r.config.seed}), fresh game`, results);
+await browser.close();
+finish(results, errors);

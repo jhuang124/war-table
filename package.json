@@ -8,10 +8,13 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5274",
     "test": "vitest run",
+    "test:e2e": "tsx scripts/e2e.ts",
     "typecheck": "tsc --noEmit",
     "build:map": "tsx scripts/build-map.ts",
     "verify:map": "tsx scripts/verify-map.ts",
     "sim": "tsx scripts/simulate.ts",
+    "verify:audio": "tsx src/audio/verify.ts",
+    "gallery": "vite --host 127.0.0.1 --port 5282 --strictPort --open /ui-gallery.html",
     "start": "vite build && vite preview --host 127.0.0.1 --port 5274"
   },
   "dependencies": {
