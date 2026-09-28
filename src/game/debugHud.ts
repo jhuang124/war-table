@@ -119,7 +119,7 @@ export function mountDebugHud(root: HTMLElement, api: ControllerApi): { dispose(
 
   const renderTitle = (vm: ViewModel) => `
     <div class="p" style="position:absolute;left:50%;top:30%;transform:translateX(-50%);text-align:center;min-width:22rem">
-      <div class="title" style="font-size:2.4rem">RISK · WAR TABLE</div>
+      <div class="title" style="font-size:2.4rem">WAR TABLE</div>
       <div class="row" style="justify-content:center;margin-top:1rem">
         ${btn('New game', { type: 'nav', screen: 'newGame' }, { brass: !vm.save, id: 'title-new' })}
         ${vm.save ? btn(`Continue · ${vm.save.summary}`, { type: 'continue' }, { brass: true, id: 'title-continue' }) : ''}

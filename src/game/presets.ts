@@ -158,7 +158,7 @@ export function draftProblems(d: NewGameDraft): string[] {
   for (const [k, n] of names) {
     if (n > 1) out.push(`Two seats are called ${d.seats.find((s) => s.name.trim().toLowerCase() === k)!.name.trim()}`);
   }
-  if (d.seats.length < 2) out.push('Risk needs at least 2 seats');
+  if (d.seats.length < 2) out.push('At least 2 seats');
   return out;
 }
 

@@ -6,6 +6,8 @@ import { defineConfig } from 'vite';
 const e2e = !!process.env.RISK_E2E;
 
 export default defineConfig({
+  // Relative asset paths: the same build works at / locally and at /war-table/ on GitHub Pages.
+  base: './',
   server: { host: '127.0.0.1', port: 5273, ...(e2e ? { hmr: false, watch: null } : {}) },
   build: { target: 'es2022', chunkSizeWarningLimit: 2000 },
 });

@@ -1,6 +1,8 @@
-# Risk: War Table
+# War Table
 
-Classic Risk for 2 to 4 players around one computer — a laptop on the coffee table or a TV. Any seat
+**Play: https://jhuang124.github.io/war-table/**
+
+The classic game of world conquest for 2 to 4 players around one computer — a laptop on the coffee table or a TV. Any seat
 can be an AI. A 3D board on a walnut table, real dice in a tray, and a HUD that always says what to do
 next. No accounts, no server, no online play: everything runs in the browser and saves to it.
 

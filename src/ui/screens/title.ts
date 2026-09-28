@@ -20,11 +20,13 @@ export class TitleScreen {
     this.el = h('section', 'screen title-screen');
     const col = h('div', 'title-col');
     const lock = h('div', 'lockup');
-    lock.append(h('div', 'lk-risk', 'Risk'));
+    const name = h('div', 'lk-risk');
+    name.append(h('span', '', 'War'), h('span', '', 'Table'));
+    lock.append(name);
     const wt = h('div', 'lk-sub');
-    wt.append(h('i', 'lk-rule'), h('span', '', 'War Table'), h('i', 'lk-rule'));
+    wt.append(h('i', 'lk-rule'), h('span', '', 'World conquest'), h('i', 'lk-rule'));
     lock.append(wt);
-    const tag = h('p', 'title-tag', 'Classic Risk for 2 to 4 players around one screen. Any seat can be an AI.');
+    const tag = h('p', 'title-tag', 'The classic game of world conquest, for 2 to 4 players around one screen. Any seat can be an AI.');
 
     const menu = (this.menu = h('div', 'title-menu'));
     // The brass button (and Enter) is New game, or Continue when a save exists: the group that closed

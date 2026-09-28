@@ -144,7 +144,7 @@ class SeatRow {
     setAttr(this.diffWrap, 'aria-hidden', seat.kind !== 'ai' ? 'true' : null);
     setAttr(this.remove, 'aria-disabled', canRemove ? null : 'true');
     toggle(this.remove, 'is-disabled', !canRemove);
-    this.remove.dataset.why = canRemove ? '' : 'Risk needs at least 2 seats';
+    this.remove.dataset.why = canRemove ? '' : 'At least 2 seats';
   }
 }
 

@@ -17,3 +17,4 @@ artifacts/soak/
 _claude/review-shots/
 _claude/review-fable-shots/
 _claude/*.log
+*.swp
