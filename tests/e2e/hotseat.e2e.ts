@@ -1,7 +1,8 @@
-// Multi-human paths through real clicks: manual setup ("Place your own": pick, Place, Undo, Done), the
-// hand-off cover (setting on), forced + mid-turn card trades (one button, the best set), the recap,
-// and all humans out → the strip offers "Watch to the end" → victory → rematch.
-import { check, clearStorage, clickBtn, clickT, dblT, finish, idle, loadScenario, open, place, rendered, scenario, state, ui } from './lib';
+// Multi-human paths through real clicks: manual setup ("Place your own": pick, Place, Undo, Place the
+// rest, Done on the Turn Track), the hand-off cover (setting on; End turn on the track), forced +
+// mid-turn card trades (one button, the best set; the track locked meanwhile), and all humans out →
+// the strip offers "Watch to the end" → victory → rematch.
+import { check, clearStorage, clickBtn, clickT, finish, idle, loadScenario, open, place, rendered, scenario, seg, state, ui } from './lib';
 import type { Card, GameState, TerritoryId } from '../../src/engine';
 
 const results: string[] = [];
@@ -47,15 +48,15 @@ for (let guard = 0; guard < 40; guard++) {
   await place(page, own[0], 1);
   await place(page, own[1], 2);
   await clickBtn(page, 'btn-undo'); // takes the 2 back
-  await dblT(page, own[1]); // everything left on own[1]
+  await place(page, own[1]); // everything left on own[1]
   await page.waitForTimeout(100);
   const u1 = await ui(page);
   if (humanSetupTurns === 0) {
-    check(u1.line === `All ${toPlace} placed` && u1.primary === 'Done', `staged: ${u1.line} · primary ${u1.primary}`, results);
+    check(u1.line === `All ${toPlace} placed · click Done` && u1.primary === null && u1.brass.join() === 'Done', `staged: ${u1.line} · brass ${u1.brass.join(' / ')}`, results);
     const before = await state(page);
     check(before!.territories[own[0]].armies === s.territories[own[0]].armies, 'staging does not touch the engine until Done', results);
   }
-  await clickBtn(page, 'btn-done');
+  await seg(page, 'done');
   humanSetupTurns++;
 }
 const sMain = await state(page);
@@ -95,7 +96,7 @@ await page.waitForFunction(() => !!window.__risk);
 await clickBtn(page, 'title-continue');
 await idle(page);
 await rendered(page);
-await clickBtn(page, 'btn-endTurn');
+await seg(page, 'endTurn'); // straight from Attack: skips fortify
 await page.waitForSelector('[data-testid="handoff"]', { timeout: 3000 });
 const cover = await page.locator('[data-testid="handoff"]').textContent();
 check(/Pass to Sam/.test(cover ?? '') && /armies waiting · 2 cards/.test(cover ?? ''), `cover: ${cover?.replace(/\s+/g, ' ').trim()}`, results);
@@ -103,7 +104,7 @@ const handHidden = await page.evaluate(() => window.__risk.ui().line);
 check(handHidden === 'Pass to Sam', `the line under the cover: ${handHidden}`, results);
 const turnBannerBefore = (await ui(page)).banners.filter((b) => b.endsWith('TURN'));
 check(turnBannerBefore.length === 0 || !turnBannerBefore[0].startsWith('SAM'), 'turnStarted waits for the cover', results);
-await page.keyboard.press('Enter');
+await clickBtn(page, 'handoff-accept');
 await page.waitForFunction(() => !document.querySelector('[data-testid="handoff"]'));
 await page.waitForTimeout(80);
 const afterCover = await ui(page);
@@ -123,9 +124,16 @@ const hand5: Card[] = [
 ];
 await loadScenario(page, scenario({ ural: [0, 3], ukraine: [0, 1] }, { kind: 'reinforce', remaining: 3, mustTrade: true, placed: {}, midTurn: false }, { mutate: (s) => void (s.players[0].cards = hand5) }));
 let u = await ui(page);
+let s0 = await state(page);
 check(u.line === 'Trade cards first · you hold 5', `forced trade: ${u.line}`, results);
 check(u.primary === 'Trade cards +4' && u.buttons.length === 1, `the only button: ${u.buttons.join(' / ')}`, results);
-await page.keyboard.press('Enter');
+check(u.trackDisabled && u.recommended === null && u.brass.join() === 'Trade cards +4', `the track is locked during the forced trade (disabled ${u.trackDisabled}, brass ${u.brass.join(' / ')})`, results);
+await seg(page, 'attack', true); // the track is disabled: the click changes no phase, only explains
+await page.waitForTimeout(100);
+s0 = await state(page);
+u = await ui(page);
+check(s0!.phase.kind === 'reinforce' && s0!.players[0].cards.length === 5 && u.line === 'Trade cards first', `a click on the locked track changes nothing, it says why (${s0!.phase.kind} · ${u.line})`, results);
+await clickBtn(page, 'btn-trade');
 await idle(page);
 let s = await state(page);
 u = await ui(page);
@@ -166,10 +174,18 @@ s = await state(page);
 u = await ui(page);
 check(s!.players[0].cards.length === 3 && (s!.phase as { remaining: number }).remaining > 0, `after the trade: ${u.line}`, results);
 const own = (Object.keys(s!.territories) as TerritoryId[]).find((t) => s!.territories[t].owner === 0)!;
-await dblT(page, own);
+await place(page, own);
 await page.waitForTimeout(100);
 u = await ui(page);
-check(u.line === 'All placed · keep attacking' && u.primary === 'Attack →', `exit: ${u.line} · ${u.primary}`, results);
+check(u.line === 'All placed · keep attacking' && u.primary === null && u.recommended === 'attack' && u.brass.join() === 'Attack', `exit: ${u.line} · brass ${u.brass.join(' / ')}`, results);
+await clickT(page, own); // in Place with 0 left, a board click is refused
+u = await ui(page);
+check(u.line === 'All armies placed · click Attack to go on' && u.lineKind === 'rejection', `board click with all placed: ${u.line}`, results);
+await seg(page, 'attack');
+await idle(page);
+s = await state(page);
+u = await ui(page);
+check(s!.phase.kind === 'attack' && u.step === 'Attack', `back to Attack via the track (${s!.phase.kind})`, results);
 const gotBanner = await page.evaluate(() => window.__risk.getState()!.players[1].eliminated);
 check(gotBanner, 'Sam is out', results);
 
@@ -189,6 +205,7 @@ await loadScenario(
 await page.waitForFunction(() => window.__risk.ui().line === 'All humans are out', null, { timeout: 60_000 });
 const ho = await ui(page);
 check(ho.buttons.join(' / ') === 'End game / Watch to the end', `all humans out: ${ho.buttons.join(' / ')}`, results);
+check(!ho.trackLive && ho.trackSeat !== 'John', `all humans out: the track follows the AI (${ho.trackSeat}, live ${ho.trackLive})`, results);
 await clickBtn(page, 'btn-watchAis');
 {
   // Poll with a progress trail, so a stall shows where it happened.
@@ -218,7 +235,7 @@ await page.waitForTimeout(1700);
 await clickBtn(page, 'rematch');
 await page.waitForFunction(() => window.__risk.ui().screen === 'game');
 const rs = await state(page);
-check(rs!.players.map((p) => p.name).join(',') === 'John,Cobalt,Amber,Rose', 'Rematch: same seats, new game', results);
+check(rs!.players.map((p) => p.name).join(',') === 'John,Cobalt,Amber,Emerald', 'Rematch: same seats, new game', results);
 await page.screenshot({ path: 'artifacts/e2e/hotseat-rematch.png' });
 
 await browser.close();

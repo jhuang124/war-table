@@ -1,6 +1,6 @@
 // Rematch pressed while the victory wave is still playing: the next game's board must not inherit the
 // finished game's attract orbit (which froze every blocking event at the renderer's 9 s watchdog).
-import { check, clickBtn, clickT, finish, idle, loadScenario, open, scenario } from './lib';
+import { check, clickBtn, clickT, finish, idle, loadScenario, open, scenario, ui } from './lib';
 import { TERRITORY_IDS, type TerritoryId } from '../../src/engine';
 
 const results: string[] = [];
@@ -39,16 +39,20 @@ await page.evaluate(() => {
     return p;
   };
 });
+// Target-first: clicking the enemy arms it from the strongest neighbour; the buttons commit.
 await clickT(page, 'alaska');
+const armed = await ui(page);
+check(/^Kamchatka → Alaska · \d+%$/.test(armed.line) && armed.buttons.join(' / ') === 'Roll / Blitz' && armed.brass.join() === 'Blitz', `armed: ${armed.line} · ${armed.buttons.join(' / ')}`, results);
 await clickBtn(page, 'btn-blitz');
 await page.waitForFunction(() => window.__risk.ui().screen === 'victory', null, { timeout: 20000 });
 const t0 = Date.now();
-// A keen player: click the victory screen as soon as the intro can be skipped, then Rematch.
-// (Enter skips the intro, the next Enter is Rematch; the controller ignores it for the first 1.5 s.)
+// A keen player: click the victory screen as soon as the intro can be skipped (a click in the first
+// 1.5 s is ignored), then click Rematch.
 await page.waitForTimeout(1550);
+await page.mouse.click(720, 300);
+await page.locator('[data-testid="rematch"]').waitFor({ state: 'visible', timeout: 2000 });
 const at = Date.now() - t0;
-await page.keyboard.press('Enter');
-await page.keyboard.press('Enter');
+await clickBtn(page, 'rematch');
 await page.waitForFunction(() => window.__risk.ui().screen === 'game', null, { timeout: 5000 });
 // The new game plays its deal and the first turn; nothing may wait on the camera.
 await page.waitForTimeout(6000);

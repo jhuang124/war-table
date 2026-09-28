@@ -11,16 +11,19 @@ import type { TileSet } from './tiles';
 import type { TokenSystem } from './tokens';
 import { Animator, ease } from './anim';
 import { hexToRgb } from './util';
+import { PLAYER_COLORS } from '../shared/palette';
 
 const CSS = `
 .rb-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;user-select:none;-webkit-user-select:none;contain:strict;--ui:1;--lab:1}
 .rb-vignette{position:absolute;inset:0;background:radial-gradient(ellipse 82% 80% at 50% 47%,rgba(0,0,0,0) 72%,rgba(4,5,7,.34) 100%)}
 .rb-badge,.rb-trav{position:absolute;left:0;top:0;width:24px;height:24px;display:flex;align-items:center;justify-content:center;
-  box-sizing:border-box;color:#f3ead8;font:700 13px/1 'Inter Variable',Inter,system-ui,sans-serif;
+  box-sizing:border-box;color:#f3ead8;font:700 14px/1 'Inter Variable',Inter,system-ui,sans-serif;background:#2a2f36;border-radius:7px;
+  box-shadow:inset 0 0 0 1px rgba(243,234,216,.34),inset 0 1px 0 rgba(255,255,255,.16),0 1px 2px rgba(0,0,0,.55),0 2px 5px rgba(0,0,0,.28);
+  text-shadow:0 1px 1px rgba(0,0,0,.45);
   font-variant-numeric:tabular-nums lining-nums;letter-spacing:-.02em;white-space:nowrap;
   will-change:transform;transform-origin:50% 50%;visibility:hidden;transition:opacity 180ms ease-out}
-.rb-badge .n,.rb-trav .n{display:block;padding-top:.07em}
-.rb-badge.dim{opacity:.62}
+.rb-badge .n,.rb-trav .n{display:block;padding-top:.06em}
+.rb-badge.dim{opacity:.8}
 .rb-badge.ghosted{z-index:2}
 .rb-ghost{position:absolute;left:calc(100% + 3px);top:50%;transform:translateY(-50%);height:calc(17px * var(--ui));padding:0 calc(5px * var(--ui));
   border-radius:calc(9px * var(--ui));background:#f3ead8;color:#12151a;font:700 calc(12px * var(--ui))/calc(17px * var(--ui)) 'Inter Variable',Inter,system-ui,sans-serif;
@@ -54,8 +57,17 @@ interface Badge {
   /** Container px. */
   cx: number;
   cy: number;
-  /** Projected token diameter, px. */
+  /** Projected base diameter, px. */
   diam: number;
+  /** Plaque centre / size (container px). */
+  px: number;
+  py: number;
+  ph: number;
+  pw: number;
+  /** The whole piece's screen box (figure top → plaque bottom), container px. */
+  box: [number, number, number, number];
+  lastW: number;
+  lastDigits: number;
   onScreen: boolean;
 }
 
@@ -86,7 +98,7 @@ interface TravEl {
   lastT: string;
   lastD: number;
   n: number;
-  ink: string;
+  owner: string;
 }
 
 const dpr = () => Math.min(2, window.devicePixelRatio || 1);
@@ -177,6 +189,13 @@ export class Overlay {
         cx: 0,
         cy: 0,
         diam: 24,
+        px: 0,
+        py: 0,
+        ph: 22,
+        pw: 22,
+        box: [0, 0, 0, 0],
+        lastW: 0,
+        lastDigits: 0,
         onScreen: false,
       };
       this.badges.set(id, b);
@@ -214,10 +233,11 @@ export class Overlay {
       b.num.textContent = String(n);
       b.shown = n;
     }
-    if (b.lastInk !== pal.ink) {
-      b.el.style.color = pal.ink;
-      b.el.style.textShadow = shadowFor(pal.ink);
-      b.lastInk = pal.ink;
+    if (b.lastInk !== pal.id) {
+      // The plaque is enamelled in the owner's deep colour with an ivory numeral (readable on any tile).
+      b.el.style.background = pal.deep;
+      b.el.style.color = '#f6efe0';
+      b.lastInk = pal.id;
     }
     if (pop) this.pop(id);
   }
@@ -325,6 +345,26 @@ export class Overlay {
     return [x, y, d, this.v.z];
   }
 
+  private proj(p: THREE.Vector3, camera: THREE.Camera): [number, number] {
+    this.v.copy(p).project(camera);
+    return [(this.v.x * 0.5 + 0.5) * this.width, (-this.v.y * 0.5 + 0.5) * this.height];
+  }
+
+  /** Plaque height for a projected base diameter: ~0.74 of the base, never under 22 px (× text size). */
+  plaqueH(diam: number): number {
+    const soft = 1 + (this._ui - 1) * 0.8;
+    return Math.max(22 * soft, Math.min(40 * soft, diam * 0.74));
+  }
+  private plaqueW(h: number, digits: number): number {
+    return digits >= 3 ? h * 1.62 : digits === 2 ? h * 1.28 : h;
+  }
+
+  /** Every piece's screen box (container px) this frame, for the board's picking. Null = not drawn. */
+  pieceBox(id: TerritoryId): [number, number, number, number] | null {
+    const b = this.badges.get(id)!;
+    return b.visible && b.onScreen && b.lastT !== 'off' ? b.box : null;
+  }
+
   /** Project and write every transform. Call once per frame after the camera updates. */
   update(camera: THREE.Camera, rect: DOMRect): void {
     const W = this.width;
@@ -335,16 +375,29 @@ export class Overlay {
     for (let i = 0; i < this.badgeList.length; i++) {
       const b = this.badgeList[i];
       const [x, y, d, z] = this.disc(this.tokens.top(b.id), R, camera);
-      if (Math.abs(x - b.cx) > 0.25 || Math.abs(y - b.cy) > 0.25) moved = true;
+      const [px, py0] = this.proj(this.tokens.plaquePoint(b.id), camera);
+      const [, fy] = this.proj(this.tokens.figTop(b.id), camera);
+      // the plaque hangs from the base's front rim, its top just over the rim
+      const ph = this.plaqueH(d);
+      const py = py0 + ph * 0.18;
+      if (Math.abs(px - b.px) > 0.25 || Math.abs(py - b.py) > 0.25 || Math.abs(fy - b.box[1]) > 0.25) moved = true;
       b.cx = x;
       b.cy = y;
       b.diam = d;
+      b.px = px;
+      b.py = py;
       b.x = x + rect.left;
       b.y = y + rect.top;
       b.onScreen = z < 1 && x > -20 && x < W + 20 && y > -20 && y < H + 20;
+      const digits = String(Math.max(0, b.shown)).length;
+      const pw = this.plaqueW(ph, digits);
+      b.ph = ph;
+      b.pw = pw;
+      const hw = Math.max((this.tokens.halfWidth(b.id) / R) * (d / 2), pw / 2);
+      b.box = [x - hw, Math.min(fy, py - ph / 2), x + hw, py + ph / 2];
       if (!b.visible) continue;
       const vis = this.tokens.visual(b.id);
-      const tray = this.underTray(x, y);
+      const tray = this.underTray(px, py);
       if (!b.onScreen || vis < 0.05 || tray) {
         if (b.lastT !== 'off') {
           b.el.style.visibility = 'hidden';
@@ -352,18 +405,22 @@ export class Overlay {
         }
         continue;
       }
-      const dq = Math.max(8, Math.round(d * 2) / 2);
-      if (dq !== b.lastD) {
-        b.lastD = dq;
-        const digits = String(b.shown).length;
-        const fs = dq * (digits >= 3 ? 0.44 : digits === 2 ? 0.54 : 0.58);
-        b.el.style.width = b.el.style.height = `${dq}px`;
+      const hq = Math.round(ph * 2) / 2;
+      const wq = Math.round(pw * 2) / 2;
+      if (hq !== b.lastD || wq !== b.lastW || digits !== b.lastDigits) {
+        b.lastD = hq;
+        b.lastW = wq;
+        b.lastDigits = digits;
+        const fs = hq * (digits >= 3 ? 0.56 : 0.64);
+        b.el.style.width = `${wq}px`;
+        b.el.style.height = `${hq}px`;
+        b.el.style.borderRadius = `${Math.round(hq * 0.3)}px`;
         b.el.style.fontSize = `${Math.round(fs * 2) / 2}px`;
       }
       const flip = this.tiles.get(b.id).pivot.scale.x;
       const sx = vis * flip;
       const sc = Math.abs(sx - 1) > 0.004 || Math.abs(vis - 1) > 0.004 ? ` scale(${sx.toFixed(3)},${vis.toFixed(3)})` : '';
-      const tr = `translate3d(${snap(x - dq / 2, r)}px,${snap(y - dq / 2, r)}px,0)${sc}`;
+      const tr = `translate3d(${snap(px - wq / 2, r)}px,${snap(py - hq / 2, r)}px,0)${sc}`;
       if (tr !== b.lastT) {
         if (b.lastT === '' || b.lastT === 'off') b.el.style.visibility = 'visible';
         b.el.style.transform = tr;
@@ -376,8 +433,9 @@ export class Overlay {
       const b = this.badges.get(c.id)!;
       const e = ease.outCubic(Math.min(1, c.t));
       const op = c.t < 0.6 ? 1 : 1 - (c.t - 0.6) / 0.4;
-      const x = b.cx + c.side * (b.diam * 0.5 + 12 * this._ui);
-      const y = b.cy - b.diam * 0.5 - 6 - 18 * e * this._ui;
+      const hw = (b.box[2] - b.box[0]) / 2;
+      const x = b.cx + c.side * (Math.min(hw, b.diam * 0.7) + 14 * this._ui);
+      const y = b.box[1] + 10 * this._ui - 18 * e * this._ui;
       const tr = `translate3d(${snap(x, r)}px,${snap(y, r)}px,0) translate(-50%,-50%)`;
       if (tr !== c.lastT) {
         c.el.style.transform = tr;
@@ -400,30 +458,35 @@ export class Overlay {
         num.className = 'n';
         el.appendChild(num);
         this.travLayer.appendChild(el);
-        e = { el, num, used: false, lastT: '', lastD: 0, n: -1, ink: '' };
+        e = { el, num, used: false, lastT: '', lastD: 0, n: -1, owner: '' };
         this.travs.push(e);
       }
       e.used = true;
-      const ink = tr.ink;
       if (e.n !== tr.n) {
         e.n = tr.n;
         e.num.textContent = String(tr.n);
         e.lastD = 0;
       }
-      if (e.ink !== ink) {
-        e.ink = ink;
-        e.el.style.color = ink;
-        e.el.style.textShadow = shadowFor(ink);
+      if (e.owner !== tr.owner) {
+        e.owner = tr.owner;
+        const pal = PLAYER_COLORS[tr.owner as keyof typeof PLAYER_COLORS];
+        e.el.style.background = pal ? pal.deep : '#2a2f36';
+        e.el.style.color = '#f6efe0';
       }
-      const [x, y, d] = this.disc(tr.top, R, camera);
-      const dq = Math.max(8, Math.round(d * 2) / 2);
-      if (dq !== e.lastD) {
-        e.lastD = dq;
-        const digits = String(tr.n).length;
-        e.el.style.width = e.el.style.height = `${dq}px`;
-        e.el.style.fontSize = `${Math.round(dq * (digits >= 3 ? 0.44 : digits === 2 ? 0.54 : 0.58) * 2) / 2}px`;
+      const [, , d] = this.disc(tr.top, R, camera);
+      const [x, y0] = this.proj(tr.plaque, camera);
+      const h = Math.round(this.plaqueH(d) * 2) / 2;
+      const y = y0 + h * 0.18;
+      const digits = String(tr.n).length;
+      const w = Math.round(this.plaqueW(h, digits) * 2) / 2;
+      if (h !== e.lastD) {
+        e.lastD = h;
+        e.el.style.width = `${w}px`;
+        e.el.style.height = `${h}px`;
+        e.el.style.borderRadius = `${Math.round(h * 0.3)}px`;
+        e.el.style.fontSize = `${Math.round(h * (digits >= 3 ? 0.56 : 0.64) * 2) / 2}px`;
       }
-      const t = `translate3d(${snap(x - dq / 2, r)}px,${snap(y - dq / 2, r)}px,0)`;
+      const t = `translate3d(${snap(x - w / 2, r)}px,${snap(y - h / 2, r)}px,0)`;
       if (t !== e.lastT || e.el.style.visibility !== 'visible') {
         e.el.style.transform = t;
         e.el.style.visibility = this.underTray(x, y) ? 'hidden' : 'visible';
@@ -456,7 +519,7 @@ export class Overlay {
     const n = this.labels.length;
     const focus = new Set(this.focusIds);
     if (this.hoverId) focus.add(this.hoverId);
-    // Token boxes are the obstacles.
+    // Piece boxes (figure top → plaque bottom) are the obstacles.
     const boxes: number[] = [];
     const tokenBox: (number[] | null)[] = [];
     for (let i = 0; i < n; i++) {
@@ -465,8 +528,7 @@ export class Overlay {
         tokenBox.push(null);
         continue;
       }
-      const h = b.diam / 2 + 1;
-      tokenBox.push([b.cx - h, b.cy - h, b.cx + h, b.cy + h]);
+      tokenBox.push([b.box[0], b.box[1], b.box[2], b.box[3]]);
     }
     const pad = 1.5;
     const hit = (a: number[], x0: number, y0: number, x1: number, y1: number) =>
@@ -500,11 +562,11 @@ export class Overlay {
         }
         const x0 = b.cx - l.w / 2;
         const x1 = b.cx + l.w / 2;
-        const half = (b.visible ? b.diam / 2 : 0) + 2;
-        const below = b.cy + half;
-        const above = b.cy - half - l.h;
+        const shown = b.visible && b.lastT !== 'off';
+        const below = shown ? b.box[3] + 2 : b.cy + 2;
+        const above = shown ? b.box[1] - 2 - l.h : b.cy - 2 - l.h;
         if (free(i, x0, below, x1, below + l.h)) place = [b.cx, below];
-        else if (b.visible && free(i, x0, above, x1, above + l.h)) place = [b.cx, above];
+        else if (shown && free(i, x0, above, x1, above + l.h)) place = [b.cx, above];
         else if (isFocus) place = [b.cx, below];
       }
       const on = !!place;

@@ -1,8 +1,8 @@
 // The HTML UI (docs/SIMPLIFY.md): renders the ViewModel, sends UiIntents, never imports the engine.
 //
-// In game the only chrome is the top strip (seat chips + ≡), the bottom strip (step · line · count ·
-// ≤ 2 buttons) and, during a fight, the dice tray's header line. The banner slot, the cards sheet, the
-// hand-off cover and the menu sheets come and go.
+// In game the only chrome floats on the board (docs/ROUND2.md): the seat pills + ≡ at the top, the
+// bottom strip (Turn Track · line · count · ≤ 2 buttons) and, during a fight, the dice tray's header
+// line. The banner slot, the cards sheet, the hand-off cover and the menu sheets come and go.
 //
 // Rendering: each component keeps its elements and patches them; every level short-circuits on
 // ViewModel identity (the controller keeps unchanged subtrees identical), so an idle frame costs a few
@@ -26,22 +26,21 @@ import { effectiveUiScale, isFitted } from './uiScale';
 
 /**
  * Dice-tray band, just above the bottom strip. The renderer centres its tray in the band
- * (src/shared/tray.ts), so the band is the tray plus one header line above it and the same margin
- * below. Returns the band and that margin (the header's strip), in CSS px.
+ * (src/shared/tray.ts). Only the header line sits above the tray (nothing below it), so the band is the
+ * tray plus the header's height and a small gap, split evenly; the header's bottom sits on the tray's top
+ * edge and may rise a few px above the band. Returns the band, the header height (`strip`) and the
+ * distance from the band's bottom to the tray's top (`trayTop`), in CSS px.
  */
-export function solveBand(H: number, scale: number, W = typeof window !== 'undefined' ? window.innerWidth : 1440): { band: number; strip: number } {
+export function solveBand(H: number, scale: number, W = typeof window !== 'undefined' ? window.innerWidth : 1440): { band: number; strip: number; trayTop: number } {
   const rem = 16 * scale;
   const need = Math.ceil(Math.max(0.022 * H, 1.0625 * rem) * 1.6);
   const cap = Math.round(H * 0.34);
-  let band = 120;
-  let strip = 0;
-  for (; band <= cap; band += 2) {
-    strip = Math.floor((band - trayGeometry(W, H, band, scale).trayH) / 2);
-    if (strip >= need) break;
-  }
+  let band = 96;
+  for (; band <= cap; band += 2) if (band - trayGeometry(W, H, band, scale).trayH >= need + 8) break;
   band = Math.min(band, cap);
-  strip = Math.floor((band - trayGeometry(W, H, band, scale).trayH) / 2);
-  return { band, strip };
+  const trayH = trayGeometry(W, H, band, scale).trayH;
+  const margin = Math.floor((band - trayH) / 2);
+  return { band, strip: need, trayTop: margin + trayH };
 }
 
 interface Instance {
@@ -129,17 +128,37 @@ export const mountUi: MountUi = (host, api) => {
   const measure = () => {
     const H = window.innerHeight;
     const W = window.innerWidth;
-    const { band, strip: headerStrip } = solveBand(H, scale, W);
+    const { band, strip: headerStrip, trayTop } = solveBand(H, scale, W);
     root.style.setProperty('--tray', `${band}px`);
     root.style.setProperty('--strip', `${headerStrip}px`);
-    const tb = top.el.getBoundingClientRect();
+    root.style.setProperty('--tray-top', `${trayTop}px`);
+    // The real HUD edges: the bottom of the top pills, the top of the floating strip.
+    let topEdge = 0;
+    for (const el of top.el.querySelectorAll<HTMLElement>('.seat-chip, .ts-menu')) {
+      if (el.offsetParent === null) continue;
+      topEdge = Math.max(topEdge, el.getBoundingClientRect().bottom);
+    }
+    if (!topEdge) topEdge = top.el.getBoundingClientRect().bottom;
     const st = strip.el.getBoundingClientRect();
+    // The persistent floating HUD as rectangles (seat pills, ≡, the strip; not the transient Reset view
+    // pill), so the home view can run the board up between the corner pills.
+    const rects: { x: number; y: number; w: number; h: number }[] = [];
+    const rectOf = (el: Element) => {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) rects.push({ x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
+    };
+    const seatsRow = top.el.querySelector('.ts-seats');
+    if (seatsRow) rectOf(seatsRow);
+    const menuPill = top.el.querySelector('.ts-menu');
+    if (menuPill) rectOf(menuPill);
+    rectOf(strip.el);
     const insets: ViewportInsets = {
-      top: Math.round(tb.bottom),
+      top: Math.round(topEdge),
       left: 0,
       right: 0,
       bottom: Math.round(H - st.top + 4),
       trayBand: band,
+      rects,
     };
     const key = JSON.stringify(insets);
     if (key !== lastInsets) {
@@ -157,7 +176,7 @@ export const mountUi: MountUi = (host, api) => {
     });
   };
   const ro = new ResizeObserver(queueMeasure);
-  for (const el of [top.el, strip.el, bandProbe]) ro.observe(el);
+  for (const el of [top.el, strip.el, bandProbe, top.el.querySelector('.ts-seats')!]) ro.observe(el);
   window.addEventListener('resize', queueMeasure);
 
   // ---- text size, fitted to the screen (src/ui/uiScale.ts) ------------------
@@ -203,6 +222,7 @@ export const mountUi: MountUi = (host, api) => {
     const g = next.game;
     if (g && (!prev || prev.game !== g)) {
       top.update(g.seats);
+      top.setViewMoved(g.viewMoved);
       strip.update(g.strip);
       battle.update(g.battle);
       announce.update(g.banner);
@@ -239,6 +259,8 @@ export const mountUi: MountUi = (host, api) => {
   const onClick = (e: MouseEvent) => {
     const b = isBtn(e.target);
     if (!b || b.tagName !== 'BUTTON' || b.getAttribute('aria-disabled') === 'true') return;
+    // The Turn Track's advance is a wooden clack (the controller plays it), not a UI tick.
+    if (b.classList.contains('tr-seg')) return;
     api.audio.play('uiClick');
   };
   const onOver = (e: PointerEvent) => {
@@ -246,6 +268,7 @@ export const mountUi: MountUi = (host, api) => {
     const b = t?.closest<HTMLElement>('button');
     if (b && b !== lastHover) {
       lastHover = b;
+      if (b.classList.contains('tr-seg') && b.getAttribute('aria-disabled') === 'true') return;
       const now = performance.now();
       if (b.getAttribute('aria-disabled') !== 'true' && now - lastHoverAt > 90) {
         lastHoverAt = now;
@@ -263,6 +286,12 @@ export const mountUi: MountUi = (host, api) => {
     const t = e.target as HTMLElement | null;
     const inField = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA');
     if (inField) {
+      // An open colour popover closes first (the name field keeps focus while the emblem is clicked).
+      if (e.key === 'Escape' && v.screen === 'newGame' && newGame.closeSwatches()) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       // Typing a name must never trigger game shortcuts. Enter / Esc finish the edit.
       if (e.key === 'Escape' || e.key === 'Enter') t!.blur();
       e.stopPropagation();
@@ -302,7 +331,7 @@ export const mountUi: MountUi = (host, api) => {
       if (e.key === 'Enter') (stop(), send(v.save ? { type: 'continue' } : { type: 'nav', screen: 'newGame' }));
     } else if (v.screen === 'newGame') {
       if (e.key === 'Enter') (stop(), v.newGame.canStart && send({ type: 'start' }));
-      else if (e.key === 'Escape') (stop(), send({ type: 'nav', screen: 'title' }));
+      else if (e.key === 'Escape') (stop(), newGame.closeSwatches() || send({ type: 'nav', screen: 'title' }));
     } else if (v.screen === 'victory') {
       if (e.key === 'Enter') {
         stop();

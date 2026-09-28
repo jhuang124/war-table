@@ -1,10 +1,11 @@
-// The dice tray's header (docs/SIMPLIFY.md §1): one line above the tray, only while a fight is armed or
-// rolling, then it fades out. 'URAL 12  vs  SIBERIA 5', each side in its owner's color. The renderer
-// draws the tray and the dice; the odds live in the bottom strip's line.
+// The dice tray's header (docs/ROUND2.md §E): one line above the tray while a fight is armed or rolling,
+// 'URAL 12  vs  SIBERIA 5', each side in its owner's colour; on a conquest it reads 'Siberia captured'
+// for its last second, then fades (300 ms). The renderer draws the tray and the dice; the odds live in
+// the bottom strip's line.
 
 import type { BattleSideVM, BattleVM } from '../../game/viewModel';
 import { PLAYER_COLORS } from '../../shared/palette';
-import { h, pop, setStyle, setText } from '../dom';
+import { h, pop, setStyle, setText, toggle } from '../dom';
 
 class Side {
   readonly el: HTMLSpanElement;
@@ -35,6 +36,8 @@ export class BattleHeader {
   readonly el: HTMLElement;
   private att = new Side('bt-att');
   private def = new Side('bt-def');
+  private vs: HTMLSpanElement;
+  private captured: HTMLSpanElement;
   private vm: BattleVM | null = null;
   private shown = false;
 
@@ -43,7 +46,10 @@ export class BattleHeader {
     this.el.dataset.testid = 'battle';
     this.el.setAttribute('aria-label', 'Battle');
     const head = h('div', 'bt-head');
-    head.append(this.att.el, h('span', 'bt-vs', 'vs'), this.def.el);
+    this.vs = h('span', 'bt-vs', 'vs');
+    this.captured = h('span', 'bt-captured hidden');
+    this.captured.dataset.testid = 'battle-captured';
+    head.append(this.att.el, this.vs, this.def.el, this.captured);
     this.el.append(head);
   }
 
@@ -54,7 +60,7 @@ export class BattleHeader {
       if (!this.shown) return;
       this.shown = false;
       this.el.classList.add('leaving');
-      const a = this.el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, easing: 'ease-in', fill: 'forwards' });
+      const a = this.el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 300, easing: 'ease-in', fill: 'forwards' });
       a.onfinish = () => {
         if (!this.shown) {
           this.el.classList.add('hidden');
@@ -74,5 +80,14 @@ export class BattleHeader {
     }
     this.att.update(vm.attacker);
     this.def.update(vm.defender);
+    const cap = vm.captured;
+    const was = !this.captured.classList.contains('hidden');
+    for (const el of [this.att.el, this.vs, this.def.el]) toggle(el, 'hidden', !!cap);
+    toggle(this.captured, 'hidden', !cap);
+    if (cap) {
+      setStyle(this.captured, '--seat-light', PLAYER_COLORS[vm.attacker.seat.color].light);
+      setText(this.captured, cap);
+      if (!was) pop(this.captured, 1.06, 200);
+    }
   }
 }

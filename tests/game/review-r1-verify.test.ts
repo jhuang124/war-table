@@ -134,25 +134,32 @@ describe('Esc backs out one level at a time, then opens the menu', () => {
     expect(c.hooks.ui().line).toBe('Attack from Ural · click an enemy');
     c.handleKey('Escape');
     expect(c.hooks.ui().line).toBe('Click an enemy territory to attack');
-    expect(c.hooks.ui().buttons).toEqual(['Fortify →', 'End turn']);
+    // Nothing armed: the action zone is empty; the track carries Fortify and End turn.
+    expect(c.hooks.ui().buttons).toEqual([]);
+    expect(c.hooks.ui().track).toEqual(['done:place', 'current:attack', 'eligible:fortify', 'eligible:endTurn']);
     c.handleKey('Escape');
     expect(c.getViewModel().overlay).toBe('pause');
     c.dispose();
   });
 });
 
-describe('occupy: one slider and Move N, nothing else', () => {
-  it('the strip has the slider, the one button, no card copy', async () => {
+describe('occupy: one count control and Move N, nothing else', () => {
+  it('the strip has the slider (> 6 options), the one button; the line shows the totals once the count moves', async () => {
     const s = fixture({ greenland: [0, 10], ontario: [0, 0] }, { kind: 'occupy', from: 'greenland', to: 'ontario', min: 3, max: 9, previousOwner: 2 });
     s.conqueredThisTurn = true;
     const { c } = await resume(s);
     const strip = c.getViewModel().game!.strip;
-    expect(strip.line).toBe('Move armies into Ontario');
+    expect(strip.line).toBe('Move into Ontario');
     expect(strip.count).toEqual({ control: 'slider', value: 9, min: 3, max: 9 });
     expect(strip.buttons).toEqual([{ id: 'move', label: 'Move 9', primary: true }]);
+    // Mandatory: the track is visibly disabled and explains itself.
+    expect(strip.track.disabled).toBe(true);
+    c.intent({ type: 'track', seg: 'endTurn' });
+    expect(c.hooks.ui().line).toBe('Finish moving armies in first');
     c.intent({ type: 'setCount', value: 4 });
     await vi.advanceTimersByTimeAsync(20);
     expect(c.hooks.ui().primary).toBe('Move 4');
+    expect(c.hooks.ui().line).toBe('Greenland 6 · Ontario 4');
     c.dispose();
   });
 });

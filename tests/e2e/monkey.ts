@@ -36,7 +36,7 @@ function rng(seed: number) {
 
 type Mode = '1h3ai' | '2h' | '3h' | '4h' | '2h2ai';
 const MODES: Mode[] = ['1h3ai', '2h', '3h', '4h', '2h2ai'];
-const COLORS = ['crimson', 'cobalt', 'amber', 'rose'] as const;
+const COLORS = ['crimson', 'cobalt', 'amber', 'emerald'] as const;
 function seats(mode: Mode) {
   const kinds: ('human' | 'ai')[] =
     mode === '1h3ai' ? ['human', 'ai', 'ai', 'ai'] : mode === '2h' ? ['human', 'human'] : mode === '3h' ? ['human', 'human', 'human'] : mode === '4h' ? ['human', 'human', 'human', 'human'] : ['human', 'ai', 'human', 'ai'];
@@ -55,6 +55,7 @@ interface Snap {
   round: number;
   cur: number;
   key: string;
+  /** Strip buttons plus Turn Track segments the player can click now. */
   enabledButtons: number;
   clickable: number;
   hidden: boolean;
@@ -97,7 +98,7 @@ async function snap(page: Page): Promise<Snap> {
       round: s?.round ?? -1,
       cur: s?.currentPlayer ?? -1,
       key: s ? `${s.turn}:${s.currentPlayer}:${s.phase.kind}:${JSON.stringify(s.territories).length}:${Object.values(s.territories).reduce((a, t) => a + t.armies * 7 + t.owner, 0)}` : '',
-      enabledButtons: u.buttons.length,
+      enabledButtons: u.buttons.length + (u.trackLive && !u.trackDisabled ? u.track.filter((x) => x.startsWith('eligible:')).length : 0),
       clickable,
       hidden: document.visibilityState === 'hidden',
       errs,
@@ -117,8 +118,8 @@ async function boardDrift(page: Page): Promise<string | null> {
       n: (b.querySelector('.n') as HTMLElement).textContent,
       ring: (b as HTMLElement).style.getPropertyValue('--ring'),
     }));
-    const actionbar = !!document.querySelector('[data-testid="actionbar"]');
-    return { s, badges, actionbar, owners: dbg ? { ...dbg.owners } : null, armies: dbg ? { ...dbg.armies } : null };
+    const strip = !!document.querySelector('[data-testid="strip"]');
+    return { s, badges, strip, owners: dbg ? { ...dbg.owners } : null, armies: dbg ? { ...dbg.armies } : null };
   });
   const s = r.s as GameState | null;
   if (!s || s.phase.kind === 'game-over') return null;
@@ -134,7 +135,7 @@ async function boardDrift(page: Page): Promise<string | null> {
     if (b.n !== String(ts.armies)) bad.push(`${t} badge ${b.n} vs state ${ts.armies}`);
     if (want && b.ring && b.ring.toLowerCase() !== want.toLowerCase()) bad.push(`${t} ring ${b.ring} vs owner ${s.players[ts.owner].name}`);
   });
-  if (!r.actionbar) bad.push('no action bar on the game screen');
+  if (!r.strip) bad.push('no bottom strip on the game screen');
   return bad.length ? bad.slice(0, 6).join('; ') : null;
 }
 
@@ -345,10 +346,25 @@ async function playGame(browser: Browser, seed: number): Promise<Result> {
         await clickAt(b.x, b.y);
       }
     } else {
-      // Progress: the brass primary / E, so games end.
-      const k = pick(['Enter', 'e', 'e', 'Enter', ' ']);
-      note(`progress ${k}`);
-      await page.keyboard.press(k);
+      // Progress, so games end: Enter (the brass thing), or a click on the Turn Track's recommended
+      // segment, else End turn / Done (the track is the only phase control, docs/ROUND2.md §A).
+      if (R() < 0.4) {
+        const k = pick(['Enter', 'Enter', ' ']);
+        note(`progress ${k}`);
+        await page.keyboard.press(k);
+      } else {
+        const b = await page.evaluate(() => {
+          const vis = (e: Element | null) => !!e && (e as HTMLElement).offsetParent !== null && e.getAttribute('aria-disabled') !== 'true';
+          const rec = document.querySelector('[data-testid="track"] .tr-seg.is-rec');
+          const el = vis(rec) ? rec : ['seg-endTurn', 'seg-done', 'seg-attack'].map((id) => document.querySelector(`[data-testid="${id}"]`)).find((e) => vis(e) && e!.classList.contains('is-eligible'));
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { id: (el as HTMLElement).dataset.testid ?? '', x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        });
+        if (!b) return;
+        note(`progress ${b.id}`);
+        await clickAt(b.x, b.y);
+      }
     }
   }
 

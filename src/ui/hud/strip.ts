@@ -1,14 +1,16 @@
-// Bottom strip (docs/SIMPLIFY.md §1): one fixed row, centered, ≤ 1100 px.
-//   [ Place · Attack · Fortify ] │ [ the one line …………… ] [ count control ] [ secondary ] [ PRIMARY ]
-// The line crossfades (160 ms) when its wording changes; when only a number changes it pops (±1) or
-// counts (≥ 5). A refused-click reason swaps in with a 120 ms fade. Everything is patched in place.
+// Bottom strip (docs/ROUND2.md §A): one floating glass pill, centered, 12 px off the bottom.
+//   [ ✓ Place | ATTACK | Fortify | End turn ] │ the one line ……… [ count ] [ secondary ] [ PRIMARY ]
+// The Turn Track at the left is the only phase control; the right end is an action zone only. The line
+// swaps (out, then in; never two at once) when its wording changes; when only a number changes it pops
+// (±1) or counts (≥ 5). Everything is patched in place.
 
-import type { ButtonVM, CountVM, StepVM, StripVM, UiIntent } from '../../game/viewModel';
+import type { ButtonVM, CountVM, StripVM, TrackSegId, TrackVM, UiIntent } from '../../game/viewModel';
 import { PLAYER_COLORS } from '../../shared/palette';
 import { ActionButton } from '../controls';
 import { countUp, EASE_IN_QUAD, h, minus, motion, pop, setAttr, setStyle, setText, toggle } from '../dom';
 
-/** The one line, with number-aware transitions. */
+/** The one line, with number-aware transitions. A change of wording never shows two lines at once:
+ *  the outgoing line slides up while fading, then the new one comes in. */
 class Line {
   readonly el: HTMLDivElement;
   private cur: HTMLSpanElement;
@@ -72,7 +74,10 @@ class Line {
     }
     this.cancels.forEach((c) => c());
     this.cancels = [];
+    // Only one line leaves at a time: any line still on its way out goes now.
+    this.el.querySelectorAll('.ln-ghost').forEach((g) => g.remove());
     const old = this.cur;
+    old.getAnimations().forEach((a) => a.cancel());
     const next = h('span', 'ln-text');
     this.fill(next, text);
     this.cur = next;
@@ -81,52 +86,136 @@ class Line {
       old.remove();
       return;
     }
-    const ms = kind === 'rejection' || prevKind === 'rejection' ? 120 : 160;
+    const quick = kind === 'rejection' || prevKind === 'rejection';
+    const outMs = quick ? 70 : 100;
+    const inMs = quick ? 110 : 150;
     old.classList.add('ln-ghost');
-    const out = old.animate([{ opacity: 1 }, { opacity: 0 }], { duration: ms, easing: EASE_IN_QUAD, fill: 'forwards' });
+    const out = old.animate(
+      [
+        { opacity: 1, transform: 'translateY(-50%)' },
+        { opacity: 0, transform: 'translateY(calc(-50% - 6px))' },
+      ],
+      { duration: outMs, easing: EASE_IN_QUAD, fill: 'forwards' },
+    );
     out.onfinish = () => old.remove();
-    next.animate([{ opacity: 0 }, { opacity: 1 }], { duration: ms, easing: 'ease-out' });
+    next.animate(
+      [
+        { opacity: 0, transform: 'translateY(5px)' },
+        { opacity: 1, transform: 'translateY(0)' },
+      ],
+      { duration: inMs, delay: outMs, easing: 'ease-out', fill: 'backwards' },
+    );
   }
 }
 
-/** Place · Attack · Fortify, current lit in the seat's color; or 'Setup'; or "Cobalt's turn". */
-class Steps {
+/**
+ * The Turn Track (docs/ROUND2.md §A): Place · Attack · Fortify · End turn (or Setup · Done) in one pill
+ * group. The marker (a fill in the seat's colour) slides to the new segment in 180 ms; the recommended
+ * next segment glows; forward segments are the buttons that change phase. It never hides or renames.
+ */
+class Track {
   readonly el: HTMLDivElement;
-  private turn: HTMLDivElement;
-  private label: HTMLSpanElement;
-  private items = new Map<string, HTMLSpanElement>();
-  private vm: StepVM | null = null;
+  private fill: HTMLSpanElement;
+  private segs = new Map<TrackSegId, HTMLButtonElement>();
+  private order: TrackSegId[] = [];
+  private vm: TrackVM | null = null;
+  private turnKey = '';
+  private placed: TrackSegId | null = null;
 
-  constructor() {
-    this.el = h('div', 'st-steps');
-    this.el.dataset.testid = 'step';
-    this.turn = h('div', 'st-turn');
-    (['place', 'attack', 'fortify'] as const).forEach((id, i) => {
-      if (i > 0) this.turn.append(h('span', 'st-dot', '·'));
-      const el = h('span', 'st-step', id[0].toUpperCase() + id.slice(1));
-      this.items.set(id, el);
-      this.turn.append(el);
-    });
-    this.label = h('span', 'st-label');
-    this.el.append(this.turn, this.label);
+  constructor(private send: (i: UiIntent) => void) {
+    this.el = h('div', 'track');
+    this.el.dataset.testid = 'track';
+    this.el.setAttribute('role', 'group');
+    this.el.setAttribute('aria-label', 'Turn');
+    this.fill = h('span', 'tr-fill');
+    this.fill.setAttribute('aria-hidden', 'true');
+    this.el.append(this.fill);
+    new ResizeObserver(() => this.placeFill(false)).observe(this.el);
   }
 
-  update(vm: StepVM): void {
+  private build(ids: TrackSegId[]): void {
+    for (const b of this.segs.values()) b.remove();
+    this.segs.clear();
+    this.order = ids;
+    for (const id of ids) {
+      const b = h('button', `tr-seg nofocus seg-${id}`);
+      b.type = 'button';
+      b.dataset.testid = `seg-${id}`;
+      b.dataset.seg = id;
+      b.append(h('span', 'tr-check', '✓'), h('span', 'tr-label'));
+      b.addEventListener('click', () => {
+        const vm = this.vm;
+        const seg = vm?.segments.find((x) => x.id === id);
+        if (!vm || !seg || !vm.live) return;
+        if (seg.state === 'eligible' || seg.state === 'locked') this.send({ type: 'track', seg: id });
+      });
+      this.segs.set(id, b);
+      this.el.append(b);
+    }
+    this.placed = null;
+  }
+
+  /** Put the marker under the current segment: a slide (180 ms), or a cut when the turn changed hands. */
+  private placeFill(slide: boolean): void {
+    const vm = this.vm;
+    const cur = vm?.segments.find((x) => x.state === 'current');
+    const b = cur ? this.segs.get(cur.id) : null;
+    if (!vm || !b || !b.offsetWidth) {
+      toggle(this.fill, 'hidden', !b);
+      return;
+    }
+    toggle(this.fill, 'hidden', false);
+    const x = `${b.offsetLeft}px`;
+    const w = `${b.offsetWidth}px`;
+    if (!slide || motion.reduced) {
+      this.fill.style.transition = 'none';
+      this.fill.style.transform = `translateX(${x})`;
+      this.fill.style.width = w;
+      void this.fill.offsetWidth;
+      this.fill.style.transition = '';
+    } else {
+      this.fill.style.transform = `translateX(${x})`;
+      this.fill.style.width = w;
+    }
+    this.placed = cur!.id;
+  }
+
+  update(vm: TrackVM): void {
     if (this.vm === vm) return;
+    const prev = this.vm;
     this.vm = vm;
+    const ids = vm.segments.map((x) => x.id);
+    if (ids.join() !== this.order.join()) this.build(ids);
     const pal = PLAYER_COLORS[vm.seat.color];
+    setStyle(this.el, '--seat', pal.base);
+    setStyle(this.el, '--seat-ink', pal.ink);
     setStyle(this.el, '--seat-light', pal.light);
-    toggle(this.turn, 'hidden', vm.kind !== 'turn');
-    toggle(this.label, 'hidden', vm.kind === 'turn');
-    toggle(this.label, 'is-seat', vm.kind === 'watching');
-    setText(this.label, vm.label);
-    const order = ['place', 'attack', 'fortify'];
-    const at = vm.current ? order.indexOf(vm.current) : -1;
-    order.forEach((id, i) => {
-      const el = this.items.get(id)!;
-      toggle(el, 'on', i === at);
-      toggle(el, 'done', at >= 0 && i < at);
-    });
+    toggle(this.el, 'is-live', vm.live);
+    toggle(this.el, 'is-disabled', vm.disabled);
+    toggle(this.el, 'is-watch', !vm.live);
+    this.el.dataset.kind = vm.kind;
+    for (const seg of vm.segments) {
+      const b = this.segs.get(seg.id)!;
+      setText(b.querySelector('.tr-label')!, seg.label);
+      b.dataset.state = seg.state;
+      for (const st of ['done', 'current', 'eligible', 'locked'] as const) toggle(b, `is-${st}`, seg.state === st);
+      const rec = vm.recommended === seg.id;
+      toggle(b, 'is-rec', rec);
+      toggle(b, 'is-primary', rec && vm.primary);
+      // A locked segment still answers a click (its reason goes in the line); done / current don't.
+      const answers = vm.live && !vm.disabled && (seg.state === 'eligible' || seg.state === 'locked');
+      setAttr(b, 'aria-disabled', answers ? null : 'true');
+      b.tabIndex = vm.live && !vm.disabled && seg.state === 'eligible' ? 0 : -1;
+      setAttr(b, 'aria-current', seg.state === 'current' ? 'step' : null);
+    }
+    const cur = vm.segments.find((x) => x.state === 'current')?.id ?? null;
+    const handsChanged = vm.turnKey !== this.turnKey;
+    this.turnKey = vm.turnKey;
+    if (cur !== this.placed || handsChanged || prev?.seat.color !== vm.seat.color) {
+      const slide = !!prev && !handsChanged && prev.kind === vm.kind;
+      this.placeFill(slide);
+      if (handsChanged && prev && !motion.reduced) this.fill.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: 'ease-out' });
+    }
   }
 }
 
@@ -318,12 +407,13 @@ class Buttons {
 
 export class BottomStrip {
   readonly el: HTMLElement;
-  private steps = new Steps();
+  private track: Track;
   private line = new Line();
   private count: HTMLDivElement;
   private stepper: Stepper;
   private slider: CountSlider;
   private buttons: Buttons;
+  private sweep: HTMLSpanElement;
   private vm: StripVM | null = null;
 
   constructor(send: (i: UiIntent) => void) {
@@ -331,12 +421,18 @@ export class BottomStrip {
     this.el.dataset.testid = 'strip';
     this.el.setAttribute('aria-label', 'Your move');
     this.el.setAttribute('aria-live', 'polite');
+    this.track = new Track(send);
     this.count = h('div', 'st-count');
     this.stepper = new Stepper(send);
     this.slider = new CountSlider(send);
     this.count.append(this.stepper.el, this.slider.el);
     this.buttons = new Buttons((b) => send({ type: 'button', id: b.id }));
-    this.el.append(this.steps.el, h('i', 'st-rule'), this.line.el, this.count, this.buttons.el);
+    const zone = h('div', 'st-zone');
+    zone.dataset.testid = 'action-zone';
+    zone.append(this.count, this.buttons.el);
+    this.sweep = h('span', 'st-sweep');
+    this.sweep.setAttribute('aria-hidden', 'true');
+    this.el.append(this.sweep, this.track.el, h('i', 'st-rule'), this.line.el, zone);
     // The mouse wheel over the strip adjusts the count.
     this.el.addEventListener(
       'wheel',
@@ -356,10 +452,16 @@ export class BottomStrip {
     const prev = this.vm;
     this.vm = vm;
     const pal = PLAYER_COLORS[vm.accent];
-    setStyle(this.el, '--accent', pal.base);
+    // The turn passes: the accent sweeps left → right in the new colour (280 ms).
+    if (prev && prev.accent !== vm.accent && !motion.reduced) {
+      setStyle(this.sweep, '--to', pal.base);
+      this.sweep.getAnimations().forEach((a) => a.cancel());
+      const a = this.sweep.animate([{ transform: 'scaleX(0)' }, { transform: 'scaleX(1)' }], { duration: 280, easing: 'cubic-bezier(0.25, 1, 0.5, 1)' });
+      a.onfinish = () => setStyle(this.el, '--accent', pal.base);
+    } else setStyle(this.el, '--accent', pal.base);
     this.el.dataset.mode = vm.mode;
-    this.steps.update(vm.step);
-    this.line.update(vm.line, vm.lineKind, vm.lineKey, vm.lineKind === 'narration' ? PLAYER_COLORS[vm.step.seat.color].light : null);
+    this.track.update(vm.track);
+    this.line.update(vm.line, vm.lineKind, vm.lineKey, vm.lineKind === 'narration' ? PLAYER_COLORS[vm.track.seat.color].light : null);
     const c = vm.count;
     toggle(this.count, 'hidden', !c);
     toggle(this.stepper.el, 'hidden', c?.control !== 'stepper');
@@ -368,6 +470,5 @@ export class BottomStrip {
     else this.stepper.reset();
     if (c?.control === 'slider') this.slider.update(c);
     this.buttons.update(vm.buttons);
-    if (prev && prev.mode !== vm.mode && !motion.reduced) this.buttons.el.animate([{ opacity: 0.4 }, { opacity: 1 }], { duration: 140, easing: 'ease-out' });
   }
 }

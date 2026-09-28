@@ -39,27 +39,31 @@ export async function clearStorage(page: Page): Promise<void> {
   await page.evaluate(() => localStorage.clear());
 }
 
-/** Real pointer click at a territory's army token. (Two on the same tile within 400 ms = a double-click.) */
+/** Real pointer click at a territory's army piece. A board click only ever selects (docs/ROUND2.md §B). */
 export async function clickT(page: Page, t: string): Promise<void> {
   const pos = await page.evaluate((id) => window.__risk.screenPos(id as never), t);
   if (!pos) throw new Error(`no screen position for ${t}`);
   await page.mouse.click(pos.x, pos.y);
 }
 
-/** Double-click a territory: in Place, it places everything left there. */
-export async function dblT(page: Page, t: string): Promise<void> {
-  const pos = await page.evaluate((id) => window.__risk.screenPos(id as never), t);
-  if (!pos) throw new Error(`no screen position for ${t}`);
-  await page.mouse.click(pos.x, pos.y);
-  await page.mouse.click(pos.x, pos.y);
+/**
+ * Click a Turn Track segment: 'place' | 'attack' | 'fortify' | 'endTurn' | 'setup' | 'done'. Waits for
+ * it to be clickable (a disabled track, e.g. during a roll, holds the click) unless `force`.
+ */
+export async function seg(page: Page, id: string, force = false): Promise<void> {
+  await page.locator(`[data-testid="seg-${id}"]`).first().click(force ? { force: true } : undefined);
 }
 
-/** Place: pick `t`, set the stepper to `n` (default: all), press Place. */
-export async function place(page: Page, t: string, n?: number): Promise<void> {
-  await clickT(page, t);
-  await page.waitForFunction(() => window.__risk.ui().count?.control === 'stepper', null, { timeout: 3000 });
-  if (n !== undefined) {
-    let v = (await ui(page)).count!.value;
+/**
+ * Set the one count control to `n` by mouse: the − / + stepper (≤ 6 options), or a click on the slider
+ * track at n's position (> 6), nudged a pixel at a time until it reads n.
+ */
+export async function setCount(page: Page, n: number): Promise<void> {
+  const c = (await ui(page)).count;
+  if (!c) throw new Error('no count control');
+  if (c.control === 'stepper') {
+    await page.locator('[data-testid="count-inc"]').waitFor({ state: 'visible', timeout: 3000 });
+    let v = c.value;
     while (v > n) {
       await clickBtn(page, 'count-dec');
       v--;
@@ -68,10 +72,30 @@ export async function place(page: Page, t: string, n?: number): Promise<void> {
       await clickBtn(page, 'count-inc');
       v++;
     }
+    return;
   }
+  const track = page.locator('[data-testid="count-slider"] .cs-track');
+  await track.waitFor({ state: 'visible', timeout: 3000 });
+  const box = await track.boundingBox();
+  if (!box) throw new Error('no slider track');
+  const k = c.max > c.min ? (n - c.min) / (c.max - c.min) : 1;
+  let x = box.x + k * box.width;
+  const y = box.y + box.height / 2;
+  for (let i = 0; i < 12; i++) {
+    await page.mouse.click(x, y);
+    const v = (await ui(page)).count?.value ?? n;
+    if (v === n) return;
+    x += (n - v) * Math.max(1, box.width / Math.max(1, c.max - c.min) / 3);
+  }
+  throw new Error(`slider did not reach ${n}`);
+}
+
+/** Place: pick `t`, set the count to `n` (default: all), press Place. */
+export async function place(page: Page, t: string, n?: number): Promise<void> {
+  await clickT(page, t);
+  await page.waitForFunction(() => !!window.__risk.ui().count, null, { timeout: 3000 });
+  if (n !== undefined) await setCount(page, n);
   await clickBtn(page, 'btn-place');
-  // Let the next click on the same tile count as a new click, not a double-click.
-  await page.waitForTimeout(420);
 }
 
 export async function clickBtn(page: Page, testid: string): Promise<void> {
@@ -107,7 +131,7 @@ export const ONE_HUMAN = [
   { name: 'John', color: 'crimson', kind: 'human' },
   { name: 'Cobalt', color: 'cobalt', kind: 'ai', difficulty: 'normal' },
   { name: 'Amber', color: 'amber', kind: 'ai', difficulty: 'normal' },
-  { name: 'Rose', color: 'rose', kind: 'ai', difficulty: 'normal' },
+  { name: 'Emerald', color: 'emerald', kind: 'ai', difficulty: 'normal' },
 ];
 
 export const TWO_HUMANS = [

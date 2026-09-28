@@ -2,7 +2,7 @@
 // board — John blitzes up to seven times, then three AI turns attack him with full dice. Reports fps and
 // frame-time percentiles from rAF deltas in the page, plus the renderer's own stats.
 // Usage: npx tsx tests/e2e/perf.ts [WxH]   (server on RISK_URL)
-import { clickBtn, clickT, idle, loadScenario, open, scenario, state } from './lib';
+import { clickBtn, clickT, idle, loadScenario, open, scenario, seg, state } from './lib';
 import { attackTargets, TERRITORY_IDS } from '../../src/engine';
 
 const [W, H] = (process.argv[2] ?? '1440x900').split('x').map(Number);
@@ -12,7 +12,7 @@ const PLAYERS = [
   { name: 'John', color: 'crimson', kind: 'human' },
   { name: 'Cobalt', color: 'cobalt', kind: 'ai', difficulty: 'hard' },
   { name: 'Amber', color: 'amber', kind: 'ai', difficulty: 'hard' },
-  { name: 'Rose', color: 'rose', kind: 'ai', difficulty: 'hard' },
+  { name: 'Emerald', color: 'emerald', kind: 'ai', difficulty: 'hard' },
 ] as never;
 // John owns Asia with thin garrisons; the AIs around him are stacked, so their turns are blitzes on him.
 const asia = ['ural', 'siberia', 'yakutsk', 'kamchatka', 'irkutsk', 'mongolia', 'japan', 'china', 'afghanistan', 'india', 'middle_east', 'siam'];
@@ -54,7 +54,7 @@ if ((await state(page))!.phase.kind === 'occupy') {
   await clickBtn(page, 'btn-move');
   await idle(page);
 }
-await clickBtn(page, 'btn-endTurn');
+await seg(page, 'endTurn');
 await page.waitForFunction(
   () => {
     const s = window.__risk.getState();

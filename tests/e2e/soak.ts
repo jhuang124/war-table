@@ -15,6 +15,7 @@
 
 import { chromium, type Browser, type Page } from 'playwright';
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { seg as segClick, setCount } from './lib';
 
 const BASE = process.env.RISK_URL ?? 'http://127.0.0.1:5320/';
 const arg = (k: string, d: string) => {
@@ -59,8 +60,8 @@ interface Job {
   hideCards: boolean;
   chaos: number; // probability of click-through / skip clicks
 }
-const COLORS = ['crimson', 'cobalt', 'amber', 'rose'];
-const NAMES = ['John', 'Cobalt', 'Amber', 'Rose'];
+const COLORS = ['crimson', 'cobalt', 'amber', 'emerald'];
+const NAMES = ['John', 'Cobalt', 'Amber', 'Emerald'];
 const DIFFS = ['easy', 'normal', 'hard'];
 
 function makeJobs(): Job[] {
@@ -196,13 +197,12 @@ window.__name = (f) => f;
     else if (aiTurn && s.phase.kind !== 'game-over' && now - progSince > 60000 && !progFlagged && !document.querySelector('[data-testid="pause"],[data-testid="settings"],[data-testid="rules"]')) {
       progFlagged = true; flag('ai-no-progress>60s', { key });
     }
-    // Human with nothing to do.
+    // Human with nothing to do: no strip button, no eligible Turn Track segment, no clickable tile.
     if (!aiTurn && idle && s.phase.kind !== 'game-over' && !document.querySelector('[data-testid="handoff"]')) {
-      const anyBtn = u.buttons.some((b) => b.enabled);
+      const anyBtn = u.buttons.length > 0 || (u.trackLive && !u.trackDisabled && u.track.some((x) => x.startsWith('eligible:')));
       let anyTile = false;
       if (!anyBtn) for (const t of Object.keys(s.territories)) { if (R.explain(t).ok) { anyTile = true; break; } }
-      const chipTrade = !!document.querySelector('[data-testid="chip-trade"]');
-      if (!anyBtn && !anyTile && !chipTrade) {
+      if (!anyBtn && !anyTile) {
         if (!stuckSince) stuckSince = now;
         if (now - stuckSince > 3000 && !stuckFlagged) { stuckFlagged = true; flag('human-no-move', {}); }
       } else { stuckSince = 0; stuckFlagged = false; }
@@ -308,6 +308,28 @@ class Bot {
     }
   }
 
+  /** A Turn Track segment ('place' | 'attack' | 'fortify' | 'endTurn' | 'setup' | 'done'). */
+  async seg(id: string, timeout = 8000): Promise<boolean> {
+    try {
+      await Promise.race([segClick(this.page, id), sleep(timeout).then(() => Promise.reject(new Error('timeout')))]);
+      this.note(`seg ${id}`);
+      return true;
+    } catch {
+      this.note(`seg ${id} MISSING`);
+      return false;
+    }
+  }
+
+  /** The count control by mouse (stepper or slider), if it is showing. */
+  async count(n: number): Promise<void> {
+    try {
+      await setCount(this.page, n);
+      this.note(`count ${n}`);
+    } catch (e) {
+      this.note(`count ${n} failed: ${String(e).slice(0, 120)}`);
+    }
+  }
+
   async think(lo = 120, hi = 520) {
     await sleep(lo + this.rnd() * (hi - lo));
   }
@@ -327,129 +349,127 @@ async function stateSig(page: Page): Promise<string> {
   });
 }
 
-/** Plays one human decision through the UI. Returns a description. */
+/**
+ * Plays one human decision through the UI (docs/ROUND2.md §A–B): board clicks only select, buttons
+ * commit, the Turn Track is the only phase change (plus the fortify `Move N · end turn`). Returns a
+ * description.
+ */
 async function humanStep(bot: Bot): Promise<string> {
   const page = bot.page;
   const info = (await page.evaluate(`(async () => {
     const eng = await import('/src/engine/index.ts');
     const s = window.__risk.getState();
     const a = eng.chooseAiAction(s, s.currentPlayer);
-    return { a, phase: s.phase, cards: s.players[s.currentPlayer].cards.length, armies: s.territories, u: window.__risk.ui(),
-      trade: !!document.querySelector('[data-testid="chip-trade"]'), cp: s.currentPlayer };
+    return { a, phase: s.phase, cards: s.players[s.currentPlayer].cards.length, armies: s.territories, u: window.__risk.ui(), cp: s.currentPlayer };
   })()`)) as {
     a: Record<string, never> & { type: string; territory?: string; count?: number; from?: string; to?: string; dice?: number };
     phase: { kind: string; remaining?: number; toPlace?: number; mustTrade?: boolean; min?: number; max?: number; from?: string; to?: string };
     cards: number;
     armies: Record<string, { owner: number; armies: number }>;
-    u: { buttons: { label: string; enabled: boolean }[] };
-    trade: boolean;
+    u: { buttons: string[]; primary: string | null; recommended: string | null; brass: string[]; count: { value: number } | null; line: string };
     cp: number;
   };
   const a = info.a;
   const ph = info.phase;
   bot.note(`decide ${ph.kind} → ${JSON.stringify(a)}`);
   const r = bot.rnd;
+  const countShown = () => page.evaluate(() => !!window.__risk.ui().count);
   switch (a.type) {
     case 'claim':
       await bot.click(a.territory!);
       return 'claim';
     case 'placeSetup': {
-      // Stage everything on the AI's pick (sometimes split and take one back), then Confirm.
+      // Stage everything on the AI's pick (sometimes one first, taken back with Undo), then Done.
       const n = ph.toPlace ?? 1;
       await bot.click(a.territory!);
       if (n > 1 && r() < 0.3) {
-        await bot.click(a.territory!, { right: true });
-        await bot.click(a.territory!);
+        await bot.count(1);
+        await bot.btn('btn-place');
+        await bot.btn('btn-undo');
+        if (!(await countShown())) await bot.click(a.territory!);
       }
-      if (n > 1) {
-        if (!(await bot.btn('pill-all', 2500))) for (let i = 1; i < n; i++) await bot.click(a.territory!);
-      }
+      await bot.btn('btn-place');
       await bot.think();
-      await bot.btn('btn-confirmPlacement');
+      if (r() < 0.1) {
+        await page.keyboard.press('Enter');
+        bot.note('key Enter (Done)');
+      } else await bot.seg('done');
       return 'placeSetup';
     }
     case 'trade':
-      if (info.trade && r() < 0.7) await bot.btn('chip-trade');
-      else if (!(await bot.btn('btn-trade', 2500))) await bot.btn('chip-trade');
+      if (ph.mustTrade || r() < 0.5) {
+        if (!(await bot.btn('btn-trade', 2500))) await bot.btn('btn-cards', 1500).then((ok) => ok && bot.btn('cards-trade', 2500));
+      } else {
+        await bot.btn('btn-cards', 2500);
+        if (!(await bot.btn('cards-trade', 2500))) await bot.btn('cards-close', 1500);
+      }
       return 'trade';
     case 'reinforce': {
       const n = a.count ?? 1;
       const rem = ph.remaining ?? n;
       await bot.click(a.territory!);
-      if (n > 1) {
-        if (n === rem && r() < 0.8) {
-          if (!(await bot.btn('pill-all', 2500))) await bot.click(a.territory!);
-        } else {
-          let left = n - 1;
-          while (left >= 5) {
-            await bot.click(a.territory!, { shift: true });
-            left -= 5;
-          }
-          while (left-- > 0) await bot.click(a.territory!);
-        }
-      }
+      if (n !== rem) await bot.count(n);
+      await bot.btn('btn-place');
       if (r() < 0.05) {
-        await bot.click(a.territory!, { right: true });
+        await bot.btn('btn-undo', 1500);
         await bot.click(a.territory!);
+        if (n !== rem) await bot.count(n);
+        await bot.btn('btn-place');
       }
       return 'reinforce';
     }
     case 'endReinforce':
-      await bot.btn('btn-beginAttack');
+      if (info.u.recommended === 'attack' && info.u.brass.includes('Attack') && r() < 0.1) {
+        await page.keyboard.press('Enter');
+        bot.note('key Enter (Attack)');
+      } else await bot.seg('attack');
       return 'endReinforce';
     case 'attack':
     case 'blitz': {
       const from = a.from!;
       const to = a.to!;
       const ex = (t: string) => page.evaluate((id) => window.__risk.explain(id as never), t);
+      // Target-first arms from the strongest neighbour; pick the AI's source first when it differs.
       let e = await ex(from);
-      if (e.ok && !/deselect/.test(e.text)) await bot.click(from);
+      if (e.ok && !/Deselect/.test(e.text) && r() < 0.6) await bot.click(from);
       e = await ex(to);
-      if (e.ok && /^Attack/.test(e.text)) await bot.click(to);
-      else if (!/roll/.test(e.text)) bot.note(`attack target explain: ${e.text}`);
+      if (e.ok) await bot.click(to);
+      else bot.note(`attack target explain: ${e.text}`);
       await bot.think(80, 300);
       if (a.type === 'blitz' || r() < 0.3) {
-        if (r() < 0.5) {
+        if (r() < 0.2) {
           await page.keyboard.press('Space');
           bot.note('key Space');
         } else await bot.btn('btn-blitz');
-      } else if (r() < 0.5) await bot.click(to);
-      else await bot.btn('btn-roll');
+      } else await bot.btn('btn-roll');
       return a.type;
     }
     case 'occupy': {
-      const want = a.count ?? ph.min ?? 1;
-      // Mostly the default; sometimes the counter; rarely a chained click on the next target.
-      const x = r();
-      if (x < 0.25) {
-        await bot.btn('btn-max', 600);
-      } else if (x < 0.4) {
-        await bot.btn('btn-min', 600);
-        const cur = ph.min ?? 1;
-        for (let i = cur; i < Math.min(want, cur + 6); i++) await bot.btn('btn-inc', 600);
-      }
-      if (x > 0.9) {
-        await page.keyboard.press('Space');
-        bot.note('key Space (occupy)');
+      const want = a.count ?? ph.max ?? 1;
+      // Mostly the default; sometimes the AI's count on the count control; rarely Enter (Move is brass).
+      if (r() < 0.4 && (await countShown())) await bot.count(want);
+      if (r() < 0.1) {
+        await page.keyboard.press('Enter');
+        bot.note('key Enter (occupy)');
       } else await bot.btn('btn-move');
       return 'occupy';
     }
     case 'endAttack':
-      if (r() < 0.2) {
-        await page.keyboard.press('e');
-        bot.note('key E');
-      } else await bot.btn('btn-fortifyNext');
+      await bot.seg('fortify');
       return 'endAttack';
     case 'fortify': {
       await bot.click(a.from!);
       await bot.click(a.to!);
       const max = info.armies[a.from!].armies - 1;
-      for (let i = max; i > (a.count ?? max) && i > max - 8; i--) await bot.btn('btn-dec', 600);
+      if ((a.count ?? max) !== max && (await countShown())) await bot.count(a.count!);
       await bot.btn('btn-move');
       return 'fortify';
     }
     case 'endTurn':
-      if (!(await bot.btn('btn-endTurn', 4000))) await bot.btn('btn-fortifyNext');
+      if (info.u.recommended === 'endTurn' && info.u.brass.includes('End turn') && r() < 0.1) {
+        await page.keyboard.press('Enter');
+        bot.note('key Enter (End turn)');
+      } else await bot.seg('endTurn');
       return 'endTurn';
     default:
       bot.note(`unhandled ${a.type}; dispatching`);
@@ -658,7 +678,7 @@ async function playGame(page: Page, job: Job, worker: number, viaRematch: boolea
         mustTrade: !!s && s.phase.kind === 'reinforce' && s.phase.mustTrade,
         idle: window.__risk.isIdle(),
         handoff: !!document.querySelector('[data-testid="handoff"]'),
-        humansOut: !!document.querySelector('[data-testid="humans-out"]'),
+        humansOut: u.line === 'All humans are out' && !!document.querySelector('[data-testid="btn-watchAis"]'),
         round: s?.round ?? 0,
         rolling: !!u.battle,
       };
@@ -707,7 +727,7 @@ async function playGame(page: Page, job: Job, worker: number, viaRematch: boolea
       continue;
     }
     if (snap.humansOut && rnd() < 0.5) {
-      await bot.btn('watch-ais', 1000);
+      await bot.btn('btn-watchAis', 1000);
     }
     if (snap.over || !snap.human || job.autoplay) {
       // Watching: sometimes click to skip a fight, like an impatient player.

@@ -2,7 +2,7 @@
 // The renderer implements `createBoardView` in src/render/index.ts. The controller only talks
 // to the board through this interface.
 
-import type { GameEvent, GameState, TerritoryId } from '../engine/types';
+import type { GameEvent, GameState, PlayerId, TerritoryId } from '../engine/types';
 import type { BoardGeometry } from '../map/types';
 import type { AudioEngine } from '../audio/types';
 
@@ -83,6 +83,15 @@ export interface ViewportInsets {
   bottom: number;
   left: number;
   trayBand: number;
+  /**
+   * Additive (renderer, round 2): the floating HUD's persistent rectangles in container px (seat chips,
+   * `≡`, the bottom strip — not transient pills like `Reset view`, which only shows away from home).
+   * When given, the home view fits the land and every piece around these rectangles (12 px clear) instead
+   * of full-width top/bottom bands, so the board can run up between the corner pills. `top`/`bottom` are
+   * still used for the principal point, the dice tray's position (`bottom` = the strip's top edge) and the
+   * AI's on-screen checks.
+   */
+  rects?: { x: number; y: number; w: number; h: number }[];
 }
 
 export interface BoardView {
@@ -137,7 +146,32 @@ export interface BoardView {
   /** Additive (renderer builder): settings.autoCamera — return home at turn start if displaced. Default true. */
   setAutoCamera?(on: boolean): void;
 
-  /** Screen position (client px) of a territory's army token (the top of the disc), or null if off-screen. */
+  /**
+   * Additive (renderer, round 2): true while the player has orbited / panned / zoomed away from the home
+   * view (drives the HUD's `Reset view` pill; resetCamera() returns home and clears it). Automatic camera
+   * moves (AI framing, the attract orbit) never count.
+   */
+  isViewDisplaced?(): boolean;
+  /** Additive (renderer, round 2): called whenever isViewDisplaced() changes. */
+  onViewDisplacedChange?(cb: (displaced: boolean) => void): void;
+  /**
+   * Additive (renderer, round 2): the board answers a phase change, no camera move (docs/ROUND2.md §A):
+   * 'attack' — the player's tiles that can attack lift slightly and their rims sweep west → east (~0.9 s);
+   * 'fortify' — every other player's tiles dim ~20 % until 'end' / 'attack' / the next turnStarted;
+   * 'end' — clears all of it. Every call also fades out the battle tray (unless a roll is running).
+   * `player` defaults to the current player of the last state; `territories` overrides the attack set.
+   */
+  pulsePhase?(phase: 'attack' | 'fortify' | 'end', opts?: { player?: PlayerId; territories?: TerritoryId[] }): void;
+  /**
+   * Additive (renderer, round 2): the battle tray became visible (true) or started its fade-out (false),
+   * so the HUD's battle header can fade in lockstep (tray fades 300 ms, ~1 s after a decided fight).
+   */
+  onTrayChange?(cb: (visible: boolean) => void): void;
+
+  /**
+   * Screen position (client px) of a territory's army piece — the top centre of its base, which is always
+   * on the territory's own tile (click it to select) — or null if off-screen.
+   */
   getScreenPosition(t: TerritoryId): { x: number; y: number } | null;
   getStats(): BoardStats;
   dispose(): void;

@@ -38,8 +38,43 @@ const log: string[] = [];
 // HUD mock (insets presets)
 // ---------------------------------------------------------------------------
 
+/** The HUD's battle band (src/ui/index.ts solveBand), copied so the sandbox doesn't pull in the UI. */
+function solveBand(H: number, scale: number, W: number): number {
+  const rem = 16 * scale;
+  const need = Math.ceil(Math.max(0.022 * H, 1.0625 * rem) * 1.6);
+  const cap = Math.round(H * 0.34);
+  let band = 120;
+  for (; band <= cap; band += 2) if (Math.floor((band - trayGeometry(W, H, band, scale).trayH) / 2) >= need) break;
+  return Math.min(band, cap);
+}
+
+/** The floating HUD's persistent pills (docs/ROUND2.md §C): seat chips, ≡, the bottom strip. */
+function floatRects(W: number, H: number, s: number): { x: number; y: number; w: number; h: number }[] {
+  const ch = Math.round(40 * s);
+  const chipsW = [82, 74, 74, 74].reduce((a, w) => a + Math.round(w * s) + 8, 0) - 8;
+  const sw = Math.min(1180, W - 24);
+  const sh = Math.round(64 * s);
+  return [
+    { x: 12, y: 12, w: chipsW, h: ch },
+    { x: W - 12 - ch, y: 12, w: ch, h: ch },
+    { x: (W - sw) / 2, y: H - 12 - sh, w: sw, h: sh },
+  ];
+}
+
 const PRESETS: Record<string, (W: number, H: number, s: number) => ViewportInsets> = {
   none: () => ({ top: 0, right: 0, bottom: 0, left: 0, trayBand: 0 }),
+  // docs/ROUND2.md §C: glass pills float on the ocean — seat chips top-left, ≡ top-right (12 px from the
+  // edges, 40 px tall), and a 64 px bottom strip at bottom: 12 px. Insets = the pills' inner edges (+4).
+  float: (W, H, s) => ({
+    top: Math.round(12 + 40 * s + 4),
+    right: 0,
+    bottom: Math.round(12 + 64 * s + 4),
+    left: 0,
+    trayBand: solveBand(H, s, W),
+    rects: floatRects(W, H, s),
+  }),
+  // The same pills reported as top/bottom bands only (a HUD that doesn't send rects).
+  floatBands: (W, H, s) => ({ top: Math.round(12 + 40 * s + 4), right: 0, bottom: Math.round(12 + 64 * s + 4), left: 0, trayBand: solveBand(H, s, W) }),
   // docs/SIMPLIFY.md §1: a ~44 px top strip (seat chips) and a one-row ~64 px bottom strip. The tray
   // band is not reported (the board uses its own nominal band just above the bottom strip).
   strip: (_W, _H, s) => ({ top: Math.round(44 * s), right: 0, bottom: Math.round(64 * s), left: 0, trayBand: 0 }),
@@ -50,9 +85,10 @@ const PRESETS: Record<string, (W: number, H: number, s: number) => ViewportInset
     return { top: 56 * s + 8, left: Math.min(232 * s, W * 0.2), right: 64 * s, bottom: bar + 16 + band, trayBand: band };
   },
 };
-let preset = params.get('insets') ?? 'strip';
+let preset = params.get('insets') ?? 'float';
 let uiScale = Number(params.get('scale') ?? 1);
 let showHudText = false;
+let displaced = false;
 let hudText: { header: string; result: string } = { header: '', result: '' };
 
 function applyInsets(): void {
@@ -70,6 +106,36 @@ function applyInsets(): void {
     hud.appendChild(d);
     return d;
   };
+  if (preset === 'float' || preset === 'floatBands') {
+    const pill = (l: number, t: number, w: number, h: number, txt = '') => {
+      const d = z(l, t, w, h, 'zone pill');
+      if (txt) d.textContent = txt;
+      return d;
+    };
+    const ch = Math.round(40 * uiScale);
+    let x = 12;
+    for (const [i, name] of ['John 11', 'Sam 10', 'Priya 11', 'Alex 10'].entries()) {
+      const w = Math.round((74 + (i === 0 ? 8 : 0)) * uiScale);
+      pill(x, 12, w, ch, name);
+      x += w + 8;
+    }
+    pill(W - 12 - ch, 12, ch, ch, '≡');
+    if (displaced) pill(W - 12 - ch - 8 - 104 * uiScale, 12, 104 * uiScale, ch, 'Reset view').dataset.reset = '1';
+    const sw = Math.min(1180, W - 24);
+    const sh = Math.round(64 * uiScale);
+    pill((W - sw) / 2, H - 12 - sh, sw, sh, 'Place  ·  Attack  ·  Fortify  ·  End turn');
+    if (showHudText && hudText.header) {
+      const band = ins.trayBand;
+      const g = trayGeometry(W, H, band, uiScale);
+      const top = H - ins.bottom - band + (band - g.trayH) / 2;
+      const h = document.createElement('div');
+      h.className = 'txt';
+      h.style.top = `${top - 26}px`;
+      h.textContent = hudText.header;
+      hud.appendChild(h);
+    }
+    return;
+  }
   if (preset === 'strip') {
     z(0, 0, W, ins.top, 'zone strip');
     z(0, H - ins.bottom, W, ins.bottom, 'zone strip');
@@ -359,6 +425,16 @@ async function demoElimination(): Promise<void> {
   busy = false;
 }
 
+/** Every denomination on the board at once: infantry 1–4, cavalry 5–9, artillery 10+ by region. */
+function demoDenoms(): void {
+  state = structuredClone(state);
+  TERRITORY_IDS.forEach((t, i) => {
+    const x = BOARD.territories[t].anchor[0];
+    state.territories[t].armies = x < 36 ? 1 + (i % 4) : x < 62 ? 5 + (i % 5) : 10 + ((i * 7) % 90);
+  });
+  view.syncState(state);
+}
+
 async function demoPlace(n = 10): Promise<void> {
   const me = state.currentPlayer;
   const mine = TERRITORY_IDS.filter((t) => state.territories[t].owner === me);
@@ -426,6 +502,9 @@ function render(): void {
     b('Eliminate', () => void demoElimination()),
     b('Victory', () => void demoVictory()),
     b('Place ×10', () => void demoPlace()),
+    b('Denominations', () => demoDenoms()),
+    h('Phase'),
+    ...(['attack', 'fortify', 'end'] as const).map((k) => b(k, () => view.pulsePhase?.(k))),
     h('Highlights'),
     ...['none', 'selectable', 'selected', 'arrow', 'pending', 'fortify'].map((k) => b(k, () => demoHighlights(k))),
     h('Camera'),
@@ -493,6 +572,13 @@ async function boot(): Promise<void> {
   addEventListener('resize', applyInsets);
   view.onTerritoryClick((i) => log.push(`click ${i.territory} b${i.button}`));
   view.onTerritoryHover(() => {});
+  view.onViewDisplacedChange?.((d) => {
+    displaced = d;
+    applyInsets();
+  });
+  document.getElementById('hud')!.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).dataset.reset) view.resetCamera();
+  });
   render();
   statsLoop();
   await newGame(Number(params.get('seed') ?? 7), params.get('deal') === '0');
@@ -522,6 +608,7 @@ async function boot(): Promise<void> {
     demoVictory,
     demoElimination,
     demoPlace,
+    demoDenoms,
     playEvents,
     log,
     drift,

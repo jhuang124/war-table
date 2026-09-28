@@ -2,13 +2,15 @@
 //   #1 hover lands in the same frame on clickable tiles; non-clickable tiles don't react (cursor)
 //   #2 no hover flicker sliding along the Ukraine/Ural edge (3 px hysteresis)
 //   #3 an orbit drag released over another tile never clicks
-//   #14 at most one brass button, at most two strip buttons, no keycaps
+//   #14 at most one brass thing (buttons + the Turn Track's recommended segment), ≤ 2 strip buttons,
+//       no keycaps; the pointer cursor only on eligible track segments
 //   #17 no numerals in Cinzel, no ASCII minus before a number
 //   #19 no sound on tile hover
 //   #22 no focus ring after a mouse click; a ring after Tab
 //   #23 instant speed: the dice still show in the tray
 //   #24 empty states: no attack sources / nothing to fortify / no valid set each say so
-import { check, clickBtn, clickT, dblT, finish, idle, loadScenario, open, scenario, state, ui } from './lib';
+//   Cards: a non-forced trade happens from the Cards sheet (`Cards N` → Trade), close with ✕
+import { check, clickBtn, clickT, finish, idle, loadScenario, open, place, scenario, seg, state, ui } from './lib';
 import type { Phase } from '../../src/engine';
 
 const results: string[] = [];
@@ -91,8 +93,9 @@ const audit = async (label: string) => {
   await page.waitForTimeout(80); // the HUD renders on the next animation frame
   const a = await page.evaluate(() => {
     const vis = (el: Element) => (el as HTMLElement).offsetParent !== null && getComputedStyle(el).visibility !== 'hidden';
-    const brass = [...document.querySelectorAll('#ui .btn.brass')].filter(vis).length;
     const u = window.__risk.ui();
+    const brass = [...document.querySelectorAll('#ui .btn.brass, #ui .tr-seg.is-primary')].filter(vis).length;
+    const snapBrass = u.brass.length;
     const kbd = [...document.querySelectorAll('#ui .hud kbd')].filter(vis).length;
     const noWhy = u.buttons.length > 2 || kbd > 0 ? [`${u.buttons.length} buttons, ${kbd} keycaps`] : [];
     const cinzelNums: string[] = [];
@@ -105,15 +108,27 @@ const audit = async (label: string) => {
       if (/\d/.test(t) && /Cinzel/i.test(getComputedStyle(el).fontFamily)) cinzelNums.push(t.trim().slice(0, 30));
       if (/(^|[\s(])-\d/.test(t)) minus.push(t.trim().slice(0, 30));
     }
-    return { brass, noWhy, cinzelNums, minus };
+    return { brass, snapBrass, labels: u.brass, noWhy, cinzelNums, minus };
   });
-  check(a.brass <= 1, `${label}: ${a.brass} brass button(s)`, results);
+  check(a.brass <= 1 && a.snapBrass === a.brass, `${label}: ${a.brass} brass thing(s) on screen [${a.labels.join(', ')}]`, results);
   check(a.noWhy.length === 0, `${label}: ≤ 2 strip buttons, no keycaps${a.noWhy.length ? ' — ' + a.noWhy.join(', ') : ''}`, results);
   check(a.cinzelNums.length === 0 && a.minus.length === 0, `${label}: no Cinzel numerals, no ASCII minus${a.cinzelNums.concat(a.minus).length ? ' — ' + a.cinzelNums.concat(a.minus).join(' | ') : ''}`, results);
 };
 await audit('place');
-await dblT(page, 'ural');
+// Pointer cursor only on eligible track segments (locked ones answer with a reason, but no pointer).
+const segCursor = (id: string) => page.evaluate((x) => getComputedStyle(document.querySelector(`[data-testid="seg-${x}"]`)!).cursor, id);
+const lockedCur = await segCursor('attack');
+await clickT(page, 'ural');
+await audit('place-picked');
+await clickBtn(page, 'btn-place');
 await idle(page);
+await audit('all-placed');
+const eligibleCur = await segCursor('attack');
+const currentCur = await segCursor('place');
+check(lockedCur !== 'pointer' && eligibleCur === 'pointer' && currentCur !== 'pointer', `track cursor: locked ${lockedCur}, eligible ${eligibleCur}, current ${currentCur}`, results);
+await seg(page, 'attack');
+await idle(page);
+await audit('attack');
 await clickT(page, 'siberia');
 await audit('armed');
 
@@ -175,10 +190,12 @@ await page.evaluate(() => window.__risk.setSpeed(1));
 // #24 empty states.
 await loadScenario(page, scenario({ ural: [0, 1], ukraine: [0, 1] }, { kind: 'attack' }));
 let u = await ui(page);
-check(u.line === 'No attacks left' && u.primary === 'End turn', `no sources: "${u.line}" · primary ${u.primary}`, results);
+check(u.line === 'No attacks left · end your turn' && u.primary === null && u.brass.join() === 'End turn' && u.recommended === 'endTurn', `no sources: "${u.line}" · brass [${u.brass.join(', ')}]`, results);
+await audit('no-attacks');
 await loadScenario(page, scenario({ ural: [0, 1], ukraine: [0, 1] }, { kind: 'fortify' }));
 u = await ui(page);
-check(u.line === 'Nothing to move · end your turn' && u.primary === 'End turn', `nothing to fortify: "${u.line}" · primary ${u.primary}`, results);
+check(u.line === 'Nothing to move · end your turn' && u.primary === null && u.brass.join() === 'End turn', `nothing to fortify: "${u.line}" · brass [${u.brass.join(', ')}]`, results);
+await audit('fortify');
 await loadScenario(
   page,
   scenario({ ural: [0, 3] }, reinforce(3), {
@@ -193,6 +210,37 @@ await clickBtn(page, 'btn-cards');
 await page.waitForTimeout(300);
 const status = await page.locator('.cards-status').textContent();
 check(/^Need 1 .+/.test(status ?? ''), `no valid set: "${status}"`, results);
+check((await page.locator('[data-testid="cards-trade"]').evaluate((b) => (b as HTMLElement).offsetParent === null || b.classList.contains('hidden'))) === true, 'no Trade button without a set', results);
+await clickBtn(page, 'cards-close');
+await page.waitForTimeout(300);
+check(!(await ui(page)).cardsOpen, 'the ✕ closes the Cards sheet', results);
+
+// Cards: a non-forced trade happens from the sheet; the sheet's Trade is the one brass thing.
+await loadScenario(
+  page,
+  scenario({ ural: [0, 3] }, reinforce(3), {
+    mutate: (s) =>
+      void (s.players[0].cards = [
+        { id: 0, territory: 'alaska', symbol: 'infantry' },
+        { id: 1, territory: 'peru', symbol: 'cavalry' },
+        { id: 2, territory: 'brazil', symbol: 'artillery' },
+      ]),
+  }),
+);
+u = await ui(page);
+check(u.buttons.join(' / ') === 'Cards 3' && !u.buttons.some((b) => /^Trade/.test(b)), `a set in hand, not forced: strip ${u.buttons.join(' / ')}`, results);
+await clickBtn(page, 'btn-cards');
+await page.waitForTimeout(300);
+u = await ui(page);
+const tradeLabel = (await page.locator('[data-testid="cards-trade"]').textContent())?.trim() ?? '';
+check(u.cardsOpen && /^Trade for \+\d+$/.test(tradeLabel) && u.brass.join() === tradeLabel, `sheet open: "${tradeLabel}" · brass [${u.brass.join(', ')}]`, results);
+await audit('cards-sheet');
+await clickBtn(page, 'cards-trade');
+await idle(page);
+const st = await state(page);
+u = await ui(page);
+const rem = st!.phase.kind === 'reinforce' ? st!.phase.remaining : -1;
+check(st!.players[0].cards.length === 0 && rem > 3 && !u.cardsOpen, `traded from the sheet: ${rem} to place, hand ${st!.players[0].cards.length}, sheet ${u.cardsOpen ? 'open' : 'closed'}`, results);
 
 await browser.close();
 finish(results, errors);

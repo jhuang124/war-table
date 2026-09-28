@@ -170,16 +170,23 @@ export function mountDebugHud(root: HTMLElement, api: ControllerApi): { dispose(
       ${g.seats
         .map(
           (c) =>
-            `<span class="chip" data-testid="seat-${c.seat.id}" style="${c.current ? `background:${PLAYER_COLORS[c.seat.color].base};color:${PLAYER_COLORS[c.seat.color].ink};` : ''}${c.eliminated ? 'opacity:.5;text-decoration:line-through;' : ''}">${emblem(c.seat)} ${esc(c.seat.name)} ${c.territories}${c.cards ? ` · ${c.cards} cards` : ''}</span>`,
+            `<span class="chip" data-testid="seat-${c.seat.id}" style="${c.current ? `background:${PLAYER_COLORS[c.seat.color].base};color:${PLAYER_COLORS[c.seat.color].ink};` : ''}${c.eliminated ? 'opacity:.5;text-decoration:line-through;' : ''}">${emblem(c.seat)} ${esc(c.seat.name)} ${c.territories}</span>`,
         )
         .join('')}
       <span style="flex:1"></span>
       ${btn('≡', { type: 'overlay', overlay: 'pause' }, { id: 'menu' })}
     </div>`;
-    const step =
-      st.step.kind === 'turn'
-        ? (['place', 'attack', 'fortify'] as const).map((x) => (x === st.step.current ? `<b>${x}</b>` : x)).join(' · ')
-        : `<b>${esc(st.step.label)}</b>`;
+    // The Turn Track: forward segments are buttons (locked ones explain themselves in the line).
+    const tr = st.track;
+    const step = tr.segments
+      .map((x) => {
+        const label = x.state === 'done' ? `✓ ${x.label}` : x.label;
+        if (x.state === 'current') return `<b>${esc(label)}</b>`;
+        if (x.state === 'done' || !tr.live) return `<span class="muted">${esc(label)}</span>`;
+        const brass = tr.recommended === x.id && tr.primary;
+        return btn(label, { type: 'track', seg: x.id }, { brass, disabled: tr.disabled, id: `seg-${x.id}` });
+      })
+      .join(' ');
     const count = st.count
       ? `<span data-counter="1" data-testid="counter" style="white-space:nowrap">${btn('−', { type: 'setCount', value: st.count.value - 1 }, { disabled: st.count.value <= st.count.min, id: 'count-dec' })}<b style="font-size:1.3rem;margin:0 .4rem">${st.count.value}</b>${btn('+', { type: 'setCount', value: st.count.value + 1 }, { disabled: st.count.value >= st.count.max, id: 'count-inc' })}</span>`
       : '';
@@ -192,7 +199,7 @@ export function mountDebugHud(root: HTMLElement, api: ControllerApi): { dispose(
     const b = g.battle;
     const battle = b
       ? `<div class="p" data-testid="battle" style="position:absolute;left:50%;bottom:5rem;transform:translateX(-50%);text-align:center">
-        <b style="color:${PLAYER_COLORS[b.attacker.seat.color].light}">${esc(b.attacker.territory.toUpperCase())} ${b.attacker.armies}</b> vs <b style="color:${PLAYER_COLORS[b.defender.seat.color].light}">${esc(b.defender.territory.toUpperCase())} ${b.defender.armies}</b>${b.rolling ? ' <span class="muted">rolling…</span>' : ''}</div>`
+        <b style="color:${PLAYER_COLORS[b.attacker.seat.color].light}">${esc(b.attacker.territory.toUpperCase())} ${b.attacker.armies}</b> vs <b style="color:${PLAYER_COLORS[b.defender.seat.color].light}">${esc(b.defender.territory.toUpperCase())} ${b.defender.armies}</b>${b.rolling ? ' <span class="muted">rolling…</span>' : ''}${b.captured ? ` <b>${esc(b.captured)}</b>` : ''}</div>`
       : '';
     const bn = g.banner;
     const banner = bn

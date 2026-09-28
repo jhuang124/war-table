@@ -6,8 +6,13 @@ import { clamp, ease, lerp } from './anim';
 import { FRAME_W } from './scene';
 
 const DEG = Math.PI / 180;
-/** Home pitch: steep enough that the land fills the screen, shallow enough that the tokens read as objects. */
-export const HOME_PITCH = 64;
+/**
+ * Home pitch (docs/ROUND2.md §C): steep enough that the far row (Alaska, Greenland, Siberia) keeps its size
+ * and the land trapezoid fills the screen; the pieces lean to the camera, so they still read as figures.
+ */
+export const HOME_PITCH = 70;
+/** Clearance between the land (and every piece) and the HUD-free region's edges, CSS px. */
+export const HOME_CLEAR_PX = 12;
 const BASE_FOV = 36;
 
 interface Pose {
@@ -42,6 +47,8 @@ export class CameraRig {
   boardH: number;
   /** Degrees per second of the fastest automatic rotation so far (metrics). */
   maxAutoDegPerSec = 0;
+  /** The player moved the camera (orbit / pan / zoom) and it hasn't been sent home since. */
+  userMoved = false;
   onWhoosh: ((ms: number) => void) | null = null;
   private tmp = new THREE.Vector3();
 
@@ -150,9 +157,12 @@ export class CameraRig {
 
   /** Convex hull of every territory outline, board coords (set once by the view). */
   landHull: [number, number][] | null = null;
-  /** Token anchors, board coords, for the tray check. */
-  keepPoints: [number, number][] | null = null;
-  /** The dice tray's nominal footprint in canvas px: x span, and the top edge tokens should stay above. */
+  /**
+   * World points bounding every piece at the home pitch (figure tops, base fronts and the count plaques
+   * below them), set by the view. The home view keeps them inside the free region and clear of the tray.
+   */
+  pieceExtents: number[][] | null = null;
+  /** The dice tray's footprint in canvas px: x span, and the top edge pieces must stay above. */
   trayKeepOut: { x0: number; x1: number; y0: number } | null = null;
 
   private toWorldPts(ring: [number, number][]): number[][] {
@@ -189,12 +199,34 @@ export class CameraRig {
     return y;
   }
 
+  /**
+   * Home view (docs/ROUND2.md §C): the biggest board at HOME_PITCH, azimuth 0, such that
+   * - the land hull and every piece stay 12 px clear of the viewport edges and of every HUD rectangle
+   *   (the floating pills and strip; without `rects`, full-width top/bottom bands of the insets), and
+   * - no piece sits under the dice tray's footprint (land may run under it: it is ocean-side chrome).
+   * The vertical slack left over is split evenly above and below. Everything past the land is open ocean.
+   */
   private solveHome(): Pose {
-    const r = this.region();
-    const mx = Math.max(10, (r.x1 - r.x0) * 0.016);
-    const my = Math.max(8, (r.y1 - r.y0) * 0.016);
-    // land limits: the HUD-free region with a small margin
-    const L = { x0: r.x0 + mx, x1: r.x1 - mx, y0: r.y0 + my, y1: r.y1 - my };
+    const m = HOME_CLEAR_PX;
+    const W = this.W;
+    const H = this.H;
+    const ins = this.insets;
+    const xL = clamp(ins.left, 0, W * 0.45) + m;
+    const xR = W - clamp(ins.right, 0, W * 0.45) - m;
+    const BIG = 1e6;
+    type Ex = { x0: number; x1: number; y0: number; y1: number; top: boolean; piecesOnly: boolean; pad: number };
+    const ex: Ex[] = [];
+    if (ins.rects && ins.rects.length) {
+      for (const r of ins.rects) {
+        if (!(r.w > 0 && r.h > 0)) continue;
+        ex.push({ x0: r.x, x1: r.x + r.w, y0: r.y, y1: r.y + r.h, top: r.y + r.h / 2 < H / 2, piecesOnly: false, pad: m });
+      }
+    } else {
+      if (ins.top > 0) ex.push({ x0: -BIG, x1: BIG, y0: -BIG, y1: clamp(ins.top, 0, H * 0.45), top: true, piecesOnly: false, pad: m });
+      if (ins.bottom > 0) ex.push({ x0: -BIG, x1: BIG, y0: H - clamp(ins.bottom, 0, H * 0.5), y1: BIG, top: false, piecesOnly: false, pad: m });
+    }
+    const k = this.trayKeepOut;
+    if (k) ex.push({ x0: k.x0, x1: k.x1, y0: k.y0, y1: BIG, top: false, piecesOnly: true, pad: 0 });
     const hull = this.toWorldPts(
       this.landHull ?? [
         [0, 0],
@@ -203,25 +235,54 @@ export class CameraRig {
         [0, this.boardH],
       ],
     );
+    const pieces = this.pieceExtents ?? [];
+    const nh = hull.length;
+    const all = hull.concat(pieces);
+    const sx = new Float64Array(all.length);
+    const sy = new Float64Array(all.length);
     const cam = this.camera.clone();
     const pose: Pose = { tx: 0, tz: 0, dist: 90, pitch: HOME_PITCH, az: 0 };
     const pr = HOME_PITCH * DEG;
-    const upp = (dist: number) => (2 * dist * Math.tan((BASE_FOV * DEG) / 2)) / this.H / Math.sin(pr);
-    // Place the pose at `dist` with the land centred vertically in its limits; false if it can't fit.
+    const upp = (dist: number) => (2 * dist * Math.tan((BASE_FOV * DEG) / 2)) / H / Math.sin(pr);
+    const evaluate = () => {
+      this.place(pose, cam);
+      let xOk = true;
+      let sTop = Infinity;
+      let sBot = Infinity;
+      for (let i = 0; i < all.length; i++) {
+        const c = all[i];
+        this.tmp.set(c[0], c[1], c[2]).project(cam);
+        const px = (this.tmp.x * 0.5 + 0.5) * W;
+        const py = (-this.tmp.y * 0.5 + 0.5) * H;
+        sx[i] = px;
+        sy[i] = py;
+        if (px < xL - 0.5 || px > xR + 0.5) xOk = false;
+        sTop = Math.min(sTop, py - m);
+        sBot = Math.min(sBot, H - m - py);
+      }
+      for (const r of ex) {
+        for (let i = r.piecesOnly ? nh : 0; i < all.length; i++) {
+          const px = sx[i];
+          if (px < r.x0 - r.pad || px > r.x1 + r.pad) continue;
+          if (r.top) sTop = Math.min(sTop, sy[i] - (r.y1 + r.pad));
+          else sBot = Math.min(sBot, r.y0 - r.pad - sy[i]);
+        }
+      }
+      return { xOk, sTop, sBot };
+    };
+    // Place the pose at `dist`, the slack split evenly above and below; false if it can't fit.
     const fitAt = (dist: number): boolean => {
       pose.dist = dist;
       pose.tz = 0;
-      const unitsPerPx = upp(dist);
-      for (let it = 0; it < 8; it++) {
-        this.place(pose, cam);
-        const l = this.project(hull, cam);
-        const off = (l.y0 + l.y1) / 2 - (L.y0 + L.y1) / 2;
-        if (Math.abs(off) < 0.2) break;
-        pose.tz += off * unitsPerPx;
+      const u = upp(dist);
+      let e = evaluate();
+      for (let it = 0; it < 6; it++) {
+        const shift = (e.sBot - e.sTop) / 2; // px, + = move the land down
+        if (Math.abs(shift) < 0.25) break;
+        pose.tz -= shift * u;
+        e = evaluate();
       }
-      this.place(pose, cam);
-      const l = this.project(hull, cam);
-      return l.x0 >= L.x0 - 0.5 && l.x1 <= L.x1 + 0.5 && l.y1 - l.y0 <= L.y1 - L.y0 + 0.5;
+      return e.xOk && e.sTop >= -0.5 && e.sBot >= -0.5;
     };
     // Largest board that fits: bisect the distance (feasibility is monotone in it).
     let lo = 20;
@@ -233,21 +294,12 @@ export class CameraRig {
       else lo = mid;
     }
     fitAt(hi);
-    // Lift the land clear of the dice tray's footprint, within the slack above it.
-    const k = this.trayKeepOut;
-    if (k && this.keepPoints) {
-      const pts = this.toWorldPts(this.keepPoints);
-      const unitsPerPx = upp(pose.dist);
-      for (let it = 0; it < 6; it++) {
-        this.place(pose, cam);
-        const intrude = this.lowestIn(pts, cam, k.x0, k.x1) - k.y0;
-        const room = this.project(hull, cam).y0 - L.y0;
-        const shift = Math.min(intrude, room);
-        if (!(shift > 0.3)) break;
-        pose.tz += shift * unitsPerPx;
-      }
-    }
     return { ...pose };
+  }
+  /** Fraction of the canvas the land hull covers at the home pose (for the framing report). */
+  homeLandBox(): { x0: number; y0: number; x1: number; y1: number } {
+    const cam = this.homeCamera();
+    return this.project(this.toWorldPts(this.landHull ?? []), cam);
   }
   private initialized = false;
 
@@ -258,14 +310,19 @@ export class CameraRig {
     return cam;
   }
 
-  isHome(tol = 0.1): boolean {
+  /** The player has orbited / panned / zoomed away from home (drives the HUD's `Reset view` pill). */
+  get displaced(): boolean {
+    return this.userMoved && !this.attract && !this.isHome(0.035, 1.5);
+  }
+
+  isHome(tol = 0.1, angTol = 5): boolean {
     const c = this.goal;
     const h = this.home;
     return (
       Math.abs(c.dist / h.dist - 1) <= tol &&
       Math.hypot(c.tx - h.tx, c.tz - h.tz) <= tol * this.boardH &&
-      Math.abs(c.pitch - h.pitch) <= 5 &&
-      Math.abs(c.az - h.az) <= 5
+      Math.abs(c.pitch - h.pitch) <= angTol &&
+      Math.abs(c.az - h.az) <= angTol
     );
   }
 
@@ -273,6 +330,7 @@ export class CameraRig {
 
   orbit(dxPx: number, dyPx: number): void {
     this.cancelAuto();
+    this.userMoved = true;
     this.goal.az = clamp(this.goal.az - dxPx * 0.2, -25, 25);
     this.goal.pitch = clamp(this.goal.pitch + dyPx * 0.18, 35, 80);
   }
@@ -290,6 +348,7 @@ export class CameraRig {
 
   pan(fromPx: [number, number], toPx: [number, number]): void {
     this.cancelAuto();
+    this.userMoved = true;
     const cam = this.camera.clone();
     this.place(this.goal, cam);
     const a = new THREE.Vector3();
@@ -302,6 +361,7 @@ export class CameraRig {
 
   zoomAt(px: number, py: number, deltaY: number): void {
     this.cancelAuto();
+    this.userMoved = true;
     const f = Math.exp(-deltaY * 0.0016);
     const minD = this.home.dist / 3.5;
     const maxD = this.home.dist / 0.9;
@@ -368,6 +428,7 @@ export class CameraRig {
   }
 
   goHome(durationMs?: number): Promise<void> {
+    this.userMoved = false;
     return this.moveTo({ ...this.home }, durationMs);
   }
 

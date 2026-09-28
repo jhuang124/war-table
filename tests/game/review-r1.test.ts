@@ -100,45 +100,40 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('R1-02 occupy: an enemy next to your own stack', () => {
+describe('R1-02 / ROUND2 §B occupy: board clicks never confirm; Move N does, then the chain', () => {
   const occupyBoard = () =>
     fixture({ greenland: [0, 10], ontario: [0, 0] }, { kind: 'occupy', from: 'greenland', to: 'ontario', min: 3, max: 9, previousOwner: 2 });
 
-  it('clicking Iceland moves the minimum in and attacks from Greenland', async () => {
+  it('a board click during occupy is refused with the reason; the state does not move', async () => {
     const { c, fb } = await resume(occupyBoard());
     expect(c.getViewModel().game!.strip.count!.value).toBe(9); // the smart default is max here
-    const ex = c.hooks.explain('iceland');
-    expect(ex.ok).toBe(true);
-    expect(ex.text).toMatch(/^Move 3 in · attack from Greenland · \d+% · /);
-    fb.click('iceland');
+    for (const t of ['iceland', 'greenland', 'ontario', 'alberta'] as const) {
+      fb.click(t);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(c.hooks.getState()!.phase.kind).toBe('occupy');
+    }
+    expect(c.hooks.ui().line).toBe('Finish moving armies into Ontario first');
+    c.dispose();
+  });
+
+  it('Move 3 keeps the stack home; the chain selects Ontario if it can attack, else Greenland', async () => {
+    const { c } = await resume(occupyBoard());
+    c.intent({ type: 'setCount', value: 3 });
+    c.intent({ type: 'button', id: 'move' });
     await until(() => c.hooks.isIdle(), 4000);
     const s = c.hooks.getState()!;
     expect(s.phase.kind).toBe('attack');
     expect(s.territories.ontario.armies).toBe(3);
     expect(s.territories.greenland.armies).toBe(7);
-    expect(c.hooks.ui().line).toMatch(/^Attack Iceland from Greenland · \d+%$/);
-    expect(c.hooks.ui().battle?.header).toBe('GREENLAND 7 vs ICELAND 1');
-    expect(c.hooks.metrics().turns.reduce((n, t) => n + t.rejected, 0)).toBe(0);
+    expect(c.hooks.ui().line).toBe('Attack from Ontario · click an enemy');
     c.dispose();
   });
 
-  it('clicking Greenland itself keeps the stack there and selects it', async () => {
-    const { c, fb } = await resume(occupyBoard());
-    expect(c.hooks.explain('greenland').text).toBe('Move 3 in · keep attacking from Greenland');
-    fb.click('greenland');
+  it('Move 9 moves the default count in', async () => {
+    const { c } = await resume(occupyBoard());
+    c.intent({ type: 'button', id: 'move' });
     await until(() => c.hooks.isIdle(), 4000);
-    expect(c.hooks.getState()!.territories.greenland.armies).toBe(7);
-    expect(c.hooks.ui().line).toBe('Attack from Greenland · click an enemy');
-    c.dispose();
-  });
-
-  it('an enemy next to the conquered tile still takes the default count', async () => {
-    const { c, fb } = await resume(occupyBoard());
-    fb.click('alberta');
-    await until(() => c.hooks.isIdle(), 4000);
-    const s = c.hooks.getState()!;
-    expect(s.territories.ontario.armies).toBe(9);
-    expect(c.hooks.ui().line).toMatch(/^Attack Alberta from Ontario · \d+%$/);
+    expect(c.hooks.getState()!.territories.ontario.armies).toBe(9);
     c.dispose();
   });
 });
@@ -158,9 +153,11 @@ describe('R1-05 / R1-11 the tray header and the line across a conquest', () => {
     const { c, fb } = await resume(s);
     fb.click('indonesia'); // arm
     await vi.advanceTimersByTimeAsync(30);
-    expect(c.hooks.ui().line).toMatch(/^Attack Indonesia from New Guinea · \d+%$/);
-    await vi.advanceTimersByTimeAsync(500); // not a double-click
-    fb.click('indonesia'); // roll once
+    expect(c.hooks.ui().line).toMatch(/^New Guinea → Indonesia · \d+%$/);
+    fb.click('indonesia'); // the armed target again: still armed, nothing rolls
+    await vi.advanceTimersByTimeAsync(30);
+    expect(c.hooks.getState()!.territories.indonesia.owner).not.toBe(0);
+    c.intent({ type: 'button', id: 'roll' }); // roll once
     const headers = new Set<string>();
     const lines = new Set<string>();
     let sameOwner = 0;
@@ -173,7 +170,8 @@ describe('R1-05 / R1-11 the tray header and the line across a conquest', () => {
       await vi.advanceTimersByTimeAsync(20);
     }
     expect(sameOwner).toBe(0);
-    expect([...headers]).toContain('NEW GUINEA 3 vs INDONESIA 0');
+    expect([...headers].some((x) => x === 'NEW GUINEA 3 vs INDONESIA 0' || x === 'Indonesia captured')).toBe(true);
+    expect([...headers]).toContain('Indonesia captured');
     expect([...lines].some((l) => /from New Guinea · \d/.test(l) && /New Guinea \(1\)/.test(l))).toBe(false);
     expect([...lines]).toContain('You took Indonesia');
     expect(c.hooks.ui().line).toBe('Attack from Indonesia · click an enemy');
@@ -198,39 +196,55 @@ describe('R1-14 a successful input clears a stale rejection (setup: pick · Plac
     expect(c.hooks.ui().primary).toBe('Place 1');
     c.intent({ type: 'button', id: 'place' });
     await vi.advanceTimersByTimeAsync(20);
-    expect(c.hooks.ui().line).toBe('All 3 placed');
-    expect(c.hooks.ui().buttons).toEqual(['Undo', 'Done']);
+    expect(c.hooks.ui().line).toBe('All 3 placed · click Done');
+    expect(c.hooks.ui().buttons).toEqual(['Undo']);
+    expect(c.hooks.ui().track).toEqual(['current:setup', 'eligible:done']);
+    expect(c.hooks.ui().brass).toEqual(['Done']);
     // Staging never touches the engine.
     expect(c.hooks.getState()!.territories.ural.armies).toBe(1);
     await vi.advanceTimersByTimeAsync(500);
     fb.click('ural');
     await vi.advanceTimersByTimeAsync(20);
-    expect(c.hooks.ui().line).toBe('All 3 placed · press Done');
+    expect(c.hooks.ui().line).toBe('All 3 placed · click Done');
     c.intent({ type: 'button', id: 'undo' });
     await vi.advanceTimersByTimeAsync(20);
     expect(c.hooks.ui().line).toBe('Place 1 more · click a territory');
     expect(c.hooks.ui().buttons).toEqual(['Undo']);
+    // Done is locked until everything is placed, and says why.
+    c.intent({ type: 'track', seg: 'done' });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(c.hooks.ui().line).toBe('Place your 1 army first');
+    fb.click('ukraine');
+    c.intent({ type: 'button', id: 'place' });
+    c.intent({ type: 'track', seg: 'done' });
+    await until(() => c.hooks.isIdle(), 4000);
+    // Done commits the staged armies to the engine (then setup moves on).
+    expect(c.hooks.getState()!.territories.ural.armies + c.hooks.getState()!.territories.ukraine.armies).toBeGreaterThanOrEqual(5);
     c.dispose();
   });
 });
 
-describe('R1-21 Enter right after a chain click', () => {
-  it("does not fire Blitz on the new target the player hasn't seen", async () => {
+describe('ROUND2 §A Enter is the one brass thing', () => {
+  it('occupy: Enter moves; attack with targets left: nothing brass, Enter does nothing; Fortify: Enter ends the turn', async () => {
     const s = fixture({ greenland: [0, 10], ontario: [0, 0] }, { kind: 'occupy', from: 'greenland', to: 'ontario', min: 3, max: 9, previousOwner: 2 });
-    const { c, fb } = await resume(s);
-    fb.click('alberta'); // chain: confirm Move 9, arm Ontario → Alberta
-    await vi.advanceTimersByTimeAsync(120);
+    const { c } = await resume(s);
+    expect(c.hooks.ui().brass).toEqual(['Move 9']);
     c.handleKey('Enter');
     await until(() => c.hooks.isIdle(), 4000);
-    await vi.advanceTimersByTimeAsync(400);
-    const after = c.hooks.getState()!;
-    expect(after.territories.alberta.owner).toBe(2);
-    expect(after.territories.alberta.armies).toBe(1);
-    expect(c.hooks.ui().primary).toBe('Blitz');
-    // Once the player has seen it, Enter blitzes.
+    expect(c.hooks.getState()!.phase.kind).toBe('attack');
+    expect(c.hooks.ui().brass).toEqual([]);
+    expect(c.hooks.ui().recommended).toBeNull();
+    c.handleKey('Escape'); // clear the chained source
     c.handleKey('Enter');
-    await until(() => c.hooks.isIdle(), 6000);
-    expect(c.hooks.getState()!.territories.alberta.owner === 0 || c.hooks.getState()!.territories.ontario.armies === 1).toBe(true);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(c.hooks.getState()!.phase.kind).toBe('attack');
+    c.intent({ type: 'track', seg: 'fortify' });
+    await until(() => c.hooks.isIdle(), 4000);
+    expect(c.hooks.getState()!.phase.kind).toBe('fortify');
+    expect(c.hooks.ui().brass).toEqual(['End turn']);
+    c.handleKey('Enter');
+    await until(() => c.hooks.getState()!.currentPlayer !== 0, 4000);
+    expect(c.hooks.getState()!.currentPlayer).not.toBe(0);
     c.dispose();
   });
 });

@@ -48,6 +48,10 @@ export interface Tile {
   selectLift: number;
   press: number;
   fxLift: number;
+  /** Phase-change lift (pulsePhase 'attack'). */
+  phaseLift: number;
+  /** Transient ivory rim sweep 0..1 (pulsePhase), on top of the rim mode. */
+  glow: number;
   flipX: number; // 1 = normal, 0 = edge-on
   rimMode: RimMode;
   rimAlpha: number; // animated rim opacity target multiplier
@@ -225,6 +229,8 @@ export class TileSet {
         selectLift: 0,
         press: 0,
         fxLift: 0,
+        phaseLift: 0,
+        glow: 0,
         flipX: 1,
         rimMode: 'none',
         rimAlpha: 0,
@@ -312,13 +318,14 @@ export class TileSet {
 
   /** Recompute a tile's material colors and transform from its animated fields. */
   apply(t: Tile, pulse: number, rimScale: number): void {
-    const lift = t.hoverLift + t.selectLift + t.press + t.fxLift;
+    const lift = t.hoverLift + t.selectLift + t.press + t.fxLift + t.phaseLift;
     t.pivot.position.y = lift;
     t.pivot.scale.x = Math.max(0.001, t.flipX);
     if (!t.dirty && t.rimMode !== 'target') return;
     if (t.dirty) {
       let c = t.rgb;
-      if (t.dim > 0) c = adjust(c, 1 - 0.25 * t.dim, 1 - 0.38 * t.dim);
+      // Unrelated land recedes only ~20 % (docs/ROUND2.md §E): the map stays the map.
+      if (t.dim > 0) c = adjust(c, 1 - 0.15 * t.dim, 1 - 0.2 * t.dim);
       if (t.light > 0) c = adjust(c, 1, 1, 0.08 * t.light);
       if (t.tint > 0) c = mixRgb(c, t.tintColor, t.tint * 0.7);
       setColor(t.top.color, c);
@@ -335,8 +342,9 @@ export class TileSet {
     let w = 2;
     switch (t.rimMode) {
       case 'selectable':
-        a = 0.3;
-        w = 2;
+        // strong enough to read at home zoom on crimson, amber and emerald (docs/ROUND2.md §E)
+        a = 0.6;
+        w = 2.5;
         break;
       case 'selected':
         a = 1;
@@ -352,6 +360,13 @@ export class TileSet {
         break;
     }
     a *= t.rimAlpha;
+    if (t.glow > 0) {
+      const g = t.glow * 0.85;
+      if (g > a) {
+        a = g;
+        w = Math.max(w, 2.5);
+      }
+    }
     const vis = a > 0.01;
     t.rimIvory.visible = t.rimUnder.visible = vis;
     if (vis) {

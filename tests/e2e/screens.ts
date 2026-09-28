@@ -1,12 +1,13 @@
 // Screenshot sweep for the visual review (not part of test:e2e), on the real board + HUD, at 1280×800,
-// 1440×900 and 1920×1080: Place (picked), Attack armed, Attack rolling, Occupy, Fortify (picked), an AI
-// turn, and the menu. Also counts the words on screen (top strip + bottom strip + tray header) in each.
+// 1440×900 and 1920×1080: Place (picked), Attack armed, Attack rolling, Occupy (and its totals), Fortify
+// (picked), an AI turn, the menu, and New game (with a seat's swatches open). Mouse only: the Turn Track
+// changes phase. Also counts the words on screen (top pills + bottom strip + tray header) in each.
 // Usage: npx tsx tests/e2e/screens.ts [outDir] [WxH,...]   (server on RISK_URL)
 import { clickBtn, clickT, idle, loadScenario, open, scenario, state } from './lib';
 import type { GameState, Phase } from '../../src/engine';
 import type { Page } from 'playwright';
 
-const OUT = process.argv[2] ?? 'artifacts/ui-simplify';
+const OUT = process.argv[2] ?? 'artifacts/ui-round2';
 const SIZES = (process.argv[3] ?? '1280x800,1440x900,1920x1080').split(',').map((s) => s.split('x').map(Number) as [number, number]);
 const { mkdirSync, writeFileSync } = await import('node:fs');
 mkdirSync(OUT, { recursive: true });
@@ -15,7 +16,7 @@ const PLAYERS = [
   { name: 'John', color: 'crimson', kind: 'human' },
   { name: 'Cobalt', color: 'cobalt', kind: 'ai', difficulty: 'normal' },
   { name: 'Amber', color: 'amber', kind: 'ai', difficulty: 'normal' },
-  { name: 'Rose', color: 'rose', kind: 'ai', difficulty: 'normal' },
+  { name: 'Emerald', color: 'emerald', kind: 'ai', difficulty: 'normal' },
 ] as never;
 const own = (t: string[]) => Object.fromEntries(t.map((x) => [x, [0, 2]]));
 
@@ -64,9 +65,11 @@ for (const [w, h] of SIZES) {
     await page.screenshot({ path: `${OUT}/${name}-${tag}.png` });
     const u = await page.evaluate(() => window.__risk.ui());
     const n = await words(page);
-    report.push(`${tag} ${name}: ${n} words · [${u.step}] "${u.line}" · ${u.buttons.join(' / ')}${u.battle ? ` · tray "${u.battle.header}"` : ''}`);
+    report.push(
+      `${tag} ${name}: ${n} words · [${u.track.join(' ')}${u.recommended ? ` rec:${u.recommended}` : ''}${u.trackDisabled ? ' disabled' : ''}] "${u.line}" · ${u.buttons.join(' / ')} · brass ${u.brass.join('+') || '-'}${u.battle ? ` · tray "${u.battle.header}"` : ''}`,
+    );
   };
-  // Place: Ural picked, the stepper showing all remaining.
+  // Place: Ural picked, the count showing all remaining.
   await loadScenario(page, base({ kind: 'reinforce', remaining: 9, mustTrade: false, placed: {}, midTurn: false }));
   await page.waitForTimeout(1300); // the turn banner leaves
   await clickT(page, 'ural');
@@ -74,8 +77,10 @@ for (const [w, h] of SIZES) {
   await shot('place');
   await clickBtn(page, 'btn-place');
   await idle(page);
+  await page.waitForTimeout(300);
+  await shot('place-done');
   // Attack armed.
-  await clickBtn(page, 'btn-attack');
+  await clickBtn(page, 'seg-attack');
   await idle(page);
   await clickT(page, 'siberia');
   await page.waitForTimeout(450);
@@ -95,13 +100,20 @@ for (const [w, h] of SIZES) {
   if ((await state(page))!.phase.kind === 'occupy') {
     await page.waitForTimeout(250);
     await shot('occupy');
+    const c = (await page.evaluate(() => window.__risk.ui().count))!;
+    if (c) {
+      await clickBtn(page, c.control === 'stepper' ? 'count-dec' : 'count-slider');
+      await page.waitForTimeout(250);
+      await shot('occupy-totals');
+    }
     await clickBtn(page, 'btn-move');
     await idle(page);
   }
   // Fortify: a source and a destination picked.
-  await page.keyboard.press('Escape');
-  await clickBtn(page, 'btn-fortify');
+  await clickBtn(page, 'seg-fortify');
   await idle(page);
+  await page.waitForTimeout(300);
+  await shot('fortify-start');
   const sf = (await state(page))!;
   const src = (['ural', 'siberia', 'ukraine', 'afghanistan'] as const).find((t) => sf.territories[t].owner === 0 && sf.territories[t].armies >= 2);
   if (src) {
@@ -112,17 +124,26 @@ for (const [w, h] of SIZES) {
   await page.waitForTimeout(400);
   await shot('fortify');
   // Menu.
-  await page.keyboard.press('Escape');
-  await page.keyboard.press('Escape');
-  await page.keyboard.press('Escape');
+  await clickBtn(page, 'menu');
   await page.waitForTimeout(400);
   await shot('menu');
-  await page.keyboard.press('Escape');
-  // AI turn: end the turn and catch an attack line.
-  await clickBtn(page, 'btn-endTurn');
+  await clickBtn(page, 'pause-resume');
+  await page.waitForTimeout(300);
+  // AI turn: end the turn from the track and catch an attack line.
+  await clickBtn(page, 'seg-endTurn');
   await page.waitForFunction(() => / attacks /.test(window.__risk.ui().line), null, { timeout: 25_000, polling: 30 }).catch(() => undefined);
   await page.waitForTimeout(300);
   await shot('ai-turn');
+  // New game, and one seat's six swatches.
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.waitForFunction(() => window.__risk?.ui().screen === 'title');
+  await clickBtn(page, 'title-new');
+  await page.waitForTimeout(500);
+  await shot('newgame');
+  await clickBtn(page, 'seat-color-1');
+  await page.waitForTimeout(300);
+  await shot('newgame-swatches');
   console.log(tag, errors.length ? `console errors: ${errors.join(' | ')}` : 'ok');
   await browser.close();
 }

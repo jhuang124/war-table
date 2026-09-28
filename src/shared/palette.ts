@@ -28,8 +28,8 @@ export const PLAYER_COLORS: Record<PlayerColorId, PlayerPalette> = {
 
 export const PLAYER_COLOR_IDS = Object.keys(PLAYER_COLORS) as PlayerColorId[];
 
-/** Default colors for seats 1-4: the most distinct set under color-vision simulation (UX.md §10.1). */
-export const DEFAULT_SEAT_COLORS: PlayerColorId[] = ['crimson', 'cobalt', 'amber', 'rose'];
+/** Default colors for seats 1-4 (docs/ROUND2.md §E): rose and crimson read as the same red, so emerald. */
+export const DEFAULT_SEAT_COLORS: PlayerColorId[] = ['crimson', 'cobalt', 'amber', 'emerald'];
 
 /** Emblem outlines as SVG path data in a 24x24 viewBox. Render and UI draw the same shapes. */
 export const EMBLEM_PATHS: Record<SeatEmblem, string> = {

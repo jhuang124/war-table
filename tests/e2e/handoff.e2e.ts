@@ -1,8 +1,8 @@
 // Two humans with "Hide cards between turns" on: John looks at his hand in the Cards sheet, places,
-// and ends his turn; zero frames of Sam's hand may be visible before the cover is up. Every DOM
+// and ends his turn through the Turn Track (Attack, then End turn); zero frames of Sam's hand may be visible before the cover is up. Every DOM
 // mutation and every animation frame is checked in the page. Then: the cover reads right, Enter
 // accepts, the turn banner follows, and the cover does not fire for a human holding no cards.
-import { ART, check, clickBtn, dblT, finish, idle, loadScenario, open, rendered, scenario, state, ui } from './lib';
+import { ART, check, clickBtn, finish, idle, loadScenario, open, place, rendered, scenario, seg, state, ui } from './lib';
 import type { Card, GameState } from '../../src/engine';
 
 const results: string[] = [];
@@ -59,12 +59,16 @@ await page.evaluate(`(() => {
   requestAnimationFrame(raf);
 })()`);
 
-// Place everything, attack step, End turn.
-await dblT(page, 'ural');
+// Place everything, the Attack segment, then End turn on the track.
+await place(page, 'ural');
 await idle(page);
-await clickBtn(page, 'btn-attack');
+let ua = await ui(page);
+check(ua.line === 'All placed · Attack is next' && ua.recommended === 'attack', `all placed: ${ua.line} (recommended ${ua.recommended})`, results);
+await seg(page, 'attack');
 await idle(page);
-await clickBtn(page, 'btn-endTurn');
+ua = await ui(page);
+check(ua.step === 'Attack' && ua.track.join(',') === 'done:place,current:attack,eligible:fortify,eligible:endTurn', `Attack: ${ua.track.join(', ')}`, results);
+await seg(page, 'endTurn');
 await page.waitForSelector('[data-testid="handoff"]', { timeout: 5000 });
 await page.waitForTimeout(600); // keep watching while the cover sits there
 await page.screenshot({ path: `${ART}/handoff-cover.png` });
@@ -75,6 +79,12 @@ const cover = (await page.locator('[data-testid="handoff"]').textContent())?.rep
 check(/Pass to Sam/.test(cover) && /armies waiting · 3 cards · set ready/.test(cover) && /I'm Sam · start turn/.test(cover), `cover: ${cover}`, results);
 let u = await ui(page);
 check(u.line === 'Pass to Sam' && !u.banners.some((b) => b.startsWith("SAM'S TURN")), `under the cover: the line "${u.line}", turn banner waits`, results);
+// Under the cover the track is not live and nothing on the strip is brass (the cover's button is the
+// one thing to press). Sam's turn hasn't started on the display yet (turnStarted waits for the cover),
+// so the marker still reads the displayed turn.
+check(!u.trackLive && u.recommended === null && u.brass.length === 0, `under the cover: the track is not live, nothing brass (live ${u.trackLive}, marker ${u.trackSeat} ${u.step}, brass ${u.brass.join(' / ') || 'none'})`, results);
+await seg(page, 'place', true);
+check((await state(page))!.currentPlayer === 1 && !!(await page.locator('[data-testid="handoff"]').count()), 'a click on the track under the cover does nothing', results);
 await page.evaluate('window.__leak.stop = true');
 await page.keyboard.press('Enter');
 await page.waitForFunction(() => !document.querySelector('[data-testid="handoff"]'));
@@ -97,7 +107,7 @@ const noCards = scenario({ ural: [0, 5] }, { kind: 'attack' }, {
   },
 });
 await loadScenario(page, noCards, { settings: { hideCardsBetweenTurns: true } });
-await clickBtn(page, 'btn-endTurn');
+await seg(page, 'endTurn');
 await page.waitForTimeout(400);
 check((await page.locator('[data-testid="handoff"]').count()) === 0, 'no cover when the next human holds no cards', results);
 await browser.close();

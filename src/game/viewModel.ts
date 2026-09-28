@@ -4,9 +4,9 @@
 // plain-data ViewModel (strings already written, per docs/SIMPLIFY.md) and receives UiIntents back.
 // The UI owns layout, styling, and motion: it renders the ViewModel and never imports the engine.
 //
-// The in-game HUD is two strips and nothing else (docs/SIMPLIFY.md §1): the top strip (one chip per
-// seat + the menu) and the bottom strip (step indicator, one line, at most one count control, at most
-// two buttons). The dice tray header, one banner, the cards sheet and the menu sheets come and go.
+// The in-game HUD floats on the board (docs/ROUND2.md): seat chips + ≡ as glass pills at the top, and
+// one floating bottom strip: the Turn Track, one line, then the action zone (at most one count control,
+// at most two buttons). The dice tray header, one banner, the cards sheet and the menu sheets come and go.
 
 import type { AudioEngine } from '../audio/types';
 import type { AiDifficulty, CardSymbol, PlayerColorId, PlayerId, PlayerKind, PlayerStats, TimelinePoint } from '../engine/types';
@@ -83,7 +83,7 @@ export interface NewGameVM {
 }
 
 // ---------------------------------------------------------------------------
-// In-game HUD (docs/SIMPLIFY.md)
+// In-game HUD (docs/ROUND2.md, docs/SIMPLIFY.md)
 // ---------------------------------------------------------------------------
 
 /** One chip per seat in the top strip, in turn order. */
@@ -94,33 +94,51 @@ export interface SeatChipVM {
   /** Struck through and dimmed. */
   eliminated: boolean;
   territories: number;
-  /** The hand size, only when it's 3 or more; null otherwise. */
-  cards: number | null;
 }
 
-export type TurnStep = 'place' | 'attack' | 'fortify';
+/**
+ * The Turn Track (docs/ROUND2.md §A): one fixed phase control at the left of the bottom strip. Four
+ * segments on a main turn (Place · Attack · Fortify · End turn), two in setup (Setup · Done). It never
+ * disappears or renames; clicking a forward segment is the only way to change phase (plus the fortify
+ * `Move N · end turn` button, which says so).
+ */
+export type TrackSegId = 'place' | 'attack' | 'fortify' | 'endTurn' | 'setup' | 'done';
 
-/** Left end of the bottom strip. */
-export interface StepVM {
-  /** 'turn' = Place · Attack · Fortify with `current` lit; 'setup' = 'Setup'; 'watching' = "Cobalt's turn". */
-  kind: 'turn' | 'setup' | 'watching';
-  current: TurnStep | null;
-  seat: SeatRef;
-  /** 'Setup' / "Cobalt's turn" / '' (the three steps are drawn by the UI). */
+export interface TrackSegVM {
+  id: TrackSegId;
+  /** 'Place' / 'Attack' / 'Fortify' / 'End turn' / 'Setup' / 'Done' (the UI adds the ✓ on done). */
   label: string;
+  /**
+   * done: passed this turn (inert) · current: where the marker is (filled in the seat's colour) ·
+   * eligible: a click goes there · locked: a click puts the reason in the line.
+   */
+  state: 'done' | 'current' | 'eligible' | 'locked';
+}
+
+export interface TrackVM {
+  kind: 'turn' | 'setup';
+  /** Whose marker: the current segment fills in this seat's colour (an AI's too, while it plays). */
+  seat: SeatRef;
+  segments: TrackSegVM[];
+  /** The recommended next segment: its brass edge glows. Enter goes there when no button is brass. */
+  recommended: TrackSegId | null;
+  /** The recommended segment is the one brass fill on screen (no commit is pending in the action zone). */
+  primary: boolean;
+  /** The driver can click it (their own turn, no cover). False = a marker to watch. */
+  live: boolean;
+  /** Visibly disabled: a roll is playing, or a mandatory occupy / trade holds the turn. */
+  disabled: boolean;
+  /** Bumps when the turn passes to another seat, so the UI can re-seat the fill instead of sliding it back. */
+  turnKey: string;
 }
 
 export type ButtonId =
   | 'place' // 'Place 9'
   | 'undo'
-  | 'trade' // 'Trade cards +8'
+  | 'trade' // forced: 'Trade cards +8' (the only action); otherwise from the Cards sheet
   | 'cards' // 'Cards 3': opens the read-only hand sheet
-  | 'attack' // 'Attack →' (leave Place)
-  | 'done' // setup: 'Done' commits the placement
   | 'blitz'
   | 'roll'
-  | 'fortify' // 'Fortify →' (leave Attack)
-  | 'endTurn'
   | 'move' // 'Move 8' (occupy) / 'Move 5 · end turn' (fortify)
   | 'watchAis' // all humans out: 'Watch to the end'
   | 'callGame'; // all humans out: 'End game'
@@ -128,13 +146,13 @@ export type ButtonId =
 export interface ButtonVM {
   id: ButtonId;
   label: string; // exact copy
-  /** Brass fill. At most one per state. */
+  /** Brass fill. At most one brass thing on screen: this, or the track's recommended segment. */
   primary: boolean;
   /** A short hold (a knockout, the game ending): a brass underline sweeps and clicks are ignored. */
   busy?: boolean;
 }
 
-/** The one count control: a − N + stepper (Place) or a slider (Occupy, Fortify). */
+/** The one count control: a − N + stepper for ≤ 6 options, a slider for more. */
 export interface CountVM {
   control: 'stepper' | 'slider';
   value: number;
@@ -144,7 +162,8 @@ export interface CountVM {
 
 export interface StripVM {
   mode: 'setup' | 'place' | 'attack' | 'occupy' | 'fortify' | 'watching' | 'idle';
-  step: StepVM;
+  /** Left end: the Turn Track. */
+  track: TrackVM;
   /** 3 px top edge. */
   accent: PlayerColorId;
   /** The one line: ≤ ~50 characters, real names and numbers. */
@@ -154,7 +173,7 @@ export interface StripVM {
   /** Bumps on every rejection so the UI can re-run the swap even for identical copy. */
   lineKey: number;
   count: CountVM | null;
-  /** ≤ 2, in reading order: the secondary (if any), then the primary. */
+  /** The action zone (right end): ≤ 2, in reading order: the secondary (if any), then the primary. */
   buttons: ButtonVM[];
 }
 
@@ -164,11 +183,16 @@ export interface BattleSideVM {
   armies: number; // displayed (follows the board, not the state)
 }
 
-/** The dice tray's header line, 'URAL 12  vs  SIBERIA 5'. The dice are drawn by the renderer. */
+/**
+ * The dice tray's header line, 'URAL 12  vs  SIBERIA 5'. The dice are drawn by the renderer. It lives
+ * while a fight is armed or rolling and ~1 s after it's decided (null at once on a new selection or a
+ * phase change); on a conquest it reads `captured` ('Siberia captured') for that second.
+ */
 export interface BattleVM {
   attacker: BattleSideVM;
   defender: BattleSideVM;
   rolling: boolean;
+  captured: string | null;
 }
 
 export interface CardVM {
@@ -227,6 +251,8 @@ export interface GameVM {
   confirm: { kind: 'endGame' | 'restart'; text: string } | null;
   /** Settings → Seats: hand a human seat to the AI (and back). Empty when there's nothing to offer. */
   seatActions: { seat: SeatRef; label: string; intent: UiIntent }[];
+  /** The player orbited / zoomed away from the home view: the `Reset view` pill shows beside ≡. */
+  viewMoved: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +303,10 @@ export type UiIntent =
   | { type: 'start' }
   // in game
   | { type: 'button'; id: ButtonId }
+  /** A Turn Track segment: forward + eligible = go there; locked = the reason in the line. */
+  | { type: 'track'; seg: TrackSegId }
+  /** The `Reset view` pill: back to the home framing. */
+  | { type: 'resetView' }
   | { type: 'setCount'; value: number }
   | { type: 'cardsPanel'; open: boolean }
   | { type: 'handoffAccept' }

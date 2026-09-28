@@ -14,7 +14,7 @@ import type {
   ViewportInsets,
 } from './BoardView';
 import type { GameEvent, GameState, PlayerId, TerritoryId } from '../engine/types';
-import { TERRITORY_IDS } from '../engine/mapData';
+import { ADJACENCY, TERRITORY_IDS } from '../engine/mapData';
 import type { AudioEngine, PlayOptions, SfxName } from '../audio/types';
 import { PLAYER_COLORS, type PlayerPalette } from '../shared/palette';
 import { Animator, ease, clamp, type Run } from './anim';
@@ -26,7 +26,7 @@ import { Overlay } from './overlay';
 import { Continents } from './continents';
 import { AttackArrow, FortifyRoute, Particles, Ripples, SeaLanes } from './fx';
 import { DiceTray } from './dice';
-import { CameraRig } from './camera';
+import { CameraRig, HOME_PITCH } from './camera';
 import { paintGrainTexture } from './textures';
 import {
   IVORY,
@@ -45,6 +45,9 @@ import {
 } from './util';
 
 const BLITZ_CAP = 3000;
+/** Battle tray: fade length, and how long a decided fight's result stays up (docs/ROUND2.md §E). */
+const TRAY_FADE_MS = 300;
+const TRAY_DECIDED_MS = 1000;
 const IVORY_RGB = hexToRgb(IVORY);
 
 async function loadFonts(): Promise<void> {
@@ -132,8 +135,12 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   const rig = new CameraRig(G.width, G.height);
   // The home view fits the land (not the frame) inside the HUD-free region.
   rig.landHull = convexHull(TERRITORY_IDS.flatMap((id) => G.territories[id].polygons.flatMap((p) => p.outer)));
-  // Token anchors: the home view keeps tokens clear of the dice tray's footprint where it can.
-  rig.keepPoints = TERRITORY_IDS.map((id) => G.territories[id].anchor);
+  // Piece extents (figure tops, base sides, plaque depth): the home view keeps every piece inside the free
+  // region and clear of the dice tray's footprint.
+  const setPieceExtents = () => {
+    // The plaque hangs ~0.55 of its height below the base front; ~0.8 board units at the home scale.
+    rig.pieceExtents = tokens.extentPoints(HOME_PITCH, 0.8 * (1 + (uiScale - 1) * 0.8));
+  };
   const camera = rig.camera;
 
   // --- displayed board state --------------------------------------------------
@@ -167,6 +174,56 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   let pressed: TerritoryId | null = null;
   const clickCbs: ((i: TerritoryPointerInfo) => void)[] = [];
   const hoverCbs: ((i: TerritoryPointerInfo | null) => void)[] = [];
+
+  // Phase response (pulsePhase): other players' tiles dimmed in fortify.
+  const phaseDimmed = new Set<TerritoryId>();
+  let phaseVer = 0;
+  // Listeners: the view left home (Reset view pill) / the battle tray showed or started to fade.
+  const displacedCbs: ((d: boolean) => void)[] = [];
+  let lastDisplaced = false;
+  const trayCbs: ((v: boolean) => void)[] = [];
+  let trayShownEmitted = false;
+  const emitTray = (v: boolean) => {
+    if (v === trayShownEmitted) return;
+    trayShownEmitted = v;
+    for (const cb of trayCbs) {
+      try {
+        cb(v);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+  const hideTray = (ms: number) => {
+    tray.hide(ms);
+    emitTray(false);
+  };
+  // Title / attract view: the wooden frame on its table; play: open ocean past every edge.
+  let tableV = 0;
+  let tableVer = 0;
+  const tableView = (on: boolean) => {
+    const to = on ? 1 : 0;
+    if (Math.abs(tableV - to) < 1e-3) return;
+    const ver = ++tableVer;
+    const from = tableV;
+    if (reduced) {
+      tableV = to;
+      parts.setTableView(to);
+      needShadow = true;
+      return;
+    }
+    void anim.tween({
+      ms: 560,
+      unscaled: true,
+      ease: ease.inOutCubic,
+      update: (v) => {
+        if (ver !== tableVer) return;
+        tableV = from + (to - from) * v;
+        parts.setTableView(tableV);
+        needShadow = true;
+      },
+    });
+  };
 
   const pal = (p: PlayerId): PlayerPalette | null => paletteOf(lastState, p);
   const isHuman = (p: PlayerId) => !!lastState?.players[p] && lastState.players[p].kind === 'human';
@@ -255,10 +312,12 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     if (h.arrow?.path) h.arrow.path.forEach((x) => keep.add(x));
     for (const t of tiles.list) {
       let mode: RimMode = 'none';
+      // Armed (an attack arrow is up): only the pair and the arrow are lit; the other targets fall back
+      // to plain selectable (still clickable), so the fight in play leads (docs/ROUND2.md §E).
       if (t.id === sel) mode = 'selected';
-      else if (targets.has(t.id)) mode = t.id === arrowTo || reduced ? 'armed' : 'target';
-      else if (selectable.has(t.id)) mode = 'selectable';
       else if (t.id === arrowTo) mode = 'armed';
+      else if (targets.has(t.id)) mode = arrowTo ? 'selectable' : reduced ? 'armed' : 'target';
+      else if (selectable.has(t.id)) mode = 'selectable';
       if (mode !== t.rimMode) {
         const wasNone = t.rimMode === 'none';
         t.rimMode = mode;
@@ -271,9 +330,10 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         const up = lift > t.selectLift;
         tw(t, 'selectLift', t.selectLift, lift, up ? 160 : 120, up ? (reduced ? ease.outCubic : ease.outBack(1.4)) : ease.inQuad);
       }
-      const dim = h.dimOthers && !keep.has(t.id) ? 1 : 0;
+      // Fortify's phase dim is deeper than a selection's: the board becomes "your side" (docs/ROUND2.md §A).
+      const dim = Math.max(h.dimOthers && !keep.has(t.id) ? 1 : 0, phaseDimmed.has(t.id) ? 1.8 : 0);
       if (Math.abs(dim - t.dim) > 1e-4) tw(t, 'dim', t.dim, dim, dim > t.dim ? 180 : 140, ease.outQuad);
-      overlay.setDim(t.id, dim === 1);
+      overlay.setDim(t.id, dim >= 1);
       if (!clickable.has(t.id) && t.hoverLift > 0 && t.id !== hovered) tw(t, 'hoverLift', t.hoverLift, 0, 140);
     }
     // hover state may have changed clickability
@@ -316,7 +376,63 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     const selKey = (x: BoardHighlights) => `${x.selected ?? ''}|${x.arrow ? `${x.arrow.from}>${x.arrow.to}` : ''}`;
     const [pairFrom, pairTo] = lastPairKey.split('>');
     const autoChain = !h.arrow && !!h.selected && (h.selected === pairFrom || h.selected === pairTo);
-    if (selKey(h) !== selKey(prev) && tray.visible && rolling === 0 && !autoChain) tray.hide(200);
+    if (selKey(h) !== selKey(prev) && tray.visible && rolling === 0 && !autoChain) hideTray(TRAY_FADE_MS);
+  };
+
+  // --- phase response (no camera moves) ---------------------------------------------------------
+  const clearPhase = () => {
+    phaseVer++;
+    const had = phaseDimmed.size > 0;
+    phaseDimmed.clear();
+    for (const t of tiles.list) {
+      if (t.phaseLift > 1e-4) tw(t, 'phaseLift', t.phaseLift, 0, 160, ease.inQuad);
+      if (t.glow > 1e-4) tw(t, 'glow', t.glow, 0, 160, ease.outQuad);
+    }
+    if (had) applyHighlights(lastHl, lastHl);
+  };
+  /**
+   * The board answers a phase change (docs/ROUND2.md §A): → attack, the tiles that can attack lift and their
+   * rims sweep west → east; → fortify, other players' tiles dim (until the turn ends); → end, it all clears.
+   * Any change also ends the battle tray.
+   */
+  const pulsePhase = (phase: 'attack' | 'fortify' | 'end', o?: { player?: PlayerId; territories?: TerritoryId[] }) => {
+    if (disposed) return;
+    if (tray.visible && rolling === 0) hideTray(TRAY_FADE_MS);
+    clearPhase();
+    if (phase === 'end') return;
+    const me = o?.player ?? lastState?.currentPlayer;
+    if (me === undefined || me === null || me < 0) return;
+    if (phase === 'fortify') {
+      for (const id of TERRITORY_IDS) if (owners[id] !== me) phaseDimmed.add(id);
+      applyHighlights(lastHl, lastHl);
+      return;
+    }
+    const ids = o?.territories ?? TERRITORY_IDS.filter((id) => owners[id] === me && armies[id] >= 2 && ADJACENCY[id].some((n) => owners[n] !== me));
+    if (!ids.length) return;
+    const xs = ids.map((id) => tiles.get(id).anchor[0]);
+    const x0 = Math.min(...xs);
+    const span = Math.max(1, Math.max(...xs) - x0);
+    const ver = phaseVer;
+    ids.forEach((id, i) => {
+      const t = tiles.get(id);
+      const go = () => {
+        if (ver !== phaseVer) return;
+        // rim: 0 → 0.85 → 0 (the tile's own highlight rim, if any, carries on underneath)
+        void tw(t, 'glow', 0, 1, 150, ease.outQuad).then(() => {
+          if (ver === phaseVer) void tw(t, 'glow', t.glow, 0, 620, ease.inOutQuad);
+        });
+        if (reduced) return;
+        void tw(t, 'phaseLift', t.phaseLift, 0.15, 170, ease.outBack(1.5)).then(() => {
+          if (ver !== phaseVer) return;
+          void anim.wait(260, null, true).then(() => {
+            if (ver === phaseVer) void tw(t, 'phaseLift', t.phaseLift, 0, 380, ease.inOutQuad);
+          });
+        });
+      };
+      const delay = reduced ? 0 : (260 * (xs[i] - x0)) / span;
+      if (delay <= 1) go();
+      else void anim.wait(delay, null, true).then(go);
+    });
   };
 
   // --- hover / picking -----------------------------------------------------------------
@@ -361,16 +477,49 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     const px = Math.hypot((b.x - a.x) * 0.5 * W, (b.y - a.y) * 0.5 * H);
     return px > 0 ? 1 / px : 0.1;
   };
+  /** A piece's figure stands up over the tiles behind it: a click on the figure picks its own territory. */
+  const inPiece = (id: TerritoryId, x: number, y: number, pad: number): boolean => {
+    const b = overlay.pieceBox(id);
+    if (!b) return false;
+    const hw = (b[2] - b[0]) * 0.5 * 0.8 + pad;
+    const mx = (b[0] + b[2]) / 2;
+    return x >= mx - hw && x <= mx + hw && y >= b[1] + 2 - pad && y <= b[3] + pad;
+  };
+  const pieceAt = (x: number, y: number): TerritoryId | null => {
+    let best: TerritoryId | null = null;
+    let bestY = -Infinity;
+    for (const t of tiles.list) {
+      if (!inPiece(t.id, x, y, 0)) continue;
+      const b = overlay.pieceBox(t.id)!;
+      // overlapping pieces: the one standing in front (lower on screen) wins
+      if (b[3] > bestY) {
+        bestY = b[3];
+        best = t.id;
+      }
+    }
+    return best;
+  };
   const pick = (cx: number, cy: number, useHysteresis: boolean): TerritoryId | null => {
+    const r = rectOf();
+    const x = cx - r.left;
+    const y = cy - r.top;
     const bp = boardPoint(cx, cy);
-    if (!bp) return null;
-    const cand = territoryAt(bp[0], bp[1]);
+    const ground = bp ? territoryAt(bp[0], bp[1]) : null;
+    const cand = pieceAt(x, y) ?? ground;
     if (!useHysteresis || !hovered || cand === hovered) return cand;
-    // A new tile takes hover only once the pointer is ≥ 3 px past the shared edge.
+    // A new tile or piece takes hover only once the pointer is ≥ 3 px past the hovered one's edge.
+    if (inPiece(hovered, x, y, 3)) return hovered;
+    if (!bp) return cand;
     const cur = tiles.get(hovered);
     let d = Infinity;
     for (const ring of cur.rings) d = Math.min(d, distToRing(bp[0], bp[1], ring));
-    if (d / unitsPerPx(bp[0], bp[1]) < 3) return hovered;
+    if (ground === hovered || d / unitsPerPx(bp[0], bp[1]) < 3) {
+      // still over (or within 3 px of) the hovered tile: a piece standing there takes it only once the
+      // pointer is 3 px inside that piece
+      const onPiece = pieceAt(x, y);
+      if (!onPiece || !inPiece(onPiece, x, y, -3)) return hovered;
+      return onPiece;
+    }
     return cand;
   };
 
@@ -730,14 +879,15 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     armies[e.from] = fromN;
     armies[e.to] = toN;
     if (e.attackerLosses > 0) {
-      tokens.setArmies(e.from, fromN, 'hit');
+      tokens.setArmies(e.from, fromN, 'hit', null, e.to);
       refreshBadge(e.from, true);
       if (chips) overlay.lossChip(e.from, e.attackerLosses, -1);
       const t = tiles.get(e.from);
       hitFlash(t);
     }
     if (e.defenderLosses > 0) {
-      tokens.setArmies(e.to, toN, 'hit');
+      // Emptied, the defender's piece topples toward the attacker (docs/ROUND2.md §D).
+      tokens.setArmies(e.to, toN, 'hit', null, e.from);
       refreshBadge(e.to, true);
       if (chips) overlay.lossChip(e.to, e.defenderLosses, 1);
       hitFlash(tiles.get(e.to));
@@ -818,6 +968,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       }
 
       case 'turnStarted': {
+        clearPhase();
         if (arrowSource === 'event') {
           arrow.hide();
           arrowSource = null;
@@ -903,7 +1054,10 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         lastPairKey = key;
         lastRollEnd = performance.now();
         if (last) {
-          tray.linger(2500, performance.now());
+          // A decided fight (captured, or the attacker can't go on) fades ~1 s after the verdict; an
+          // undecided single roll keeps the tray for the next roll.
+          const decided = toN <= 0 || fromN <= 1 || count > 1;
+          tray.linger(decided ? TRAY_DECIDED_MS : 2500, performance.now());
           if (toN > 0 && arrowSource === 'event') {
             arrow.hide();
             arrowSource = null;
@@ -920,7 +1074,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         owners[to] = e.player;
         armies[to] = 0;
         overlay.hideBadge(to);
-        tokens.setArmies(to, 0, 'out');
+        tokens.setArmies(to, 0, 'out', null, e.from);
         tokens.setColor(to, tileRgb(lastState, e.player));
         const somber = isHuman(prevOwner) && isAi(e.player);
         sfx('conquer', { volume: isHuman(e.player) || isHuman(prevOwner) ? 1 : 0.6, pan: panOf(to), variant: somber ? 'somber' : undefined });
@@ -970,7 +1124,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         }
         // A token carrying the count glides along the arc; the destination's number updates on landing.
         const ink = pal(e.player)?.ink ?? IVORY;
-        await tokens.march(from, to, count, color, ink, ms, run, via, e.reason === 'fortify' ? 0.7 : 1.3);
+        await tokens.march(from, to, count, color, ink, ms, run, via, e.reason === 'fortify' ? 0.7 : 1.3, pal(e.player)?.id ?? '');
         if (gen === syncGen) {
           armies[to] = toN;
           tokens.setArmies(to, toN, 'land', run);
@@ -1011,11 +1165,14 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
           arrow.hide();
           arrowSource = null;
         }
-        tray.hide(200);
+        hideTray(200);
         await wave(null, p ? hexToRgb(p.light) : IVORY_RGB, 2400, 0.45, run);
         // Only if the finale played out: a skipped run means the table has moved on (a Rematch or a new
         // game pressed during the wave), and an orbit switched on now would sway the next game's board.
-        if (!reduced && !run.skipped) rig.setAttract(true);
+        if (!reduced && !run.skipped) {
+          rig.setAttract(true);
+          tableView(true);
+        }
         return;
       }
     }
@@ -1132,10 +1289,11 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     keepBand = Math.max(keepBand, insets.trayBand);
     const kb = keepBand > 0 ? keepBand : nominalBand();
     const g = trayGeometry(W, H, kb, uiScale);
-    // A token centre stays above the tray's top by its radius and a little air. (The HUD's header line
-    // is centred and short; the southern tokens near the tray's ends sit beside it, not under it.)
-    const clear = (16 + 10) * uiScale;
-    rig.trayKeepOut = { x0: W / 2 - g.trayW / 2 - 16, x1: W / 2 + g.trayW / 2 + 16, y0: H - insets.bottom - kb + (kb - g.trayH) / 2 - clear };
+    // Every piece (its plaque included) stays above the tray's top with a little air, and clear of its
+    // sides. (The HUD's header line is centred and short; southern pieces near the tray's ends sit beside it.)
+    const clear = 6 * uiScale;
+    rig.trayKeepOut = { x0: W / 2 - g.trayW / 2 - 12, x1: W / 2 + g.trayW / 2 + 12, y0: H - insets.bottom - kb + (kb - g.trayH) / 2 - clear };
+    setPieceExtents();
     rig.recomputeHome();
     continents.fitLabels(rig.homeCamera(), W);
   };
@@ -1183,9 +1341,26 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       }
     });
     const tokensMoving = tokens.animating;
+    tokens.setView(rig.cur.az, rig.cur.pitch);
     tokens.update();
+    const disp = rig.displaced;
+    if (disp !== lastDisplaced) {
+      lastDisplaced = disp;
+      for (const cb of displacedCbs) {
+        try {
+          cb(disp);
+        } catch (err) {
+          console.error(err);
+        }
+      }
+    }
     particles.update(Math.min(rawDt, 50) / 1000);
+    if (tray.lingerUntil && now >= tray.lingerUntil) {
+      tray.lingerUntil = 0;
+      hideTray(TRAY_FADE_MS);
+    }
     tray.tick(now);
+    if (tray.showing !== trayShownEmitted) emitTray(tray.showing);
     parts.oceanUniforms.uTime.value = now / 1000;
     overlay.zoomScale = clamp(Math.pow(rig.zoom, 0.3), 0.85, 1.3);
     // Numbers and names under the dice tray hide while it shows (the tray is drawn after the board).
@@ -1305,13 +1480,34 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       else void rig.moveTo(pose, o?.durationMs);
     },
     resetCamera() {
-      if (rig.attract) rig.setAttract(false, false);
+      if (rig.attract) {
+        rig.setAttract(false, false);
+        tableView(false);
+      }
+      rig.userMoved = false;
       if (reduced) cutTo({ ...rig.home });
       else void rig.goHome();
     },
     setAttractMode(on: boolean) {
-      if (on && reduced) return;
+      if (on && reduced) {
+        tableView(true);
+        return;
+      }
+      if (!on && reduced) tableView(false);
       rig.setAttract(on);
+      if (rig.attract === on) tableView(on);
+    },
+    isViewDisplaced() {
+      return rig.displaced;
+    },
+    onViewDisplacedChange(cb: (displaced: boolean) => void) {
+      displacedCbs.push(cb);
+    },
+    onTrayChange(cb: (visible: boolean) => void) {
+      trayCbs.push(cb);
+    },
+    pulsePhase(phase: 'attack' | 'fortify' | 'end', o?: { player?: PlayerId; territories?: TerritoryId[] }) {
+      pulsePhase(phase, o);
     },
     setShowLabels(on: boolean) {
       overlay.setShowLabels(on);
@@ -1322,12 +1518,13 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       let bottom = i.bottom;
       const band = i.trayBand > 0 ? i.trayBand : 0;
       if (band > 0 && bottom >= band + 40) bottom -= band;
-      insets = { top: i.top, right: i.right, left: i.left, bottom, trayBand: band };
+      insets = { top: i.top, right: i.right, left: i.left, bottom, trayBand: band, rects: i.rects?.map((r) => ({ ...r })) };
       rig.setInsets(insets);
       layoutTray();
     },
     setUiScale(scale: number) {
       uiScale = clamp(scale || 1, 0.75, 2);
+      tokens.sizeScale = 1 + (uiScale - 1) * 0.6;
       overlay.uiScale = uiScale;
       // Bigger numbers need a bigger disc (softened, so tokens still leave their tiles showing).
       tokens.sizeScale = 1 + (uiScale - 1) * 0.6;
@@ -1337,6 +1534,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     },
     setReducedMotion(on: boolean) {
       reduced = on;
+      if (on && rig.attract) tableView(true);
       tokens.reduced = on;
       continents.reducedMotion = on;
       if (on && rig.attract) rig.setAttract(false, false);
@@ -1414,6 +1612,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     tiles,
     renderer,
     tokens,
+    overlay,
     get hovered() {
       return hovered;
     },

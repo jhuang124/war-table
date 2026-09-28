@@ -1,6 +1,7 @@
-// Click-through during your own blitz, Space never ends a step, Esc/ocean disarm, and resume: reload
-// mid-occupy and mid-place (the placements, and Undo, survive the reload).
-import { check, clickBtn, clickT, finish, idle, loadScenario, open, place, rendered, scenario, state, ui } from './lib';
+// Click-through during your own blitz (the track stays put and visibly disabled while the dice roll),
+// Space never ends a step, Esc/ocean disarm, and resume: reload mid-occupy and mid-place (the
+// placements, and Undo, survive the reload).
+import { check, clickBtn, clickT, finish, idle, loadScenario, open, place, rendered, scenario, seg, state, ui } from './lib';
 
 const results: string[] = [];
 const { browser, page, errors } = await open();
@@ -10,9 +11,17 @@ await loadScenario(page, scenario({ ural: [0, 30], ukraine: [0, 1] }, { kind: 'a
 await clickT(page, 'siberia'); // arm (target-first)
 await clickBtn(page, 'btn-blitz');
 await page.waitForTimeout(350);
-const mid = await page.evaluate(() => ({ tweens: window.__risk.stats().activeTweens, idle: window.__risk.isIdle(), battle: window.__risk.ui().battle }));
+const mid = await page.evaluate(() => ({ tweens: window.__risk.stats().activeTweens, idle: window.__risk.isIdle(), battle: window.__risk.ui().battle, u: window.__risk.ui() }));
 check(!mid.idle && (mid.tweens ?? 0) > 0, `blitz is animating (activeTweens ${mid.tweens})`, results);
 check(!!mid.battle, `tray header during the blitz: ${mid.battle?.header}`, results);
+const trackMid = await page.evaluate(() => {
+  const t = document.querySelector('[data-testid="track"]') as HTMLElement | null;
+  return { shown: !!t && t.offsetParent !== null, disabled: !!t?.classList.contains('is-disabled'), labels: [...(t?.querySelectorAll('.tr-label') ?? [])].map((x) => x.textContent) };
+});
+check(trackMid.shown && trackMid.disabled && trackMid.labels.join(',') === 'Place,Attack,Fortify,End turn', `the track stays, visibly disabled, while the dice roll (${trackMid.labels.join(' · ')})`, results);
+await seg(page, 'endTurn', true); // a disabled track click does nothing: no skip, no phase change
+await page.waitForTimeout(60);
+check(!(await page.evaluate(() => window.__risk.isIdle())) && (await state(page))!.currentPlayer === 0, 'End turn during the roll is ignored', results);
 const t0 = Date.now();
 await clickT(page, 'yakutsk'); // click-through: skip the blitz, then do this click
 await page.waitForFunction(() => window.__risk.isIdle(), null, { timeout: 5000 });
@@ -23,6 +32,11 @@ check(/Yakutsk/.test(u1.line) || u1.line.length > 0, `then performed the click: 
 const m1 = await page.evaluate(() => window.__risk.metrics());
 check(m1.inputDropped === 0, `inputDropped ${m1.inputDropped}`, results);
 
+// The blitz may have ended in an occupy step: Move (the button) finishes it.
+if ((await state(page))!.phase.kind === 'occupy') {
+  await clickBtn(page, 'btn-move');
+  await idle(page);
+}
 // Esc disarms one level at a time; Space with nothing armed does nothing.
 await page.keyboard.press('Escape');
 await page.keyboard.press('Escape');
@@ -44,7 +58,7 @@ if (ocean) {
   await page.mouse.click(ocean.x, ocean.y);
   await page.waitForTimeout(80);
   const after = await ui(page);
-  check(armed === 'Roll / Blitz' && after.line === 'Attack from Ural · click an enemy', `ocean click backs out one level (${armed} → "${after.line}")`, results);
+  check(armed === 'Roll / Blitz' && after.line === 'Attack from Ural · click an enemy' && after.buttons.length === 0, `ocean click backs out one level (${armed} → "${after.line}")`, results);
   await page.mouse.click(ocean.x, ocean.y);
   await page.waitForTimeout(80);
   check((await ui(page)).line === 'Click an enemy territory to attack', 'a second ocean click clears the source', results);
@@ -65,9 +79,16 @@ if (so!.phase.kind === 'occupy') {
   await idle(page);
   await rendered(page);
   const after = await ui(page);
-  check(after.line === beforeU.line && after.line === 'Move armies into Siberia', `mid-occupy line restored: ${after.line}`, results);
+  check(after.line === beforeU.line && after.line === 'Move into Siberia', `mid-occupy line restored: ${after.line}`, results);
   check(after.primary === beforeU.primary && /^Move \d+$/.test(after.primary ?? ''), `occupy primary restored: ${after.primary}`, results);
-  check(after.count?.control === 'slider' && `Move ${after.count.value}` === after.primary, `slider holds the smart default (${after.count?.value})`, results);
+  const range = after.count ? after.count.max - after.count.min + 1 : 0;
+  check(!!after.count && after.count.control === (range <= 6 ? 'stepper' : 'slider') && `Move ${after.count.value}` === after.primary, `count holds the smart default (${after.count?.control} ${after.count?.value})`, results);
+  check(after.trackDisabled && after.track.join(' ') === 'done:place current:attack locked:fortify locked:endTurn', `the track is locked during occupy: ${after.track.join(' ')}`, results);
+  // Resume and finish with the button: the new territory becomes the source.
+  await clickBtn(page, 'btn-move');
+  await idle(page);
+  const am = await ui(page);
+  check((await state(page))!.phase.kind === 'attack' && /^Attack from Siberia/.test(am.line), `Move after resume chains to Siberia: "${am.line}"`, results);
   await page.screenshot({ path: 'artifacts/e2e/resume-occupy.png' });
 } else check(false, `expected an occupy step, got ${so!.phase.kind}`, results);
 
@@ -76,6 +97,7 @@ await loadScenario(page, scenario({ ural: [0, 3], ukraine: [0, 1] }, { kind: 're
 await place(page, 'ural', 2);
 await place(page, 'ukraine', 1);
 await idle(page);
+await clickT(page, 'ukraine'); // the pick survives the reload
 const r0 = await ui(page);
 await page.reload();
 await page.waitForFunction(() => !!window.__risk);

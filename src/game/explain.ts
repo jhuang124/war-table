@@ -1,11 +1,11 @@
 // One reasoner: what a click on a territory does right now, or why it can't. Built only from engine
 // helpers + mapData. The refused-click line and the controller's click handler both read from it, so
-// they can never disagree.
+// they can never disagree. Board clicks only select (docs/ROUND2.md §B): a claim in a draft is the one
+// click that commits; rolling, placing, occupying and changing phase are buttons and the Turn Track.
 
 import {
   ADJACENCY,
   UNCLAIMED,
-  applyAction,
   fortifySources,
   fortifyTargets,
   winProbability,
@@ -13,7 +13,7 @@ import {
   type TerritoryId,
 } from '../engine';
 import { SEP, pName, poss, tName } from './copy';
-import { autoChain, autoSource, canAttackFrom, oddsWord, ownNeighbors } from './helpers';
+import { autoSource, canAttackFrom, oddsWord, ownNeighbors } from './helpers';
 import { pct } from './copy';
 
 export type ReasonCode =
@@ -24,6 +24,7 @@ export type ReasonCode =
   | 'not_adjacent'
   | 'own_as_target'
   | 'must_trade_first'
+  | 'must_occupy_first'
   | 'none_left'
   | 'fortify_unreachable'
   | 'fortify_not_adjacent'
@@ -38,6 +39,7 @@ export const REASON_CODES: ReasonCode[] = [
   'not_adjacent',
   'own_as_target',
   'must_trade_first',
+  'must_occupy_first',
   'none_left',
   'fortify_unreachable',
   'fortify_not_adjacent',
@@ -48,18 +50,14 @@ export const REASON_CODES: ReasonCode[] = [
 /** What a successful click does. The controller executes exactly this. */
 export type ClickPlan =
   | { kind: 'claim'; t: TerritoryId }
-  /** Place / setup: pick the territory the stepper places on. */
+  /** Place / setup: pick the territory the count places on. */
   | { kind: 'pick'; t: TerritoryId }
-  /** At 0 remaining: endReinforce, then run `then` as an attack click. */
-  | { kind: 'exitReinforce'; then: ClickPlan }
   | { kind: 'selectSource'; t: TerritoryId }
   | { kind: 'deselect' }
+  /** Select a fight (Roll / Blitz commit it). */
   | { kind: 'arm'; from: TerritoryId; to: TerritoryId }
-  | { kind: 'roll'; from: TerritoryId; to: TerritoryId }
   | { kind: 'fortifySource'; t: TerritoryId }
-  | { kind: 'fortifyDest'; from: TerritoryId; to: TerritoryId }
-  /** Occupy with `count`, then (if play continues in attack) perform `then` with `select` as the source. */
-  | { kind: 'occupyThen'; count: number; select: TerritoryId | null; then: ClickPlan | null };
+  | { kind: 'fortifyDest'; from: TerritoryId; to: TerritoryId };
 
 export interface ExplainUi {
   /** Selected source (attack or fortify). */
@@ -68,8 +66,6 @@ export interface ExplainUi {
   target: TerritoryId | null;
   /** Manual setup: armies staged locally this setup turn. */
   staged?: Partial<Record<TerritoryId, number>>;
-  /** Occupy: the count a board click would confirm. */
-  occupyCount?: number | null;
   /** False during watched turns (AI, or another human behind the hand-off cover). */
   interactive: boolean;
   showWinChance?: boolean;
@@ -99,15 +95,12 @@ function stagedTotal(ui: ExplainUi): number {
   return n;
 }
 
-/** Attack-step click with the given selection (also used for the implicit reinforce exit and after occupy). */
+/** Attack-step click with the given selection. Clicking the armed target again keeps it armed. */
 function explainAttack(state: GameState, ui: ExplainUi, t: TerritoryId): Explanation {
   const me = state.currentPlayer;
   const ts = state.territories[t];
   const sel = ui.selected;
   if (ts.owner !== me) {
-    if (sel && ui.target === t && canAttackFrom(state, sel, me) && ADJACENCY[sel].includes(t)) {
-      return ok(oddsVerb(state, sel, t, ui, 'Roll'), { kind: 'roll', from: sel, to: t });
-    }
     if (sel && ADJACENCY[sel].includes(t) && state.territories[sel].armies >= 2 && state.territories[sel].owner === me) {
       return ok(oddsVerb(state, sel, t, ui, 'Attack'), { kind: 'arm', from: sel, to: t });
     }
@@ -160,7 +153,7 @@ export function explainTerritory(state: GameState, ui: ExplainUi, t: TerritoryId
     }
     case 'setup-place': {
       if (ts.owner !== me) return notYours();
-      if (stagedTotal(ui) >= ph.toPlace) return no('none_left', `All ${ph.toPlace} placed${SEP}press Done`);
+      if (stagedTotal(ui) >= ph.toPlace) return no('none_left', `All ${ph.toPlace} placed${SEP}click Done`);
       return ok('Place here', { kind: 'pick', t });
     }
     case 'reinforce': {
@@ -172,59 +165,13 @@ export function explainTerritory(state: GameState, ui: ExplainUi, t: TerritoryId
         if (ts.owner !== me) return notYours();
         return ok('Place here', { kind: 'pick', t });
       }
-      // 0 left: implicit exit into attack (UX.md §3.2).
-      const inner = explainAttack({ ...state, phase: { kind: 'attack' } }, { ...ui, selected: null, target: null }, t);
-      if (inner.ok && inner.plan && inner.plan.kind !== 'deselect') {
-        return { ...inner, plan: { kind: 'exitReinforce', then: inner.plan } };
-      }
-      if (ts.owner === me) return no('none_left', `All armies placed${SEP}click an enemy to attack`);
-      return inner.ok ? no('none_left', `All armies placed${SEP}click an enemy to attack`) : inner;
+      // All placed: the track moves on, never a board click.
+      return no('none_left', `All armies placed${SEP}click Attack to go on`);
     }
     case 'attack':
       return explainAttack(state, ui, t);
-    case 'occupy': {
-      const count = Math.min(ph.max, Math.max(ph.min, ui.occupyCount ?? ph.max));
-      const r = applyAction(state, { type: 'occupy', player: me, count });
-      if (!r.ok) return { ok: false, text: '' };
-      const post = r.state;
-      if (post.phase.kind !== 'attack') {
-        return ok(`Move ${count} in`, { kind: 'occupyThen', count, select: null, then: null });
-      }
-      const select = autoChain(post, ph.from, ph.to);
-      const inner = explainAttack(post, { ...ui, selected: select, target: null }, t);
-      if (!inner.ok) {
-        // The click is about `from` (an enemy next to it, or `from` itself) and the pending count
-        // would strip it to 1. Keep the stack at home: move only the minimum, then act from `from`.
-        const aboutFrom = t === ph.from || (ts.owner !== me && ADJACENCY[ph.from].includes(t));
-        if (aboutFrom && count > ph.min) {
-          const lo = applyAction(state, { type: 'occupy', player: me, count: ph.min });
-          if (lo.ok && lo.state.phase.kind === 'attack' && canAttackFrom(lo.state, ph.from, me)) {
-            const alt = explainAttack(lo.state, { ...ui, selected: ph.from, target: null }, t);
-            if (alt.ok && alt.plan) {
-              const keep = `Move ${ph.min} in${SEP}`;
-              if (alt.plan.kind === 'deselect') {
-                const v = `${keep}keep attacking from ${tName(ph.from)}`;
-                return ok(v, { kind: 'occupyThen', count: ph.min, select: ph.from, then: null });
-              }
-              const v = oddsVerb(lo.state, ph.from, t, ui, `${keep}attack from ${tName(ph.from)}`);
-              return { ...alt, verb: v, text: v, plan: { kind: 'occupyThen', count: ph.min, select: ph.from, then: alt.plan } };
-            }
-          }
-        }
-        if (aboutFrom && ts.owner !== me) {
-          return no(
-            'no_source_for_target',
-            `That leaves ${tName(ph.from)} with 1${SEP}move fewer first`,
-          );
-        }
-        return inner;
-      }
-      // Clicking the chained source itself just confirms the move (it stays selected).
-      if (inner.plan?.kind === 'deselect') {
-        return ok(`Move ${count} in`, { kind: 'occupyThen', count, select, then: null });
-      }
-      return { ...inner, plan: { kind: 'occupyThen', count, select, then: inner.plan ?? null } };
-    }
+    case 'occupy':
+      return no('must_occupy_first', `Finish moving armies into ${tName(ph.to)} first`);
     case 'fortify': {
       if (ts.owner !== me) return notYours();
       const sel = ui.selected;

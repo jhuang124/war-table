@@ -97,9 +97,9 @@ describe('display follows the board', () => {
 });
 
 describe('new game draft → GameConfig', () => {
-  it('defaults: 1 human + 3 AI in crimson, cobalt, amber, rose; Evening; Quick deal', () => {
+  it('defaults: 1 human + 3 AI in crimson, cobalt, amber, emerald; Evening; Quick deal', () => {
     const d = defaultDraft();
-    expect(d.seats.map((s) => s.color)).toEqual(['crimson', 'cobalt', 'amber', 'rose']);
+    expect(d.seats.map((s) => s.color)).toEqual(['crimson', 'cobalt', 'amber', 'emerald']);
     expect(d.length).toBe('evening');
     expect(d.setup).toBe('quickDeal');
     const c = draftToConfig(d, 42);
@@ -136,7 +136,7 @@ describe('new game draft → GameConfig', () => {
     expect(d.seats[0].name).toBe('John');
     const three = { ...defaultDraft(), seats: defaultDraft().seats.slice(0, 3), length: 'quick' as const };
     expect(buildNewGameVM(three).summary).toBe('Territories dealt at random · armies placed for you · first to 26 territories, or most after 12 rounds');
-    expect(addSeat(three).seats[3].color).toBe('rose');
+    expect(addSeat(three).seats[3].color).toBe('emerald');
   });
   it('length options carry honest estimates', () => {
     const vm = buildNewGameVM(defaultDraft());

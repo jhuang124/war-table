@@ -188,6 +188,10 @@ export class DiceTray {
   get visible(): boolean {
     return this.root.visible;
   }
+  /** Shown and not fading out. */
+  get showing(): boolean {
+    return this.shown;
+  }
 
   /** Place the tray: band top y, band height, viewport, die size. All CSS px. */
   layout(W: number, H: number, bandTop: number, bandH: number, uiScale: number): void {
@@ -626,7 +630,7 @@ export class DiceTray {
   tick(now: number): void {
     if (this.lingerUntil && now >= this.lingerUntil) {
       this.lingerUntil = 0;
-      this.hide(200);
+      this.hide(300);
     }
   }
 

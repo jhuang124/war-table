@@ -49,7 +49,15 @@ describe('explainTerritory reason codes (UX.md §7.3)', () => {
   });
   it('none_left', () => {
     const s = board({ ural: [0, 1] }, { kind: 'reinforce', remaining: 0, mustTrade: false, placed: {}, midTurn: false });
-    expectCode(explainTerritory(s, ui(), 'ural'), 'none_left', 'All armies placed · click an enemy to attack');
+    expectCode(explainTerritory(s, ui(), 'ural'), 'none_left', 'All armies placed · click Attack to go on');
+    // An enemy click never leaves Place implicitly (docs/ROUND2.md §B).
+    expect(explainTerritory(s, ui(), 'siberia').code).toBe('none_left');
+  });
+  it('must_occupy_first', () => {
+    const s = board({ ural: [0, 8], siberia: [0, 0] }, { kind: 'occupy', from: 'ural', to: 'siberia', min: 3, max: 7, previousOwner: 2 });
+    expectCode(explainTerritory(s, ui(), 'yakutsk'), 'must_occupy_first', 'Finish moving armies into Siberia first');
+    // Even the conquered tile: a board click never confirms the move; `Move N` does.
+    expect(explainTerritory(s, ui(), 'siberia').code).toBe('must_occupy_first');
   });
   it('fortify_unreachable', () => {
     const s = board({ ural: [0, 5], ukraine: [0, 1], brazil: [0, 1] }, { kind: 'fortify' });
@@ -88,9 +96,9 @@ describe('explainTerritory plans', () => {
     expect(r.plan).toEqual({ kind: 'arm', from: 'ural', to: 'siberia' });
     expect(r.verb).toMatch(/^Attack · \d+% · (almost sure|likely|coin flip|long shot)$/);
   });
-  it('clicking the armed target again rolls', () => {
+  it('clicking the armed target again keeps it armed (Roll / Blitz commit)', () => {
     const s = board({ ural: [0, 8] });
-    expect(explainTerritory(s, ui({ selected: 'ural', target: 'siberia' }), 'siberia').plan).toEqual({ kind: 'roll', from: 'ural', to: 'siberia' });
+    expect(explainTerritory(s, ui({ selected: 'ural', target: 'siberia' }), 'siberia').plan).toEqual({ kind: 'arm', from: 'ural', to: 'siberia' });
   });
   it('clicking another own eligible tile switches the source and keeps an adjacent target', () => {
     const s = board({ ural: [0, 8], afghanistan: [0, 4] });
@@ -100,46 +108,6 @@ describe('explainTerritory plans', () => {
   it('an enemy the source can’t reach re-picks the best source', () => {
     const s = board({ ural: [0, 8], brazil: [0, 5] });
     expect(explainTerritory(s, ui({ selected: 'ural' }), 'peru').plan).toEqual({ kind: 'arm', from: 'brazil', to: 'peru' });
-  });
-  it('implicit reinforce exit: an enemy click at 0 left ends reinforce then arms', () => {
-    const s = board({ ural: [0, 8] }, { kind: 'reinforce', remaining: 0, mustTrade: false, placed: { ural: 3 }, midTurn: false });
-    const r = explainTerritory(s, ui(), 'siberia');
-    expect(r.plan).toEqual({ kind: 'exitReinforce', then: { kind: 'arm', from: 'ural', to: 'siberia' } });
-    const own = explainTerritory(s, ui(), 'ural');
-    expect(own.plan).toEqual({ kind: 'exitReinforce', then: { kind: 'selectSource', t: 'ural' } });
-  });
-  it('a board click during occupy confirms then acts from the chained source', () => {
-    const s = board({ ural: [0, 5], siberia: [0, 3] }, { kind: 'occupy', from: 'ural', to: 'siberia', min: 3, max: 4 });
-    s.territories.siberia = { owner: 0, armies: 0 };
-    s.territories.ural.armies = 8;
-    s.phase = { kind: 'occupy', from: 'ural', to: 'siberia', min: 3, max: 7, previousOwner: 2 };
-    const r = explainTerritory(s, ui({ occupyCount: 7 }), 'yakutsk');
-    expect(r.ok).toBe(true);
-    expect(r.plan).toEqual({ kind: 'occupyThen', count: 7, select: 'siberia', then: { kind: 'arm', from: 'siberia', to: 'yakutsk' } });
-  });
-  it('during occupy, clicking the conquered tile confirms and keeps it selected', () => {
-    const s = board({ ural: [0, 8], siberia: [0, 0] }, { kind: 'occupy', from: 'ural', to: 'siberia', min: 3, max: 7, previousOwner: 2 });
-    const r = explainTerritory(s, ui({ occupyCount: 7 }), 'siberia');
-    expect(r.verb).toBe('Move 7 in');
-    expect(r.plan).toEqual({ kind: 'occupyThen', count: 7, select: 'siberia', then: null });
-  });
-  it('during occupy, an enemy next to `from` keeps the stack home: min moves in, then attack from `from`', () => {
-    const s = board({ greenland: [0, 10], ontario: [0, 0] }, { kind: 'occupy', from: 'greenland', to: 'ontario', min: 3, max: 9, previousOwner: 2 });
-    const r = explainTerritory(s, ui({ occupyCount: 9 }), 'iceland');
-    expect(r.ok).toBe(true);
-    expect(r.text).toMatch(/^Move 3 in · attack from Greenland · \d+% · (almost sure|likely)$/);
-    expect(r.plan).toEqual({ kind: 'occupyThen', count: 3, select: 'greenland', then: { kind: 'arm', from: 'greenland', to: 'iceland' } });
-    // Next to the conquered tile: the pending count stands.
-    expect(explainTerritory(s, ui({ occupyCount: 9 }), 'alberta').plan).toMatchObject({ kind: 'occupyThen', count: 9, select: 'ontario' });
-    // Next to neither: the old reason is still true.
-    const far = explainTerritory(s, ui({ occupyCount: 9 }), 'ukraine');
-    expect(far.ok).toBe(false);
-  });
-  it('during occupy, clicking `from` itself moves the minimum and keeps attacking from it', () => {
-    const s = board({ greenland: [0, 10], ontario: [0, 0] }, { kind: 'occupy', from: 'greenland', to: 'ontario', min: 3, max: 9, previousOwner: 2 });
-    const r = explainTerritory(s, ui({ occupyCount: 9 }), 'greenland');
-    expect(r.text).toBe('Move 3 in · keep attacking from Greenland');
-    expect(r.plan).toEqual({ kind: 'occupyThen', count: 3, select: 'greenland', then: null });
   });
   it('Place and setup: a click on your territory picks it; setup stops at the batch size', () => {
     const r = board({ ural: [0, 1] }, { kind: 'reinforce', remaining: 4, mustTrade: false, placed: {}, midTurn: false });

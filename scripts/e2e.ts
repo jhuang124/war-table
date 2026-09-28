@@ -12,7 +12,7 @@ const LOGS = 'artifacts/e2e';
 mkdirSync(LOGS, { recursive: true });
 
 // Fast, focused flows first; the long soak last.
-const ORDER = ['smoke', 'reasons', 'budgets', 'flow', 'keys', 'feel', 'hotseat', 'handoff', 'setup', 'game', 'endgame', 'round', 'autoplay'];
+const ORDER = ['smoke', 'reasons', 'budgets', 'flow', 'track', 'keys', 'feel', 'hotseat', 'handoff', 'setup', 'game', 'endgame', 'round', 'autoplay'];
 const all = readdirSync('tests/e2e')
   .filter((f) => f.endsWith('.e2e.ts'))
   .map((f) => f.replace(/\.e2e\.ts$/, ''));

@@ -114,6 +114,7 @@ export class Confirm {
 const RULE_BLOCKS: [string, string, string][] = [
   ['Turn', 'Place your new armies, attack as often as you like, then make one fortify move.', 'Take at least one territory in a turn to earn a card.'],
   ['Armies', '1 army per 3 territories you hold (at least 3), plus a bonus for each whole continent.', 'Card sets add more on top.'],
+  ['Pieces', 'Pieces show army size: soldier 1–4, horse 5–9, cannon 10+.', 'The number on each piece is the exact count.'],
   ['Attacking', 'Attack a neighbor from a territory with 2+ armies. You roll up to 3 dice, the defender up to 2.', 'Highest dice pair off. Ties go to the defender.'],
   ['Cards', 'Three of a kind, one of each, or any two plus a wild trades for armies.', 'Sets grow every time anyone trades. At 5 cards you must trade.'],
   ['Fortify', 'Move armies once, through your own connected territories. It ends your turn.', 'One army always stays behind to hold a territory.'],

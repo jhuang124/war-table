@@ -1,6 +1,7 @@
 // Couch-monkey fuzz of the controller in Node: whole games under fake timers against a fake board
 // whose playEvent takes the modelled 1× durations, driven by a seeded stream of the inputs real people
-// produce — legal and nonsense board clicks, double clicks, every button, key spam, menu and settings
+// produce — legal and nonsense board clicks, double clicks, every button and Turn Track segment (legal,
+// locked and past), key spam, menu and settings
 // flips mid-animation, seat hand-offs, Save & quit → Continue, End game / Restart / Rematch at odd
 // moments, and "hidden tab" stretches (board animations and rAF stop, timers keep running).
 //
@@ -15,7 +16,7 @@ import type { BoardView, TerritoryPointerInfo } from '../../src/render/BoardView
 import { createController, type GameController } from '../../src/game/controller';
 import { memoryKV } from '../../src/game/storage';
 import { eventDurationMs, scaledDuration } from '../../src/game/timingModel';
-import type { ButtonId, UiIntent } from '../../src/game/viewModel';
+import type { ButtonId, TrackSegId, UiIntent } from '../../src/game/viewModel';
 
 function rng(seed: number) {
   let a = seed >>> 0;
@@ -125,7 +126,8 @@ function seats(mode: Mode): PlayerConfig[] {
   return kinds.map((k, i) => ({ name: ['John', 'Sam', 'Ana', 'Lee'][i], color: colors[i], kind: k, ...(k === 'ai' ? { difficulty: 'normal' as const } : {}) }));
 }
 
-const BUTTONS: ButtonId[] = ['place', 'undo', 'trade', 'cards', 'attack', 'done', 'blitz', 'roll', 'fortify', 'endTurn', 'move', 'watchAis', 'callGame'];
+const BUTTONS: ButtonId[] = ['place', 'undo', 'trade', 'cards', 'blitz', 'roll', 'move', 'watchAis', 'callGame'];
+const SEGS: TrackSegId[] = ['place', 'attack', 'fortify', 'endTurn', 'setup', 'done'];
 const KEYS = ['Enter', 'Enter', ' ', ' ', 'Escape', 'Escape', 'e', 'E', 'b', '1', '2', '3', 'Tab', 'f', '?', 'l', 'm'];
 
 export interface MonkeyResult {
@@ -224,9 +226,25 @@ export async function monkeyGame(seed: number, opts: { maxFakeMinutes?: number; 
     const r = R();
     const g = vm().game;
     if (r < progressBias) {
-      // Legal progress: the brass primary or the phase exit, or a legal click.
-      const k = pick(['Enter', 'E', 'legal', 'legal', 'legal']);
-      if (k === 'legal') {
+      // Legal progress: the brass thing (Enter), a forward track segment, a legal click, or the
+      // action zone's buttons.
+      const k = pick(['Enter', 'track', 'legal', 'legal', 'legal', 'button']);
+      if (k === 'track') {
+        const tr = g?.strip.track;
+        const fwd = tr?.segments.filter((x) => x.state === 'eligible') ?? [];
+        if (fwd.length) {
+          const seg = R() < 0.5 && tr!.recommended ? tr!.recommended : pick(fwd).id;
+          note(`progress track ${seg}`);
+          send({ type: 'track', seg });
+        }
+      } else if (k === 'button') {
+        const shown = g?.strip.buttons ?? [];
+        if (shown.length) {
+          const b = shown.find((x) => x.primary) ?? pick(shown);
+          note(`progress button ${b.id}`);
+          send({ type: 'button', id: b.id });
+        }
+      } else if (k === 'legal') {
         const cl = clickable();
         if (cl.length) {
           const t = pick(cl);
@@ -257,7 +275,7 @@ export async function monkeyGame(seed: number, opts: { maxFakeMinutes?: number; 
       const right = R() < 0.3;
       note(`random ${right ? 'right' : ''}click ${t}`);
       clickT(t, right ? 2 : 0);
-    } else if (x < 0.58) {
+    } else if (x < 0.52) {
       const bar = g?.strip;
       const shown = bar?.buttons.map((b) => b.id) ?? [];
       const id = R() < 0.75 && shown.length ? pick(shown) : pick(BUTTONS);
@@ -267,6 +285,17 @@ export async function monkeyGame(seed: number, opts: { maxFakeMinutes?: number; 
       if (twice) {
         await wait(Math.floor(R() * 30));
         send({ type: 'button', id });
+      }
+    } else if (x < 0.58) {
+      // Any track segment: forward, locked, past, current, or one that isn't on this track at all.
+      const segs = g?.strip.track.segments.map((s) => s.id) ?? [];
+      const seg = R() < 0.7 && segs.length ? pick(segs) : pick(SEGS);
+      const twice = R() < 0.15;
+      note(`track ${seg}${twice ? ' x2' : ''}`);
+      send({ type: 'track', seg });
+      if (twice) {
+        await wait(Math.floor(R() * 30));
+        send({ type: 'track', seg });
       }
     } else if (x < 0.74) {
       const k = pick(KEYS);
@@ -281,7 +310,8 @@ export async function monkeyGame(seed: number, opts: { maxFakeMinutes?: number; 
           const t = cl.length && y < 0.25 ? pick(cl) : pick(TERRITORY_IDS);
           clickT(t);
         } else if (y < 0.7) c.handleKey(pick(['Enter', ' ', 'e', 'b', 'Escape']));
-        else send({ type: 'button', id: pick(BUTTONS) });
+        else if (y < 0.85) send({ type: 'button', id: pick(BUTTONS) });
+        else send({ type: 'track', seg: pick(SEGS) });
         if (R() < 0.5) await wait(Math.floor(R() * 25));
       }
     } else if (x < 0.86) {
@@ -454,7 +484,8 @@ export async function monkeyGame(seed: number, opts: { maxFakeMinutes?: number; 
         break;
       }
       if (humanTurn() && !blocked && c.hooks.isIdle()) {
-        const anyButton = g.strip.buttons.some((b) => !b.busy);
+        const tr = g.strip.track;
+        const anyButton = g.strip.buttons.some((b) => !b.busy) || (tr.live && !tr.disabled && tr.segments.some((x) => x.state === 'eligible'));
         if (!anyButton && clickable().length === 0) {
           if (!stuckSince) stuckSince = now;
           if (now - stuckSince > 3000) {

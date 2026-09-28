@@ -12,6 +12,9 @@
       #hud .band { position: absolute; border: 1px dashed rgba(243,234,216,.25); box-sizing: border-box; }
       #hud .zone.strip { background: rgba(12,15,19,.82); border: 0; border-bottom: 1px solid rgba(194,160,98,.22); }
       #hud .zone.strip + .zone.strip { border-bottom: 0; border-top: 1px solid rgba(194,160,98,.22); }
+      #hud .zone.pill { background: rgba(16,19,24,.62); border: 1px solid rgba(243,234,216,.16); border-radius: 12px; backdrop-filter: blur(10px) saturate(1.2);
+        -webkit-backdrop-filter: blur(10px) saturate(1.2); box-shadow: 0 6px 24px rgba(0,0,0,.35); color: #efe6d4; font: 600 14px 'Inter Variable', Inter, system-ui;
+        display: flex; align-items: center; justify-content: center; pointer-events: auto; }
       #hud .txt { position: absolute; left: 0; right: 0; text-align: center; color: #f3ead8; font: 600 15px 'Inter Variable', Inter, system-ui; letter-spacing: .02em; text-shadow: 0 1px 3px #000; }
       #panel { position: fixed; right: 8px; top: 8px; width: 214px; max-height: calc(100% - 16px); overflow: auto; background: rgba(12,15,19,.86);
         color: #e8e0cf; font: 12px/1.35 system-ui, sans-serif; border: 1px solid rgba(194,160,98,.35); border-radius: 8px; padding: 8px; z-index: 10; user-select: none; }

@@ -4,13 +4,17 @@ import type { AiDifficulty, PlayerColorId, PlayerKind } from '../../engine/types
 import type { HouseRulesDraft, LengthPreset, NewGameVM, SeatDraft, SetupPreset, UiIntent } from '../../game/viewModel';
 import { PLAYER_COLOR_IDS, PLAYER_COLORS } from '../../shared/palette';
 import { Segmented, Switch, uiButton } from '../controls';
-import { animateIn, emblem, h, setAttr, setStyle, setText, toggle } from '../dom';
+import { animateIn, emblem, h, setAttr, setEmblem, setStyle, setText, toggle } from '../dom';
 
 type Send = (i: UiIntent) => void;
 
+/** One colour emblem per seat; clicking it opens the six swatches (docs/ROUND2.md §E). */
 class SeatRow {
   readonly el: HTMLDivElement;
   private swatches = new Map<PlayerColorId, HTMLButtonElement>();
+  private colorBtn: HTMLButtonElement;
+  private pop: HTMLDivElement;
+  private open = false;
   private name: HTMLInputElement;
   private kind: Segmented<PlayerKind>;
   private diff: Segmented<AiDifficulty>;
@@ -22,9 +26,24 @@ class SeatRow {
   constructor(private index: number, send: Send) {
     this.el = h('div', 'seat-row');
     this.num = h('span', 'seat-num num', String(index + 1));
+    const wrap = h('div', 'seat-color');
+    this.colorBtn = h('button', 'swatch seat-emblem');
+    this.colorBtn.type = 'button';
+    this.colorBtn.dataset.testid = `seat-color-${index}`;
+    this.colorBtn.setAttribute('aria-haspopup', 'true');
+    this.colorBtn.setAttribute('aria-expanded', 'false');
+    this.colorBtn.append(emblem('crimson', 'emb', 'ink'));
+    this.colorBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setOpen(!this.open);
+    });
+    this.pop = h('div', 'swatch-pop hidden');
     const sw = h('div', 'swatches');
     sw.setAttribute('role', 'radiogroup');
     sw.setAttribute('aria-label', `Seat ${index + 1} color`);
+    this.pop.append(sw);
+    this.pop.addEventListener('click', (e) => e.stopPropagation());
+    wrap.append(this.colorBtn, this.pop);
     for (const c of PLAYER_COLOR_IDS) {
       const b = h('button', 'swatch');
       b.type = 'button';
@@ -34,7 +53,10 @@ class SeatRow {
       b.dataset.testid = `seat-color-${index}-${c}`;
       setStyle(b, '--seat', PLAYER_COLORS[c].base);
       b.append(emblem(c, 'emb', 'ink'));
-      b.addEventListener('click', () => send({ type: 'seat', index: this.index, patch: { color: c } }));
+      b.addEventListener('click', () => {
+        send({ type: 'seat', index: this.index, patch: { color: c } });
+        this.setOpen(false);
+      });
       this.swatches.set(c, b);
       sw.append(b);
     }
@@ -70,8 +92,25 @@ class SeatRow {
     this.remove.addEventListener('click', () => {
       if (this.remove.getAttribute('aria-disabled') !== 'true') send({ type: 'removeSeat', index: this.index });
     });
-    this.el.append(this.num, sw, this.name, this.kind.el, this.diffWrap, this.remove);
+    this.el.append(this.num, wrap, this.name, this.kind.el, this.diffWrap, this.remove);
   }
+
+  setOpen(on: boolean): void {
+    if (on === this.open) return;
+    this.open = on;
+    toggle(this.pop, 'hidden', !on);
+    this.colorBtn.setAttribute('aria-expanded', String(on));
+    if (on) {
+      animateIn(this.pop.firstElementChild as HTMLElement, { dx: -6, dy: 0, ms: 160 });
+      this.onOpen?.(this);
+    }
+  }
+
+  get isOpen(): boolean {
+    return this.open;
+  }
+
+  onOpen: ((row: SeatRow) => void) | null = null;
 
   /** Focus the name with its text selected, so typing replaces the default (UX: people skip it otherwise). */
   focusName(): void {
@@ -86,6 +125,10 @@ class SeatRow {
   update(seat: SeatDraft, taken: Set<PlayerColorId>, canRemove: boolean, clash: boolean): void {
     this.seat = seat;
     setStyle(this.el, '--seat', PLAYER_COLORS[seat.color].base);
+    setStyle(this.colorBtn, '--seat', PLAYER_COLORS[seat.color].base);
+    setEmblem(this.colorBtn.firstChild as SVGSVGElement, seat.color, 'ink');
+    this.colorBtn.setAttribute('aria-label', `Seat ${this.index + 1} colour: ${PLAYER_COLORS[seat.color].name}`);
+    toggle(this.colorBtn, 'clash', clash);
     for (const [c, b] of this.swatches) {
       const on = c === seat.color;
       toggle(b, 'on', on);
@@ -222,6 +265,15 @@ export class NewGameScreen {
     foot.append(sumWrap, this.start);
     sheet.append(head, grid, foot);
     this.el.append(sheet);
+    // One swatch popover at a time; a click anywhere else (or Esc, in src/ui/index.ts) closes it.
+    this.el.addEventListener('click', () => this.closeSwatches());
+  }
+
+  /** Close any open colour popover. True if one was open. */
+  closeSwatches(): boolean {
+    const open = this.rows.filter((r) => r.isOpen);
+    open.forEach((r) => r.setOpen(false));
+    return open.length > 0;
   }
 
   setHouseOpen(on: boolean): void {
@@ -243,6 +295,7 @@ export class NewGameScreen {
     this.vm = vm;
     while (this.rows.length < vm.seats.length) {
       const r = new SeatRow(this.rows.length, this.send);
+      r.onOpen = (me) => this.rows.forEach((x) => x !== me && x.setOpen(false));
       this.rows.push(r);
       this.seatsWrap.append(r.el);
       if (this.rows.length > 2) animateIn(r.el, { dy: -6 });

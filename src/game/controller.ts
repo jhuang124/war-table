@@ -43,8 +43,8 @@ import {
 } from '../engine';
 import type { AudioEngine, PlayOptions, SfxName } from '../audio/types';
 import type { BoardHighlights, BoardView, PlayEventOptions, TerritoryPointerInfo, ViewportInsets } from '../render/BoardView';
-import { buildStrip, emptySel, placeLeft, placeValue, selectionTargets, stagedTotal, type Placement, type Sel } from './strip';
-import { SEP, cName, pName, pct, poss, seatRef, tName, upper } from './copy';
+import { buildStrip, buildTrack, emptySel, placeLeft, placeValue, selectionTargets, stagedTotal, trackLockReason, type Placement, type Sel } from './strip';
+import { SEP, armies, cName, pName, pct, poss, seatRef, tName, upper } from './copy';
 import { applyEventToDisplay, isBlocking } from './display';
 import { explainTerritory, type ClickPlan, type ExplainUi, type Explanation } from './explain';
 import { autoChain, bestSet, noSetStatus, occupyDefault } from './helpers';
@@ -91,6 +91,7 @@ import type {
   SeatChipVM,
   Settings,
   StripVM,
+  TrackSegId,
   UiIntent,
   ViewModel,
   VictoryVM,
@@ -149,8 +150,19 @@ export interface Metrics {
 
 export interface UiSnapshot {
   screen: string;
-  /** 'Place' | 'Attack' | 'Fortify' | 'Setup' | "Cobalt's turn". */
+  /** The Turn Track segment the marker is on: 'Place' | 'Attack' | 'Fortify' | 'Setup' ('' at game over). */
   step: string;
+  /** Every track segment, 'state:id' in order, e.g. ['done:place', 'current:attack', 'eligible:fortify', 'eligible:endTurn']. */
+  track: string[];
+  /** The glowing recommended segment's id, or null. */
+  recommended: string | null;
+  /** Whose marker is on the track (seat name). */
+  trackSeat: string;
+  /** The driver can click the track / it's visibly disabled. */
+  trackLive: boolean;
+  trackDisabled: boolean;
+  /** Every brass-filled thing on the strip (buttons and the track's recommended segment): at most one. */
+  brass: string[];
   /** The bottom strip's one line. */
   line: string;
   lineKind: string;
@@ -164,9 +176,11 @@ export interface UiSnapshot {
   recap: string | null;
   /** The dice tray header: 'URAL 12 vs SIBERIA 5'. */
   battle: { header: string } | null;
-  /** Top strip chips: 'John 14', 'Cobalt 11 · 3 cards'. */
+  /** Top chips: 'John 14'. */
   seats: string[];
   cardsOpen: boolean;
+  /** The `Reset view` pill is showing. */
+  viewMoved: boolean;
 }
 
 export interface RiskHooks {
@@ -233,6 +247,8 @@ interface Engagement {
   turn: number;
   /** An upset: a note on the log line (and an award entry), never a banner. */
   upset?: string | null;
+  /** The decided fight's header was dismissed early (a new selection, a phase change). */
+  cleared?: boolean;
 }
 
 interface BannerItem {
@@ -308,6 +324,8 @@ const TELEGRAPH_MS = 400;
 const PLAY_SAFETY_MS = 15_000;
 /** A refused click's reason holds the line this long. */
 const REJECT_MS = 2000;
+/** A decided fight's tray header ('Siberia captured') stays this long, then fades (docs/ROUND2.md §E). */
+const LINGER_MS = 1000;
 const LOG_CAP = 300;
 
 function freshMeta(id: string): GameMeta {
@@ -361,6 +379,9 @@ function restoreSel(x: unknown): Sel {
   return sel;
 }
 
+/** Optional renderer extension: the resulting totals drawn on the pieces while a count is chosen. */
+type PreviewBoard = BoardView & { setCountPreview?: (totals: Partial<Record<TerritoryId, number>> | null) => void };
+
 function isAttackAction(a: Action): a is Extract<Action, { type: 'attack' | 'blitz' }> {
   return a.type === 'attack' || a.type === 'blitz';
 }
@@ -399,8 +420,8 @@ class Controller {
   private allHumansOut = false;
   private allHumansOutDismissed = false;
   private cardsOpen = false;
-  /** Last Place pick, for the double-click (place all) accelerator. */
-  private lastPick: { t: TerritoryId; at: number } | null = null;
+  /** The player orbited / zoomed away from the home view (the `Reset view` pill). */
+  private viewMoved = false;
   /** The last conquest on the displayed board: a continent banner needs a human in it. */
   private lastConquest: { attacker: PlayerId; victim: PlayerId } | null = null;
 
@@ -427,6 +448,8 @@ class Controller {
   private aiHighlights: BoardHighlights | null = null;
   private aiPreview: { from: TerritoryId; to: TerritoryId } | null = null;
   private narration: string | null = null;
+  /** Armies an AI has placed so far this turn / setup turn (the narration counts them up). */
+  private narrPlaced = 0;
   private aiScheduled = false;
   /** A human seat has started a main turn this game (ends the short "opening" AI turns). */
   private humanHasPlayed = false;
@@ -449,12 +472,6 @@ class Controller {
   private guardUntil = 0;
   private holdUntil = 0;
   private spaceGuardUntil = 0;
-  /**
-   * A board click that also swapped the primary (a chain click during occupy, or an enemy click that
-   * ends reinforce) arms a new fight: Enter/Space are ignored briefly so a key meant for the old
-   * primary ('Move 9', 'Attack →') never fires a Blitz the player hasn't seen.
-   */
-  private commitGuardUntil = 0;
 
   // Metrics
   private metricTurns: TurnMetric[] = [];
@@ -495,6 +512,16 @@ class Controller {
     this.refreshSaveSummary();
 
     this.board.onTerritoryClick((info) => this.onBoardClick(info));
+    // The `Reset view` pill follows the board's own notion of "off home" when it has one.
+    this.board.onViewDisplacedChange?.((moved) => {
+      if (moved === this.viewMoved) return;
+      this.viewMoved = moved && this.screen === 'game';
+      this.invalidate();
+    });
+    // The tray started fading: a decided fight's header fades with it.
+    this.board.onTrayChange?.((visible) => {
+      if (!visible) this.clearLinger();
+    });
     // Only to tell an ocean click from a click on land (the board names hovered tiles itself).
     this.board.onTerritoryHover((info) => (this.overTile = info?.territory ?? null));
     this.applySettingsToBoard();
@@ -739,7 +766,7 @@ class Controller {
     this.allHumansOut = false;
     this.allHumansOutDismissed = false;
     this.cardsOpen = false;
-    this.lastPick = null;
+    this.viewMoved = false;
     this.lastConquest = null;
     this.sessionAiSpeed = null;
     this.curTurn = null;
@@ -1091,6 +1118,12 @@ class Controller {
     this.scheduleAi();
   }
 
+  /** Dice are rolling now or still queued for this fight (a blitz's gaps between rolls count). */
+  private fightPlaying(): boolean {
+    if (this.rolling || this.blockingNow?.ev.type === 'diceRolled') return true;
+    return this.queue.some((e) => e.ev.type === 'diceRolled' && !this.isSkipping(e));
+  }
+
   /** Click-through on your own turn: finish the running animation, then do what was clicked. */
   private clickThrough(fn: () => void): void {
     // The engine may already be on the next turn while the board still plays the last one (a fortify
@@ -1154,8 +1187,8 @@ class Controller {
         this.sel = emptySel();
         this.frozenSel = null;
         this.cardsOpen = false;
-        this.lastPick = null;
-        this.narration = null;
+        this.narration = this.isAiDriven(ev.player) ? `${pName(d, ev.player)} gets ${armies(ev.reinforcements.total)}` : null;
+        this.narrPlaced = 0;
         this.aiHighlights = null;
         this.aiPreview = null;
         let recap: string | null = null;
@@ -1170,6 +1203,7 @@ class Controller {
         if (human) this.play('turnStart', { variant: prevKind === 'ai' ? 'bright' : undefined });
         // Boards that implement setAutoCamera return home themselves on turnStarted.
         if (this.settings.autoCamera && !skip && !this.board.setAutoCamera) this.board.focusTerritories([]);
+        if (this.settings.autoCamera) this.viewMoved = false;
         this.humanInputSince = this.now() + 1200;
         const lim = d.config.turnLimit;
         if (lim && ev.round === lim && this.meta && !this.meta.finalRoundShown) {
@@ -1180,16 +1214,32 @@ class Controller {
       }
       case 'setupTurn':
         this.sel = emptySel();
-        this.lastPick = null;
-        if (this.isAiDriven(ev.player)) this.narration = `${pName(d, ev.player)} is placing armies`;
-        else this.narration = null;
+        this.narration = null;
+        this.narrPlaced = 0;
+        break;
+      case 'territoryClaimed':
+        if (e.ai) this.narration = `${pName(d, ev.player)} claims ${tName(ev.territory)}`;
+        break;
+      case 'armiesPlaced':
+        // The AI's narration says what happened, as it lands (docs/ROUND2.md §E).
+        if (e.ai && ev.count > 0 && ev.source !== 'undo') {
+          this.narrPlaced += ev.count;
+          this.narration = `${pName(d, ev.player)} places ${armies(this.narrPlaced)}`;
+        }
         break;
       case 'diceRolled':
         this.onRollStart(ev, e);
+        if (e.ai) this.narration = `${pName(d, ev.player)} attacks ${tName(ev.to)}`;
         break;
       case 'territoryConquered':
         this.lastConquest = { attacker: ev.player, victim: ev.previousOwner };
-        if (this.isAiDriven(ev.player)) this.narration = `${pName(d, ev.player)} takes ${tName(ev.to)}`;
+        if (e.ai) this.narration = `${pName(d, ev.player)} takes ${tName(ev.to)}`;
+        break;
+      case 'armiesMoved':
+        if (e.ai && ev.reason === 'fortify') this.narration = `${pName(d, ev.player)} moves ${ev.count} into ${tName(ev.to)}`;
+        break;
+      case 'phaseChanged':
+        this.onPhaseCue(ev, e);
         break;
       case 'continentGained': {
         const name = pName(d, ev.player);
@@ -1214,6 +1264,7 @@ class Controller {
         break;
       }
       case 'playerEliminated': {
+        if (e.ai) this.narration = `${pName(d, ev.by)} knocks out ${pName(d, ev.player)}`;
         this.holdUntil = this.now() + 500;
         this.audio.stopAll?.();
         this.play('eliminated', { delay: 0.15 });
@@ -1221,6 +1272,7 @@ class Controller {
       }
       case 'cardsTraded': {
         const v = ev.armies;
+        if (e.ai) this.narration = `${pName(d, ev.player)} trades cards for +${v}`;
         const rate = v >= 20 ? 0.72 : 1 - ((Math.max(4, v) - 4) / 16) * 0.28;
         this.play('cardTrade', { rate, volume: (v > 10 ? 1.26 : 1) * aiVol([ev.player]) });
         break;
@@ -1295,7 +1347,10 @@ class Controller {
         if (!skip) this.board.setAttractMode(true);
         break;
       case 'phaseChanged':
-        if (ev.phase === 'fortify' || ev.phase === 'reinforce') this.closeEngagement();
+        if (ev.phase === 'fortify' || ev.phase === 'reinforce') {
+          this.closeEngagement();
+          this.clearLinger();
+        }
         if (ev.phase !== 'reinforce') this.cardsOpen = false;
         if (ev.phase === 'occupy' && this.state?.phase.kind === 'occupy' && this.sel.occupyCount === null) {
           const ph = this.state.phase;
@@ -1336,6 +1391,29 @@ class Controller {
     if (!s || this.allHumansOutDismissed) return;
     const humans = s.players.filter((p) => p.kind === 'human');
     if (humans.length > 0 && humans.every((p) => p.eliminated) && s.phase.kind !== 'game-over') this.allHumansOut = true;
+  }
+
+  // --- Phase changes: the board answers (docs/ROUND2.md §A) ------------------
+
+  /** A phase change reached the board: an AI's marker clacks softly; a human's gets the board's response. */
+  private onPhaseCue(ev: Extract<GameEvent, { type: 'phaseChanged' }>, e: Entry): void {
+    if (ev.phase !== 'attack' && ev.phase !== 'fortify') return;
+    if (this.isAiDriven(ev.player)) {
+      if (e.ai) this.play('place', { rate: 0.82, volume: 0.35 });
+      return;
+    }
+    // The occupy step returning to attack is not an advance.
+    if (ev.phase === 'attack' && this.disp?.phase.kind === 'occupy') return;
+    this.boardCue(ev.phase, ev.player);
+  }
+
+  /** Ask the board for its phase-change response, if it has one (lift + rim sweep, dim others, clear). */
+  private boardCue(phase: 'attack' | 'fortify' | 'endTurn', player: PlayerId): void {
+    try {
+      this.board.pulsePhase?.(phase === 'endTurn' ? 'end' : phase, { player });
+    } catch (err) {
+      console.error(err);
+    }
   }
 
   // --- Engagements (battle panel, log line, upsets, roll metrics) -------------
@@ -1426,7 +1504,16 @@ class Controller {
     }
     this.writeEngagementLog(true);
     this.metricRolls.push({ blitz: g.blitz, count: g.rolls, ms: Math.round(g.lastRollEnd - g.startedAt), style: g.style });
-    this.timer(() => this.invalidate(), 2600);
+    this.timer(() => this.invalidate(), LINGER_MS + 20);
+  }
+
+  /** A new selection or a phase change: a decided fight's header goes at once. */
+  private clearLinger(): void {
+    const g = this.eng;
+    if (g && g.endedAt && !g.cleared) {
+      g.cleared = true;
+      this.invalidate();
+    }
   }
 
   private closeEngagement(): void {
@@ -1561,7 +1648,6 @@ class Controller {
       selected: this.sel.selected,
       target: this.sel.target,
       staged: this.sel.staged,
-      occupyCount: this.sel.occupyCount,
       interactive: this.interactive(),
       showWinChance: this.settings.showWinChance,
     };
@@ -1613,21 +1699,6 @@ class Controller {
       return;
     }
     this.clearRejection();
-    if ((ex.plan.kind === 'occupyThen' && ex.plan.then) || ex.plan.kind === 'exitReinforce') this.commitGuardUntil = this.now() + 300;
-    // Double-click on a territory places everything left there (an invisible accelerator).
-    if (ex.plan.kind === 'pick') {
-      const now = this.now();
-      const dbl = !!this.lastPick && this.lastPick.t === t && now - this.lastPick.at < 400;
-      this.lastPick = dbl ? null : { t, at: now };
-      if (dbl) {
-        this.sel.selected = t;
-        this.sel.placeCount = null;
-        this.placeNow();
-        this.saveMeta();
-        this.invalidate();
-        return;
-      }
-    }
     this.runPlan(ex.plan);
     this.invalidate();
   }
@@ -1656,9 +1727,11 @@ class Controller {
     this.lineKey++;
   }
 
+  /** A board click: it selects or previews, never commits (docs/ROUND2.md §B). A claim is the exception. */
   private runPlan(plan: ClickPlan): void {
     const s = this.state!;
     const me = s.currentPlayer;
+    if (plan.kind !== 'claim') this.clearLinger();
     switch (plan.kind) {
       case 'claim':
         this.act({ type: 'claim', player: me, territory: plan.t });
@@ -1666,14 +1739,6 @@ class Controller {
       case 'pick':
         if (this.sel.selected !== plan.t) this.sel = { ...this.sel, selected: plan.t, placeCount: null };
         break;
-      case 'exitReinforce': {
-        const r = this.act({ type: 'endReinforce', player: me });
-        if (r.ok) {
-          this.sel = emptySel();
-          this.runPlan(plan.then);
-        }
-        break;
-      }
       case 'selectSource':
         this.sel = { ...emptySel(), selected: plan.t };
         break;
@@ -1683,22 +1748,12 @@ class Controller {
       case 'arm':
         this.sel = { ...emptySel(), selected: plan.from, target: plan.to };
         break;
-      case 'roll':
-        this.doAttack(false);
-        break;
       case 'fortifySource':
         this.sel = { ...emptySel(), selected: plan.t };
         break;
       case 'fortifyDest': {
         const max = Math.max(1, s.territories[plan.from].armies - 1);
         this.sel = { ...emptySel(), selected: plan.from, target: plan.to, fortifyCount: max };
-        break;
-      }
-      case 'occupyThen': {
-        const r = this.act({ type: 'occupy', player: me, count: plan.count });
-        if (!r.ok) break;
-        this.sel = { ...emptySel(), selected: plan.select };
-        if (plan.then) this.runPlan(plan.then);
         break;
       }
     }
@@ -1708,7 +1763,7 @@ class Controller {
 
   /**
    * `Place N` on the picked territory: reinforce commits to the engine (Undo = unreinforce); setup
-   * stages locally until Done. The pick stays while armies are left; the stepper resets to all.
+   * stages locally until Done. The pick stays while armies are left; the count resets to all.
    */
   private placeNow(): void {
     const s = this.state!;
@@ -1776,6 +1831,7 @@ class Controller {
     if (after.phase.kind === 'occupy') {
       const ph = after.phase;
       this.sel.occupyCount = occupyDefault(after, ph.from, ph.to, ph.min, ph.max);
+      this.sel.countTouched = false;
       return;
     }
     if (after.phase.kind !== 'attack') {
@@ -1790,6 +1846,7 @@ class Controller {
     if (after.territories[from].armies < 2) this.sel = emptySel();
   }
 
+  /** `Move N`: occupy, then the new territory is the source if it can keep attacking. */
   private doOccupy(): void {
     const s = this.state!;
     if (s.phase.kind !== 'occupy') return;
@@ -1797,12 +1854,13 @@ class Controller {
     const count = Math.min(ph.max, Math.max(ph.min, this.sel.occupyCount ?? ph.max));
     const r = this.act({ type: 'occupy', player: s.currentPlayer, count });
     if (!r.ok) return;
+    this.clearLinger();
     const after = this.state!;
     this.sel = after.phase.kind === 'attack' ? { ...emptySel(), selected: autoChain(after, ph.from, ph.to) } : emptySel();
   }
 
   // =========================================================================
-  // Buttons, keyboard, intents
+  // Buttons, the Turn Track, keyboard, intents
   // =========================================================================
 
   private currentStrip(): StripVM | null {
@@ -1872,30 +1930,11 @@ class Controller {
       case 'cards':
         this.cardsOpen = !this.cardsOpen;
         break;
-      case 'attack':
-        if (ph.kind === 'reinforce' && this.act({ type: 'endReinforce', player: me }).ok) this.sel = emptySel();
-        break;
-      case 'done': {
-        if (ph.kind !== 'setup-place') break;
-        const staged = { ...sel.staged };
-        this.sel = emptySel();
-        for (const t of TERRITORY_IDS) {
-          const n = staged[t];
-          if (n) this.act({ type: 'placeSetup', player: me, territory: t, count: n });
-        }
-        break;
-      }
       case 'roll':
         this.doAttack(false);
         break;
       case 'blitz':
         this.doAttack(true);
-        break;
-      case 'fortify':
-        if (this.act({ type: 'endAttack', player: me }).ok) this.sel = emptySel();
-        break;
-      case 'endTurn':
-        if (ph.kind === 'attack' || ph.kind === 'fortify') this.act({ type: 'endTurn', player: me });
         break;
       case 'move':
         if (ph.kind === 'occupy') this.doOccupy();
@@ -1911,6 +1950,73 @@ class Controller {
     }
   }
 
+  /** A Turn Track click. Past and current segments are inert; a locked one explains itself. */
+  pressTrack(seg: TrackSegId): void {
+    if (this.turnBanner) this.dismissTurnBanner();
+    const s = this.state;
+    if (!s || this.screen !== 'game') return;
+    if (this.now() < this.holdUntil) {
+      this.inputDropped++;
+      return;
+    }
+    if (!this.interactive()) {
+      this.skipWatched();
+      return;
+    }
+    // Visibly disabled while the dice roll: the click does nothing (it never queues a phase change).
+    if (this.fightPlaying()) return;
+    // Past and current segments are inert (Risk never goes back).
+    const shown = this.currentStrip()?.track.segments.find((x) => x.id === seg);
+    if (!shown || shown.state === 'done' || shown.state === 'current') return;
+    if (this.busyBlocking()) {
+      this.clickThrough(() => this.pressTrack(seg));
+      return;
+    }
+    this.goTo(seg);
+    this.saveMeta();
+    this.invalidate();
+  }
+
+  /** Move the marker forward to `seg` (docs/ROUND2.md §A). */
+  private goTo(seg: TrackSegId): void {
+    const s = this.state!;
+    const me = s.currentPlayer;
+    const track = buildTrack({ s, sel: this.sel, live: true, rolling: false });
+    const target = track.segments.find((x) => x.id === seg);
+    if (!target || target.state === 'done' || target.state === 'current') return;
+    const why = trackLockReason(s, this.sel, seg);
+    if (target.state === 'locked' || why) {
+      this.reject('track_locked', why ?? '');
+      return;
+    }
+    this.clearRejection();
+    this.clearLinger();
+    this.cardsOpen = false;
+    this.play('place', { rate: 0.82, volume: 0.9 });
+    if (s.phase.kind === 'setup-place') {
+      if (seg !== 'done') return;
+      const staged = { ...this.sel.staged };
+      this.sel = emptySel();
+      for (const t of TERRITORY_IDS) {
+        const n = staged[t];
+        if (n) this.act({ type: 'placeSetup', player: me, territory: t, count: n });
+      }
+      return;
+    }
+    if (s.phase.kind === 'reinforce' && !this.act({ type: 'endReinforce', player: me }).ok) return;
+    this.sel = emptySel();
+    if (seg === 'attack') return;
+    const ph = this.state!.phase.kind;
+    if (seg === 'fortify') {
+      if (ph === 'attack') this.act({ type: 'endAttack', player: me });
+      return;
+    }
+    if (seg === 'endTurn' && (ph === 'attack' || ph === 'fortify')) {
+      this.boardCue('endTurn', me);
+      this.act({ type: 'endTurn', player: me });
+    }
+  }
+
   /** The one count control's range for the current step. */
   private countRange(): { min: number; max: number; value: number; set: (v: number) => void } | null {
     const s = this.state!;
@@ -1921,10 +2027,12 @@ class Controller {
       if (left < 1) return null;
       return { min: 1, max: left, value: placeValue(s, sel), set: (v) => (sel.placeCount = v) };
     }
-    if (ph.kind === 'occupy') return { min: ph.min, max: ph.max, value: sel.occupyCount ?? ph.max, set: (v) => (sel.occupyCount = v) };
+    if (ph.kind === 'occupy') {
+      return { min: ph.min, max: ph.max, value: sel.occupyCount ?? ph.max, set: (v) => ((sel.occupyCount = v), (sel.countTouched = true)) };
+    }
     if (ph.kind === 'fortify' && sel.selected && sel.target) {
       const max = Math.max(1, s.territories[sel.selected].armies - 1);
-      return { min: 1, max, value: sel.fortifyCount ?? max, set: (v) => (sel.fortifyCount = v) };
+      return { min: 1, max, value: sel.fortifyCount ?? max, set: (v) => ((sel.fortifyCount = v), (sel.countTouched = true)) };
     }
     return null;
   }
@@ -1934,8 +2042,10 @@ class Controller {
     const r = this.countRange();
     if (!r) return;
     const value = Math.min(r.max, Math.max(r.min, Math.round(v)));
-    if (value !== r.value) this.clearRejection();
-    r.set(value);
+    if (value !== r.value) {
+      this.clearRejection();
+      r.set(value);
+    }
     this.invalidate();
   }
 
@@ -1947,18 +2057,27 @@ class Controller {
     }
     const sel = this.sel;
     if (sel.target) {
-      this.sel = { ...sel, target: null, fortifyCount: null };
+      this.sel = { ...sel, target: null, fortifyCount: null, countTouched: false };
+      this.clearLinger();
       return true;
     }
     if (sel.selected) {
       this.sel = { ...sel, selected: null, placeCount: null };
+      this.clearLinger();
       return true;
     }
     return false;
   }
 
-  private primaryButton(): ButtonVM | null {
-    return this.currentStrip()?.buttons.find((b) => b.primary) ?? null;
+  /** What Enter does now: the brass button, else the track's recommended segment when it's the brass one. */
+  private enterTarget(): { button: ButtonId } | { seg: TrackSegId } | null {
+    const strip = this.currentStrip();
+    if (!strip) return null;
+    const b = strip.buttons.find((x) => x.primary);
+    if (b) return { button: b.id };
+    const tr = strip.track;
+    if (tr.live && !tr.disabled && tr.primary && tr.recommended) return { seg: tr.recommended };
+    return null;
   }
 
   private onKey(e: KeyboardEvent): void {
@@ -1976,8 +2095,9 @@ class Controller {
   }
 
   /**
-   * The hidden keyboard accelerators: Enter = the brass primary, Space = Blitz / confirm (never a phase
-   * exit), Esc = back one level, then the menu. Returns true when the key was consumed.
+   * The hidden keyboard accelerators: Enter = the brass thing (the primary button, or the recommended
+   * track segment), Space = Blitz / confirm (never a phase change), Esc = back one level, then the menu.
+   * Returns true when the key was consumed.
    */
   handleKey(key: string, repeat = false): boolean {
     if (!this.menuKeys && (this.confirm || this.overlay || this.screen !== 'game' || this.handoff)) {
@@ -2027,7 +2147,6 @@ class Controller {
       this.skipWatched();
       return true;
     }
-    if (this.now() < this.commitGuardUntil) return true;
     if (key === ' ') {
       if (this.now() < this.spaceGuardUntil) return true;
       if (this.busyBlocking()) {
@@ -2042,22 +2161,24 @@ class Controller {
       if (commit) this.pressButton(commit);
       return true;
     }
-    // Enter means the primary the player is looking at now. If a click-through changes it before the
-    // key runs (a chain click turned 'Move 9' into 'Blitz'), the key is spent, not redirected.
-    const seen = this.primaryButton()?.id ?? null;
+    // Enter means the brass thing the player is looking at now. If a click-through changes it before
+    // the key runs, the key is spent, not redirected.
+    const seen = JSON.stringify(this.enterTarget());
     const run = () => {
-      const p = this.primaryButton();
-      if (p && p.id === seen) this.pressButton(p.id);
+      const t = this.enterTarget();
+      if (!t || JSON.stringify(t) !== seen) return;
+      if ('button' in t) this.pressButton(t.button);
+      else this.pressTrack(t.seg);
     };
     if (this.busyBlocking()) this.clickThrough(run);
     else run();
     return true;
   }
 
-  /** The button Space commits (Blitz, Place, Move, a forced trade, Done); never a phase exit. */
+  /** The button Space commits (Blitz, Place, Move, a forced trade); never a phase change. */
   private commitButton(): ButtonId | null {
     const ids = new Set(this.currentStrip()?.buttons.map((b) => b.id) ?? []);
-    for (const id of ['blitz', 'place', 'move', 'done'] as const) if (ids.has(id)) return id;
+    for (const id of ['blitz', 'place', 'move'] as const) if (ids.has(id)) return id;
     const ph = this.state!.phase;
     if (ph.kind === 'reinforce' && ph.mustTrade && ids.has('trade')) return 'trade';
     return null;
@@ -2123,6 +2244,15 @@ class Controller {
       }
       case 'button':
         this.pressButton(i.id);
+        break;
+      case 'track':
+        this.pressTrack(i.seg);
+        break;
+      case 'resetView':
+        if (this.screen === 'game') {
+          this.viewMoved = false;
+          this.board.resetCamera();
+        }
         break;
       case 'setCount':
         this.setCount(i.value);
@@ -2370,7 +2500,6 @@ class Controller {
     const ph = s.phase.kind;
     if (ph === 'setup-claim') {
       const a = this.chooseFor(s);
-      this.narration = a.type === 'claim' ? `${name} claims ${tName(a.territory)}` : `${name} is choosing`;
       const r = this.applyRaw(a);
       if (!r.ok) return this.aiFallback();
       this.enqueue(r.events.map((ev, i) => ({ ev, after: r.state, end: i === r.events.length - 1 })), { ai: true });
@@ -2383,8 +2512,6 @@ class Controller {
       ctx.first = false;
       if (this.state !== s) return; // something else moved the game
       const collected: { ev: GameEvent; after: GameState; end: boolean }[] = [];
-      let placed = 0;
-      let traded = 0;
       for (let guard = 0; guard < 200; guard++) {
         s = this.state!;
         if (s.currentPlayer !== p || (s.phase.kind !== 'reinforce' && s.phase.kind !== 'setup-place')) break;
@@ -2396,17 +2523,10 @@ class Controller {
           fb.events.forEach((ev, i) => collected.push({ ev, after: fb.state, end: i === fb.events.length - 1 }));
           continue;
         }
-        if (a.type === 'reinforce' || a.type === 'placeSetup') placed += a.count;
-        if (a.type === 'trade') traded++;
         r.events.forEach((ev, i) => collected.push({ ev, after: r.state, end: i === r.events.length - 1 }));
         if (a.type === 'endReinforce') break;
       }
-      this.narration =
-        ph === 'setup-place'
-          ? `${name} places ${placed === 1 ? '1 army' : `${placed} armies`}`
-          : traded
-            ? `${name} trades cards`
-            : `${name} is reinforcing`;
+      // The narration follows the drops as they land (onEventStart).
       const drops = collected.filter((x) => x.ev.type === 'armiesPlaced').length;
       const budget = ph === 'setup-place' ? 800 : 1000;
       const stagger = drops > 1 ? Math.min(50 * k, (budget - 290) / (drops - 1)) : 0;
@@ -2436,14 +2556,12 @@ class Controller {
       ctx.first = false;
       const r = this.applyRaw(a0);
       if (!r.ok) return this.aiFallback();
-      if (a0.type === 'endTurn') this.narration = `${name} ends the turn`;
       this.enqueue(r.events.map((ev, i) => ({ ev, after: r.state, end: i === r.events.length - 1 })), { ai: true });
       return;
     }
 
     if (ph === 'fortify') {
       const a = this.chooseFor(s);
-      this.narration = a.type === 'fortify' ? `${name} fortifies ${tName(a.to)}` : `${name} ends the turn`;
       if (a.type === 'fortify') {
         this.aiHighlights = { arrow: { from: a.from, to: a.to, kind: 'fortify', path: fortifyPath(s, a.from, a.to) ?? undefined } };
         this.invalidate();
@@ -2646,6 +2764,7 @@ class Controller {
       handoff: this.handoff ? { seat: seatRef(d, this.handoff.player), subline: this.handoffSubline(this.handoff.player) } : null,
       confirm: this.confirm,
       seatActions: this.buildSeatActions(d),
+      viewMoved: this.viewMoved,
     };
   }
 
@@ -2683,7 +2802,6 @@ class Controller {
       current: p.id === d.currentPlayer && d.phase.kind !== 'game-over',
       eliminated: p.eliminated,
       territories: territoryCount(d, p.id),
-      cards: p.cards.length >= 3 && !p.eliminated ? p.cards.length : null,
     }));
   }
 
@@ -2711,20 +2829,9 @@ class Controller {
       if (d.phase.kind === 'game-over') idle = `${pName(d, d.phase.winner)} wins`;
       else if (this.screen === 'victory') idle = 'The game is over';
       else if (!this.handoff) {
-        const name = pName(d, me);
+        // What happened, as it lands (set from the events); before anything has, whose turn it is.
         narration =
-          this.narration ??
-          (d.phase.kind === 'reinforce'
-            ? `${name} is reinforcing`
-            : d.phase.kind === 'setup-place'
-              ? `${name} is placing armies`
-              : d.phase.kind === 'setup-claim'
-                ? d.config.setupMode === 'draft'
-                  ? `${name} is claiming`
-                  : 'Dealing territories'
-                : d.phase.kind === 'fortify'
-                  ? `${name} is fortifying`
-                  : `${name} is attacking`);
+          this.narration ?? (d.phase.kind === 'setup-claim' && d.config.setupMode !== 'draft' ? 'Dealing territories' : `${poss(pName(d, me))} turn`);
       }
     }
     // The armed target has fallen on the displayed board while the conquest still plays: the frozen
@@ -2745,8 +2852,15 @@ class Controller {
       rejection: interactive && this.rejection ? { text: this.rejection.text, key: this.rejection.key } : null,
       showWinChance: this.settings.showWinChance,
       lineKey: this.lineKey,
+      rolling: this.fightPlaying(),
+      boardPreview: this.boardPreview(),
       took,
     });
+    // The cards sheet's `Trade for +N` is the brass thing while it's open: one brass fill on screen.
+    if (this.cardsOpen && interactive && d.phase.kind === 'reinforce' && bestSet(d, me)) {
+      strip.buttons = strip.buttons.map((b) => (b.primary ? { ...b, primary: false } : b));
+      strip.track = { ...strip.track, primary: false };
+    }
     if (this.now() < this.holdUntil && strip.buttons.length) {
       strip.buttons = strip.buttons.map((b) => (b.primary ? { ...b, busy: true } : b));
       this.timer(() => this.invalidate(), this.holdUntil - this.now() + 10);
@@ -2768,9 +2882,10 @@ class Controller {
       interactive && d.phase.kind === 'attack' && sel.selected && sel.target && d.territories[sel.selected].owner === d.currentPlayer
         ? { from: sel.selected, to: sel.target }
         : null;
-    // A decided full fight lingers 2.5 s, only inside the attack step it was fought in.
+    // A decided full fight lingers ~1 s, only inside the attack step it was fought in, and goes at once
+    // on a new selection or a phase change (docs/ROUND2.md §E).
     const inFight = d.phase.kind === 'attack' || d.phase.kind === 'occupy';
-    const lingering = !!g && !!g.endedAt && g.style === 'full' && g.turn === d.turn && inFight && now - g.endedAt < 2500;
+    const lingering = !!g && !!g.endedAt && !g.cleared && g.style === 'full' && g.turn === d.turn && inFight && now - g.endedAt < LINGER_MS;
     const preview = this.aiPreview;
     const previewIsEng = !!preview && !!g && g.from === preview.from && g.to === preview.to && g.turn === d.turn && (!!g.endedAt || g.conquered);
     if (g && !g.endedAt && g.style === 'full' && g.turn === d.turn) {
@@ -2799,6 +2914,7 @@ class Controller {
       attacker: { seat: seatRef(d, attacker), territory: tName(from), armies: a },
       defender: { seat: seatRef(d, defender), territory: tName(to), armies: def },
       rolling: this.rolling && useEng,
+      captured: decided && g!.conquered ? `${tName(to)} captured` : null,
     };
   }
 
@@ -2855,18 +2971,24 @@ class Controller {
       case 'reinforce': {
         if (ph.mustTrade) return {};
         if (ph.remaining > 0) return { selectable: own(), selected: picked, pending: picked ? { [picked]: placeValue(d, sel) } : {} };
-        return { selectable: this.attackableTargets(d, me) };
+        // All placed: the track moves on; the board has nothing to click.
+        return {};
       }
       case 'attack': {
         if (!picked) return { selectable: this.attackableTargets(d, me) };
         const targets = attackTargets(d, picked);
         const armed = sel.target && targets.includes(sel.target) ? sel.target : null;
-        return {
-          selected: picked,
-          targets,
-          arrow: armed ? { from: picked, to: armed, kind: 'attack' } : null,
-          dimOthers: true,
-        };
+        // Armed: only the pair and the arrow are lit; the other targets fall back to plain selectable.
+        if (armed) {
+          return {
+            selected: picked,
+            targets: [armed],
+            selectable: targets.filter((t) => t !== armed),
+            arrow: { from: picked, to: armed, kind: 'attack' },
+            dimOthers: true,
+          };
+        }
+        return { selected: picked, targets, arrow: null, dimOthers: true };
       }
       case 'occupy':
         return { selected: ph.from, targets: [ph.to], arrow: { from: ph.from, to: ph.to, kind: 'attack' } };
@@ -2888,10 +3010,36 @@ class Controller {
 
   private pushHighlights(): void {
     const h = this.buildHighlights();
-    const key = JSON.stringify(h);
+    const preview = this.boardPreview() ? this.previewTotals() : null;
+    const key = JSON.stringify([h, preview]);
     if (key === this.lastHighlightsKey) return;
     this.lastHighlightsKey = key;
     this.board.setHighlights(h);
+    if (this.boardPreview()) (this.board as PreviewBoard).setCountPreview!(preview);
+  }
+
+  /** The board can draw the totals a count would leave on both pieces (docs/ROUND2.md §B). */
+  private boardPreview(): boolean {
+    return typeof (this.board as PreviewBoard).setCountPreview === 'function';
+  }
+
+  /** Occupy / fortify: the two totals the chosen count leaves, while choosing. */
+  private previewTotals(): Partial<Record<TerritoryId, number>> | null {
+    const d = this.disp;
+    const s = this.state;
+    if (!d || !s || !this.interactive() || d.currentPlayer !== s.currentPlayer) return null;
+    const ph = d.phase;
+    const sel = this.viewSel();
+    if (ph.kind === 'occupy') {
+      const v = Math.min(ph.max, Math.max(ph.min, sel.occupyCount ?? ph.max));
+      return { [ph.from]: d.territories[ph.from].armies - v, [ph.to]: v };
+    }
+    if (ph.kind === 'fortify' && sel.selected && sel.target && d.territories[sel.selected].owner === d.currentPlayer) {
+      const max = Math.max(1, d.territories[sel.selected].armies - 1);
+      const v = Math.min(max, Math.max(1, sel.fortifyCount ?? max));
+      return { [sel.selected]: d.territories[sel.selected].armies - v, [sel.target]: d.territories[sel.target].armies + v };
+    }
+    return null;
   }
 
   private buildVictory(s: GameState, winner: PlayerId, called: string | null): VictoryVM {
@@ -2960,8 +3108,24 @@ class Controller {
     if (this.curTurn && this.screen === 'game') this.curTurn.clicks++;
   }
 
+  /** The board says whether the view is off home, if it can (else the canvas drag / wheel heuristic). */
+  private boardDisplaced(): boolean | null {
+    try {
+      return this.board.isViewDisplaced ? this.board.isViewDisplaced() : null;
+    } catch {
+      return null;
+    }
+  }
+
   private sampleCamera(): void {
     const tick = () => {
+      if (this.screen === 'game') {
+        const moved = this.boardDisplaced();
+        if (moved !== null && moved !== this.viewMoved) {
+          this.viewMoved = moved;
+          this.invalidate();
+        }
+      }
       if (this.screen === 'game' && this.interactive()) {
         let moving = false;
         try {
@@ -2994,18 +3158,39 @@ class Controller {
     // Ocean clicks: the board reports territory clicks synchronously from its canvas pointerup, so a
     // short press on the canvas that produced no territory click by the time it bubbles here missed land.
     let press: { x: number; y: number; t: number; clicks: number } | null = null;
+    // A drag on the canvas (orbit / pan) or a wheel over it (zoom) moves the view off home: the
+    // `Reset view` pill shows, unless the board reports displacement itself.
+    let drag: { x: number; y: number } | null = null;
+    const markMoved = () => {
+      if (this.screen !== 'game' || this.viewMoved || this.boardDisplaced() !== null) return;
+      this.viewMoved = true;
+      this.invalidate();
+    };
     const onBoardDown = (e: PointerEvent) => {
       const onBoard = e.target instanceof HTMLCanvasElement && !!e.target.closest('#board');
       press = onBoard && e.button === 0 ? { x: e.clientX, y: e.clientY, t: e.timeStamp, clicks: this.boardClicks } : null;
+      drag = onBoard ? { x: e.clientX, y: e.clientY } : null;
+    };
+    const onBoardMove = (e: PointerEvent) => {
+      if (drag && e.buttons && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 8) {
+        drag = null;
+        markMoved();
+      }
+    };
+    const onBoardWheel = (e: WheelEvent) => {
+      if (e.target instanceof HTMLCanvasElement && e.target.closest('#board')) markMoved();
     };
     const onBoardUp = (e: PointerEvent) => {
       const p = press;
       press = null;
+      drag = null;
       if (!p || e.button !== 0 || this.boardClicks !== p.clicks || this.overTile) return;
       if (e.timeStamp - p.t > 350 || Math.hypot(e.clientX - p.x, e.clientY - p.y) > 6) return;
       this.oceanClick();
     };
     window.addEventListener('pointerdown', onBoardDown);
+    window.addEventListener('pointermove', onBoardMove);
+    window.addEventListener('wheel', onBoardWheel, { passive: true });
     window.addEventListener('pointerup', onBoardUp);
     window.addEventListener('keydown', onKey, true);
     window.addEventListener('click', onClick, true);
@@ -3027,6 +3212,8 @@ class Controller {
       window.removeEventListener('pointerdown', onPointer, true);
       window.removeEventListener('pointerup', onPointer, true);
       window.removeEventListener('pointerdown', onBoardDown);
+      window.removeEventListener('pointermove', onBoardMove);
+      window.removeEventListener('wheel', onBoardWheel);
       window.removeEventListener('pointerup', onBoardUp);
       window.removeEventListener('wheel', onPointer, true);
       window.removeEventListener('resize', this.onResizeUiScale);
@@ -3081,14 +3268,22 @@ class Controller {
     const g = vm.game;
     const strip = g?.strip;
     const b = g?.battle;
-    const step = !strip
-      ? ''
-      : strip.step.kind === 'turn'
-        ? (strip.step.current ?? '').replace(/^./, (c) => c.toUpperCase())
-        : strip.step.label;
+    const tr = strip?.track;
+    const step = tr?.segments.find((x) => x.state === 'current')?.label ?? '';
+    const brass = [
+      ...(g?.cards?.open && g.cards.trade ? [g.cards.trade.label] : []),
+      ...(strip?.buttons.filter((x) => x.primary).map((x) => x.label) ?? []),
+      ...(tr?.primary && tr.recommended ? [tr.segments.find((x) => x.id === tr.recommended)!.label] : []),
+    ];
     return {
       screen: vm.screen,
       step,
+      track: tr ? tr.segments.map((x) => `${x.state}:${x.id}`) : [],
+      recommended: tr?.recommended ?? null,
+      trackSeat: tr?.seat.name ?? '',
+      trackLive: !!tr?.live,
+      trackDisabled: !!tr?.disabled,
+      brass,
       line: strip?.line ?? '',
       lineKind: strip?.lineKind ?? '',
       primary: strip?.buttons.find((x) => x.primary)?.label ?? null,
@@ -3096,9 +3291,10 @@ class Controller {
       count: strip?.count ? { ...strip.count } : null,
       banners: g?.banner ? [g.banner.sub ? `${g.banner.title} · ${g.banner.sub}` : g.banner.title] : [],
       recap: g?.banner?.recap ?? null,
-      battle: b ? { header: `${upper(b.attacker.territory)} ${b.attacker.armies} vs ${upper(b.defender.territory)} ${b.defender.armies}` } : null,
-      seats: (g?.seats ?? []).map((c) => `${c.seat.name} ${c.territories}${c.cards ? ` · ${c.cards} cards` : ''}`),
+      battle: b ? { header: b.captured ?? `${upper(b.attacker.territory)} ${b.attacker.armies} vs ${upper(b.defender.territory)} ${b.defender.armies}` } : null,
+      seats: (g?.seats ?? []).map((c) => `${c.seat.name} ${c.territories}`),
       cardsOpen: !!g?.cards?.open,
+      viewMoved: !!g?.viewMoved,
     };
   }
 

@@ -1,11 +1,12 @@
-// The bottom strip (docs/SIMPLIFY.md §1, §2): the step indicator, one line that says the one thing to
-// do now, at most one count control and at most two buttons (one brass primary). Pure: built from the
-// displayed state + the input selection.
+// The bottom strip (docs/ROUND2.md §A–B): the Turn Track at the left, one line that says the one thing
+// to do now, then the action zone (at most one count control and at most two buttons, one brass).
+// Board clicks only select; buttons commit; the track is the only way to change phase (plus the
+// fortify `Move N · end turn`, which says so). Pure: built from the displayed state + the selection.
 
 import { attackSources, attackTargets, fortifySources, fortifyTargets, winProbability, type GameState, type TerritoryId } from '../engine';
 import { SEP, armies, pName, pct, poss, seatRef, tName } from './copy';
 import { bestSet, oddsWord } from './helpers';
-import type { ButtonId, ButtonVM, CountVM, StepVM, StripVM } from './viewModel';
+import type { ButtonId, ButtonVM, CountVM, StripVM, TrackSegId, TrackSegVM, TrackVM } from './viewModel';
 
 export interface Placement {
   t: TerritoryId;
@@ -17,10 +18,12 @@ export interface Sel {
   selected: TerritoryId | null;
   /** Armed attack target / chosen fortify destination. */
   target: TerritoryId | null;
-  /** Place stepper; null = all remaining. */
+  /** Place count; null = all remaining. */
   placeCount: number | null;
   occupyCount: number | null;
   fortifyCount: number | null;
+  /** The player moved the occupy / fortify count: the line shows the resulting totals. */
+  countTouched?: boolean;
   /** Manual setup: armies staged locally this setup turn (committed on Done). */
   staged: Partial<Record<TerritoryId, number>>;
   /** Placements this step, newest last, for Undo (reinforce and setup). */
@@ -45,16 +48,141 @@ export function placeLeft(s: GameState, sel: Sel): number {
   return 0;
 }
 
-/** The Place stepper's value: the picked count, clamped, or all remaining. */
+/** The Place count's value: the picked count, clamped, or all remaining. */
 export function placeValue(s: GameState, sel: Sel): number {
   const left = placeLeft(s, sel);
   return Math.max(1, Math.min(left, sel.placeCount ?? left));
+}
+
+/** The count control for a min…max range: a stepper for ≤ 6 options, a slider for more. */
+export function countVM(value: number, min: number, max: number): CountVM {
+  return { control: max - min + 1 <= 6 ? 'stepper' : 'slider', value, min, max };
 }
 
 /** Line while the opening deal plays (a random deal: nothing to click, a click only skips it). */
 export function dealingLine(): string {
   return 'Dealing territories';
 }
+
+export function canFortifyAny(s: GameState): boolean {
+  return fortifySources(s, s.currentPlayer).some((t) => fortifyTargets(s, t).length > 0);
+}
+
+// ---------------------------------------------------------------------------
+// The Turn Track
+// ---------------------------------------------------------------------------
+
+const LABEL: Record<TrackSegId, string> = {
+  place: 'Place',
+  attack: 'Attack',
+  fortify: 'Fortify',
+  endTurn: 'End turn',
+  setup: 'Setup',
+  done: 'Done',
+};
+const TURN: TrackSegId[] = ['place', 'attack', 'fortify', 'endTurn'];
+
+/** Why a track segment can't be reached now, or null if it can (or it isn't forward of the marker). */
+export function trackLockReason(s: GameState, sel: Sel, seg: TrackSegId): string | null {
+  const ph = s.phase;
+  switch (ph.kind) {
+    case 'setup-claim':
+      return seg === 'done' ? `Claim a territory first${SEP}click an open tile` : null;
+    case 'setup-place': {
+      if (seg !== 'done') return null;
+      const left = placeLeft(s, sel);
+      return left > 0 ? `Place your ${armies(left)} first` : null;
+    }
+    case 'reinforce':
+      if (seg === 'place') return null;
+      if (ph.mustTrade) return 'Trade cards first';
+      return ph.remaining > 0 ? `Place your ${armies(ph.remaining)} first` : null;
+    case 'occupy':
+      return seg === 'fortify' || seg === 'endTurn' ? 'Finish moving armies in first' : null;
+    default:
+      return null;
+  }
+}
+
+/** The segment the marker is on, for the phase on the board. */
+function currentSeg(s: GameState): TrackSegId | null {
+  switch (s.phase.kind) {
+    case 'setup-claim':
+    case 'setup-place':
+      return 'setup';
+    case 'reinforce':
+      return 'place';
+    case 'attack':
+    case 'occupy':
+      return 'attack';
+    case 'fortify':
+      return 'fortify';
+    case 'game-over':
+      return null;
+  }
+}
+
+/** The recommended next step: all placed → Attack (End turn if nothing can attack); in Fortify → End turn. */
+export function recommendedSeg(s: GameState, sel: Sel): TrackSegId | null {
+  const ph = s.phase;
+  const me = s.currentPlayer;
+  switch (ph.kind) {
+    case 'setup-place':
+      return placeLeft(s, sel) === 0 ? 'done' : null;
+    case 'reinforce':
+      if (ph.mustTrade || ph.remaining > 0) return null;
+      return attackSources(s, me).length > 0 ? 'attack' : 'endTurn';
+    case 'attack':
+      return attackSources(s, me).length === 0 ? 'endTurn' : null;
+    case 'fortify':
+      return 'endTurn';
+    default:
+      return null;
+  }
+}
+
+export interface TrackInput {
+  s: GameState;
+  sel: Sel;
+  /** The driver can click it. */
+  live: boolean;
+  /** A roll is playing. */
+  rolling: boolean;
+}
+
+export function buildTrack(inp: TrackInput): TrackVM {
+  const { s, sel } = inp;
+  const me = s.currentPlayer;
+  const seat = seatRef(s, me);
+  const ph = s.phase;
+  const setup = ph.kind === 'setup-claim' || ph.kind === 'setup-place';
+  const ids: TrackSegId[] = setup ? ['setup', 'done'] : TURN;
+  const cur = currentSeg(s);
+  const at = cur ? ids.indexOf(cur) : ids.length;
+  const segments: TrackSegVM[] = ids.map((id, i) => {
+    let state: TrackSegVM['state'];
+    if (i < at) state = 'done';
+    else if (i === at) state = 'current';
+    else state = trackLockReason(s, sel, id) ? 'locked' : 'eligible';
+    return { id, label: LABEL[id], state };
+  });
+  const disabled = inp.live && (inp.rolling || ph.kind === 'occupy' || (ph.kind === 'reinforce' && ph.mustTrade));
+  const recommended = inp.live && !disabled ? recommendedSeg(s, sel) : null;
+  return {
+    kind: setup ? 'setup' : 'turn',
+    seat,
+    segments,
+    recommended,
+    primary: false,
+    live: inp.live,
+    disabled,
+    turnKey: `${s.turn}:${me}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The strip
+// ---------------------------------------------------------------------------
 
 export interface StripInput {
   s: GameState;
@@ -72,6 +200,10 @@ export interface StripInput {
   rejection: { text: string; key: number } | null;
   showWinChance: boolean;
   lineKey: number;
+  /** A roll is playing (the track is disabled). */
+  rolling?: boolean;
+  /** The board draws the resulting totals on the pieces itself: the line needn't. */
+  boardPreview?: boolean;
   /**
    * A conquest is on screen but the selection that armed it hasn't caught up (the flood and march are
    * still playing): the line says what happened instead of describing a half-moved board.
@@ -81,9 +213,9 @@ export interface StripInput {
 
 const btn = (id: ButtonId, label: string, primary = false): ButtonVM => ({ id, label, primary });
 
-/** 'Attack Siberia from Ural · 82%' ('· likely' when the win chance is hidden). */
+/** 'Ural → Siberia · 82%' ('· likely' when the win chance is hidden). */
 export function attackLine(s: GameState, from: TerritoryId, to: TerritoryId, showWinChance: boolean): string {
-  const head = `Attack ${tName(to)} from ${tName(from)}`;
+  const head = `${tName(from)} → ${tName(to)}`;
   const a = s.territories[from].armies;
   const d = s.territories[to].armies;
   if (a < 2 || d < 1) return head;
@@ -91,33 +223,37 @@ export function attackLine(s: GameState, from: TerritoryId, to: TerritoryId, sho
   return `${head}${SEP}${showWinChance ? `${pct(p)}%` : oddsWord(p)}`;
 }
 
-export function canFortifyAny(s: GameState): boolean {
-  return fortifySources(s, s.currentPlayer).some((t) => fortifyTargets(s, t).length > 0);
+/** 'Ural 1 · Siberia 15': the two totals after moving `n` (the board-less preview). */
+export function totalsLine(s: GameState, from: TerritoryId, to: TerritoryId, n: number): string {
+  const a = s.territories[from].armies - n;
+  const b = (s.territories[to].owner === s.territories[from].owner ? s.territories[to].armies : 0) + n;
+  return `${tName(from)} ${a}${SEP}${tName(to)} ${b}`;
 }
 
 export function buildStrip(inp: StripInput): StripVM {
   const { s, sel } = inp;
   const me = s.currentPlayer;
-  const seat = seatRef(s, me);
   const accent = s.players[me].color;
-  const turnStep = (current: StepVM['current']): StepVM => ({ kind: 'turn', current, seat, label: '' });
-  const setupStep: StepVM = { kind: 'setup', current: null, seat, label: 'Setup' };
-  const make = (mode: StripVM['mode'], step: StepVM, line: string, extra: { count?: CountVM | null; buttons?: ButtonVM[] } = {}): StripVM => ({
-    mode,
-    step,
-    accent,
-    line: inp.rejection ? inp.rejection.text : line,
-    lineKind: inp.rejection ? 'rejection' : 'normal',
-    lineKey: inp.rejection ? inp.rejection.key : inp.lineKey,
-    count: extra.count ?? null,
-    buttons: extra.buttons ?? [],
-  });
+  const track = buildTrack({ s, sel, live: inp.interactive, rolling: !!inp.rolling });
+  const make = (mode: StripVM['mode'], line: string, extra: { count?: CountVM | null; buttons?: ButtonVM[] } = {}): StripVM => {
+    const buttons = extra.buttons ?? [];
+    return {
+      mode,
+      track: { ...track, primary: !!track.recommended && !buttons.some((b) => b.primary) },
+      accent,
+      line: inp.rejection ? inp.rejection.text : line,
+      lineKind: inp.rejection ? 'rejection' : 'normal',
+      lineKey: inp.rejection ? inp.rejection.key : inp.lineKey,
+      count: extra.count ?? null,
+      buttons,
+    };
+  };
 
   if (!inp.interactive) {
     if (inp.humansOut) {
       return {
         mode: 'watching',
-        step: { kind: 'watching', current: null, seat, label: `${poss(pName(s, me))} turn` },
+        track,
         accent,
         line: 'All humans are out',
         lineKind: 'normal',
@@ -127,13 +263,22 @@ export function buildStrip(inp: StripInput): StripVM {
       };
     }
     const who = inp.handoff ?? me;
-    const whoSeat = s.players[who] ? seatRef(s, who) : seat;
-    // The opening deal belongs to nobody: it reads 'Setup', not "Cobalt's turn".
-    const dealing = s.phase.kind === 'setup-claim' && s.config.setupMode !== 'draft' && inp.handoff === null;
+    // Behind the hand-off cover the track already belongs to the seat being handed the laptop.
+    const shownTrack: TrackVM =
+      inp.handoff !== null && s.players[inp.handoff]
+        ? {
+            ...track,
+            kind: 'turn',
+            seat: seatRef(s, inp.handoff),
+            segments: TURN.map((id, i) => ({ id, label: LABEL[id], state: i === 0 ? 'current' : 'locked' })),
+            recommended: null,
+            turnKey: `handoff:${inp.handoff}`,
+          }
+        : track;
     const line = inp.handoff !== null ? `Pass to ${pName(s, inp.handoff)}` : (inp.narration ?? inp.idleLine ?? `${poss(pName(s, me))} turn`);
     return {
       mode: inp.idleLine && !inp.narration ? 'idle' : 'watching',
-      step: dealing ? setupStep : { kind: 'watching', current: null, seat: whoSeat, label: `${poss(whoSeat.name)} turn` },
+      track: shownTrack,
       accent: s.players[who]?.color ?? accent,
       line,
       lineKind: inp.narration && inp.handoff === null ? 'narration' : 'normal',
@@ -146,98 +291,88 @@ export function buildStrip(inp: StripInput): StripVM {
   const ph = s.phase;
   switch (ph.kind) {
     case 'setup-claim':
-      if (s.config.setupMode !== 'draft') return make('setup', setupStep, dealingLine());
-      return make('setup', setupStep, `Claim a territory${SEP}click an open tile`);
+      if (s.config.setupMode !== 'draft') return make('setup', dealingLine());
+      return make('setup', `Claim a territory${SEP}click an open tile`);
     case 'setup-place': {
       const staged = stagedTotal(sel);
       const left = Math.max(0, ph.toPlace - staged);
       const undo = sel.placements.length > 0 ? [btn('undo', 'Undo')] : [];
-      if (left === 0) return make('setup', setupStep, `All ${ph.toPlace} placed`, { buttons: [...undo, btn('done', 'Done', true)] });
+      if (left === 0) return make('setup', `All ${ph.toPlace} placed${SEP}click Done`, { buttons: undo });
       if (sel.selected && s.territories[sel.selected].owner === me) {
         const n = placeValue(s, sel);
-        return make('setup', setupStep, `Place on ${tName(sel.selected)}`, {
-          count: { control: 'stepper', value: n, min: 1, max: left },
+        return make('setup', `Place on ${tName(sel.selected)}`, {
+          count: countVM(n, 1, left),
           buttons: [...undo, btn('place', `Place ${n}`, true)],
         });
       }
       const line = staged > 0 ? `Place ${left} more${SEP}click a territory` : `Place ${armies(left)}${SEP}click a territory`;
-      return make('setup', setupStep, line, { buttons: undo });
+      return make('setup', line, { buttons: undo });
     }
     case 'reinforce': {
-      const step = turnStep('place');
       const hand = s.players[me].cards;
       const best = bestSet(s, me);
-      const placedAny = Object.values(ph.placed).some((v) => (v ?? 0) > 0);
-      const trade = best ? btn('trade', `Trade cards +${best.value}`) : null;
       if (ph.mustTrade) {
-        return make('place', step, `Trade cards first${SEP}you hold ${hand.length}`, {
-          buttons: trade ? [{ ...trade, primary: true }] : [],
+        return make('place', `Trade cards first${SEP}you hold ${hand.length}`, {
+          buttons: best ? [btn('trade', `Trade cards +${best.value}`, true)] : [],
         });
       }
+      const placedAny = Object.values(ph.placed).some((v) => (v ?? 0) > 0);
       const undo = placedAny ? btn('undo', 'Undo') : null;
       const cards = hand.length > 0 ? btn('cards', `Cards ${hand.length}`) : null;
+      const secondaries = [...(cards ? [cards] : []), ...(undo ? [undo] : [])];
       if (ph.remaining === 0) {
-        return make('place', step, ph.midTurn ? `All placed${SEP}keep attacking` : `All placed${SEP}attack next`, {
-          buttons: [...(undo ? [undo] : []), btn('attack', 'Attack →', true)],
-        });
+        const next = attackSources(s, me).length > 0 ? (ph.midTurn ? 'keep attacking' : 'Attack is next') : 'end your turn';
+        return make('place', `All placed${SEP}${next}`, { buttons: secondaries });
       }
       if (sel.selected && s.territories[sel.selected].owner === me) {
         const n = placeValue(s, sel);
-        const second = undo ?? trade;
-        return make('place', step, `Place on ${tName(sel.selected)}`, {
-          count: { control: 'stepper', value: n, min: 1, max: ph.remaining },
+        const second = undo ?? cards;
+        return make('place', `Place on ${tName(sel.selected)}`, {
+          count: countVM(n, 1, ph.remaining),
           buttons: [...(second ? [second] : []), btn('place', `Place ${n}`, true)],
         });
       }
       const line = placedAny ? `Place ${ph.remaining} more${SEP}click a territory` : `Place ${armies(ph.remaining)}${SEP}click a territory`;
-      // Trading is the primary until you place anything; after that the sheet still offers it.
-      const buttons = !placedAny && trade ? [...(cards ? [cards] : []), { ...trade, primary: true }] : [...(cards ? [cards] : []), ...(undo ? [undo] : [])];
-      return make('place', step, line, { buttons });
+      return make('place', line, { buttons: secondaries });
     }
     case 'attack': {
-      const step = turnStep('attack');
-      const exits = [...(canFortifyAny(s) ? [btn('fortify', 'Fortify →')] : []), btn('endTurn', 'End turn', true)];
-      if (inp.took && s.territories[inp.took].owner === me) return make('attack', step, `You took ${tName(inp.took)}`);
+      if (inp.took && s.territories[inp.took].owner === me) return make('attack', `You took ${tName(inp.took)}`);
       const armed = sel.selected && sel.target && s.territories[sel.selected].owner === me && s.territories[sel.target].owner !== me;
       if (armed) {
-        return make('attack', step, attackLine(s, sel.selected!, sel.target!, inp.showWinChance), {
+        return make('attack', attackLine(s, sel.selected!, sel.target!, inp.showWinChance), {
           buttons: [btn('roll', 'Roll'), btn('blitz', 'Blitz', true)],
         });
       }
-      if (sel.selected && s.territories[sel.selected].owner === me) {
-        return make('attack', step, `Attack from ${tName(sel.selected)}${SEP}click an enemy`, { buttons: exits });
-      }
-      if (attackSources(s, me).length === 0) return make('attack', step, 'No attacks left', { buttons: exits });
-      return make('attack', step, 'Click an enemy territory to attack', { buttons: exits });
+      if (sel.selected && s.territories[sel.selected].owner === me) return make('attack', `Attack from ${tName(sel.selected)}${SEP}click an enemy`);
+      if (attackSources(s, me).length === 0) return make('attack', `No attacks left${SEP}end your turn`);
+      return make('attack', 'Click an enemy territory to attack');
     }
     case 'occupy': {
       const value = Math.min(ph.max, Math.max(ph.min, sel.occupyCount ?? ph.max));
-      return make('occupy', turnStep('attack'), `Move armies into ${tName(ph.to)}`, {
-        count: ph.max > ph.min ? { control: 'slider', value, min: ph.min, max: ph.max } : null,
+      const line = sel.countTouched && !inp.boardPreview ? totalsLine(s, ph.from, ph.to, value) : `Move into ${tName(ph.to)}`;
+      return make('occupy', line, {
+        count: ph.max > ph.min ? countVM(value, ph.min, ph.max) : null,
         buttons: [btn('move', `Move ${value}`, true)],
       });
     }
     case 'fortify': {
-      const step = turnStep('fortify');
-      const end = btn('endTurn', 'End turn', true);
       if (sel.selected && sel.target && s.territories[sel.selected].owner === me) {
         const max = Math.max(1, s.territories[sel.selected].armies - 1);
         const value = Math.min(max, Math.max(1, sel.fortifyCount ?? max));
-        return make('fortify', step, `Move from ${tName(sel.selected)} to ${tName(sel.target)}`, {
-          count: max > 1 ? { control: 'slider', value, min: 1, max } : null,
+        const line = sel.countTouched && !inp.boardPreview ? totalsLine(s, sel.selected, sel.target, value) : `Move from ${tName(sel.selected)} to ${tName(sel.target)}`;
+        return make('fortify', line, {
+          count: max > 1 ? countVM(value, 1, max) : null,
           buttons: [btn('move', `Move ${value}${SEP}end turn`, true)],
         });
       }
-      if (sel.selected && s.territories[sel.selected].owner === me) {
-        return make('fortify', step, `Move from ${tName(sel.selected)}${SEP}click where to`, { buttons: [end] });
-      }
-      if (!canFortifyAny(s)) return make('fortify', step, `Nothing to move${SEP}end your turn`, { buttons: [end] });
-      return make('fortify', step, 'Move armies once, or end your turn', { buttons: [end] });
+      if (sel.selected && s.territories[sel.selected].owner === me) return make('fortify', `Move from ${tName(sel.selected)}${SEP}click where to`);
+      if (!canFortifyAny(s)) return make('fortify', `Nothing to move${SEP}end your turn`);
+      return make('fortify', 'Move armies once, or end your turn');
     }
     case 'game-over':
       return {
         mode: 'idle',
-        step: { kind: 'watching', current: null, seat, label: '' },
+        track,
         accent,
         line: inp.idleLine ?? 'The game is over',
         lineKind: 'normal',

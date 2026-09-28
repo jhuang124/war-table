@@ -270,7 +270,7 @@ describe('human input', () => {
     return kit;
   }
 
-  it('Place: a click picks, the stepper defaults to all, Place N commits, Undo takes it back whole', async () => {
+  it('Place: a click picks, the count defaults to all, Place N commits, Undo takes it back whole, the track moves on', async () => {
     const { c, fb } = await humanReinforce();
     const s = c.hooks.getState()!;
     expect(s.phase.kind).toBe('reinforce');
@@ -284,7 +284,9 @@ describe('human input', () => {
     await vi.advanceTimersByTimeAsync(500);
     let u = c.hooks.ui();
     expect(u.line).toMatch(/^Place on /);
-    expect(u.count).toEqual({ control: 'stepper', value: remaining, min: 1, max: remaining });
+    // ≤ 6 options: a stepper; more: a slider.
+    expect(u.count).toEqual({ control: remaining <= 6 ? 'stepper' : 'slider', value: remaining, min: 1, max: remaining });
+    expect(u.track).toEqual(['current:place', 'locked:attack', 'locked:fortify', 'locked:endTurn']);
     expect(u.primary).toBe(`Place ${remaining}`);
     // Nothing is committed until Place.
     expect(c.hooks.getState()!.territories[a].armies).toBe(before.a);
@@ -305,15 +307,33 @@ describe('human input', () => {
     await vi.advanceTimersByTimeAsync(400);
     expect(c.hooks.getState()!.territories[a].armies).toBe(before.a);
     expect((c.hooks.getState()!.phase as { remaining: number }).remaining).toBe(remaining);
-    // A double-click places everything left there.
+    // A double-click is just two picks (no place-all accelerator): Place N commits.
     fb.click(b);
     await vi.advanceTimersByTimeAsync(120);
     fb.click(b);
     await vi.advanceTimersByTimeAsync(400);
+    expect(c.hooks.getState()!.territories[b].armies).toBe(before.b);
+    // A locked segment explains itself.
+    c.intent({ type: 'track', seg: 'attack' });
+    expect(c.hooks.ui().line).toBe(`Place your ${remaining} armies first`);
+    c.intent({ type: 'button', id: 'place' });
+    await vi.advanceTimersByTimeAsync(400);
     expect(c.hooks.getState()!.territories[b].armies).toBe(before.b + remaining);
     u = c.hooks.ui();
-    expect(u.line).toBe('All placed · attack next');
-    expect(u.buttons).toEqual(['Undo', 'Attack →']);
+    expect(u.line).toMatch(/^All placed · (Attack is next|end your turn)$/);
+    expect(u.buttons).toEqual(['Undo']);
+    expect(u.brass).toEqual([u.recommended === 'attack' ? 'Attack' : 'End turn']);
+    // Board clicks don't leave Place; the track does.
+    fb.click(a);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(c.hooks.getState()!.phase.kind).toBe('reinforce');
+    c.intent({ type: 'track', seg: 'attack' });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(c.hooks.getState()!.phase.kind).toBe('attack');
+    expect(c.hooks.ui().track).toEqual(['done:place', 'current:attack', 'eligible:fortify', 'eligible:endTurn']);
+    // Past segments are inert.
+    c.intent({ type: 'track', seg: 'place' });
+    expect(c.hooks.getState()!.phase.kind).toBe('attack');
     expect(c.hooks.metrics().inputDropped).toBe(0);
     c.dispose();
   });
@@ -345,13 +365,16 @@ describe('human input', () => {
     c.intent({ type: 'button', id: 'blitz' });
     await vi.advanceTimersByTimeAsync(300); // dice rolling
     const skipsBefore = fb.skips;
+    // The track is visibly disabled while the dice roll: End turn does nothing (it never queues).
+    expect(c.getViewModel().game!.strip.track.disabled).toBe(true);
+    c.intent({ type: 'track', seg: 'endTurn' });
+    expect(fb.skips).toBe(skipsBefore);
     const t0 = Date.now();
-    c.intent({ type: 'button', id: 'endTurn' }); // click-through
-    await until(() => c.hooks.getState()!.currentPlayer !== me || c.hooks.getState()!.phase.kind === 'occupy', 4000, 10);
+    fb.click(src!); // click-through: skip the blitz, then do this click
+    await until(() => c.hooks.isIdle(), 4000, 10);
     expect(fb.skips).toBeGreaterThan(skipsBefore);
     const after = c.hooks.getState()!;
-    // If the blitz ended in an occupy step, End turn is not available there — the click was still processed (skipped animation).
-    if (after.phase.kind !== 'occupy') expect(after.currentPlayer).not.toBe(me);
+    expect(after.currentPlayer).toBe(me);
     expect(Date.now() - t0).toBeLessThan(800);
     c.dispose();
   });
@@ -414,17 +437,21 @@ describe('resume', () => {
     await vi.advanceTimersByTimeAsync(50);
     const strip = c.getViewModel().game!.strip;
     expect(strip.mode).toBe('occupy');
-    expect(strip.line).toBe('Move armies into Siberia');
-    expect(strip.count).toEqual({ control: 'slider', value: 7, min: 3, max: 7 });
+    expect(strip.line).toBe('Move into Siberia');
+    expect(strip.count).toEqual({ control: 'stepper', value: 7, min: 3, max: 7 });
     expect(strip.buttons.map((b) => b.label)).toEqual(['Move 7']);
+    expect(strip.track.disabled).toBe(true);
     expect(fb.highlights.arrow).toEqual({ from: 'ural', to: 'siberia', kind: 'attack' });
-    // A board click confirms the default and then acts.
+    // A board click never confirms: Move N does, and the new territory is the source.
     fb.click('yakutsk');
+    await vi.advanceTimersByTimeAsync(50);
+    expect(c.hooks.getState()!.phase.kind).toBe('occupy');
+    c.intent({ type: 'button', id: 'move' });
     await until(() => c.hooks.isIdle(), 3000);
     const after = c.hooks.getState()!;
     expect(after.phase.kind).toBe('attack');
     expect(after.territories.siberia.armies).toBe(7);
-    expect(c.hooks.ui().line).toMatch(/^Attack Yakutsk from Siberia · \d+%$/);
+    expect(c.hooks.ui().line).toBe('Attack from Siberia · click an enemy');
     c.dispose();
   });
 

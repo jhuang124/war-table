@@ -8,7 +8,7 @@
 //   - the idle board settles to 0 tweens; a Place click shows its effect within 50 ms
 //   - no frame > 50 ms on the first roll after a cold load
 //   - no text selection on double-click, no context menu, TV text ≥ 20 px and no HUD overlap
-import { ART, check, clickBtn, clickT, dblT, finish, idle, loadScenario, open, scenario, state } from './lib';
+import { ART, check, clickBtn, clickT, finish, idle, loadScenario, open, place, scenario, seg, state } from './lib';
 import type { Page } from 'playwright';
 import type { Phase } from '../../src/engine';
 
@@ -33,7 +33,8 @@ async function trayAndBand(page: Page) {
     };
     return {
       tray: { top: dbg.cy - dbg.trayH / 2, bottom: dbg.cy + dbg.trayH / 2, left: dbg.cx - dbg.trayW / 2, right: dbg.cx + dbg.trayW / 2, die: dbg.size },
-      band: r('.battle'),
+      // The tray band the HUD reports (the header is only the line above the tray now).
+      band: r('.band-probe'),
       headerText: (() => {
         const els = [...document.querySelectorAll('.bt-head .bt-side')];
         if (!els.length) return null;
@@ -76,7 +77,7 @@ for (const vp of [
   await page.screenshot({ path: `${ART}/feel-tray-${tag}.png` });
   const tol = 1.5;
   check(!!g.band && g.tray.top >= g.band.top - tol && g.tray.bottom <= g.band.bottom + tol, `${tag}: tray ${Math.round(g.tray.top)}–${Math.round(g.tray.bottom)} inside band ${Math.round(g.band!.top)}–${Math.round(g.band!.bottom)}`, results);
-  check(!!g.headerText && g.headerText.bottom <= g.tray.top + tol && g.headerText.top >= g.band!.top - tol, `${tag}: header line ${Math.round(g.headerText!.top)}–${Math.round(g.headerText!.bottom)} sits above the tray (${Math.round(g.tray.top)})`, results);
+  check(!!g.headerText && g.headerText.bottom <= g.tray.top + tol && g.headerText.bottom >= g.tray.top - 24 && !!g.top && g.headerText.top >= g.top.bottom, `${tag}: header line ${Math.round(g.headerText!.top)}–${Math.round(g.headerText!.bottom)} sits above the tray (${Math.round(g.tray.top)})`, results);
   check(!!g.bar && g.tray.bottom <= g.bar.top + tol, `${tag}: the tray clears the bottom strip (${Math.round(g.tray.bottom)} ≤ ${Math.round(g.bar!.top)})`, results);
   check(!!g.top && g.top.bottom <= 0.07 * g.H && !!g.bar && g.H - g.bar.top <= 0.11 * g.H, `${tag}: chrome is two thin strips (top ${Math.round(g.top!.bottom)} px, bottom ${Math.round(g.H - g.bar!.top)} px)`, results);
   check(Math.abs((g.tray.left + g.tray.right) / 2 - vp.width / 2) < 1 && Math.abs((g.band!.left + g.band!.right) / 2 - vp.width / 2) < 1, `${tag}: tray and band share the centre line`, results);
@@ -130,10 +131,19 @@ for (const vp of [
   await page.screenshot({ path: `${ART}/feel-home-1280x800.png` });
 
   const rects: Record<string, string> = {};
+  const tracks: Record<string, string> = {};
   const barRect = async (k: string) => {
     rects[k] = await page.evaluate(() => {
       const b = document.querySelector('[data-testid="strip"]')!.getBoundingClientRect();
       return `${b.left},${b.top},${b.width},${b.height}`;
+    });
+    // The Turn Track never disappears or renames (docs/ROUND2.md §A): same labels, same place.
+    tracks[k] = await page.evaluate(() => {
+      const t = document.querySelector('[data-testid="track"]') as HTMLElement | null;
+      if (!t || !t.offsetParent) return 'hidden';
+      const b = t.getBoundingClientRect();
+      const labels = [...t.querySelectorAll('.tr-label')].map((x) => x.textContent).join('|');
+      return `${labels} @ ${Math.round(b.left)},${Math.round(b.top)},${Math.round(b.height)}`;
     });
   };
   await barRect('place');
@@ -164,28 +174,30 @@ for (const vp of [
     return out;
   });
   check(ctx.every(Boolean), `context menu suppressed on HUD and board (${ctx.join(', ')})`, results);
-  await page.waitForTimeout(420);
-  await dblT(page, 'ural');
+  await clickBtn(page, 'btn-place');
   await idle(page);
-  await clickBtn(page, 'btn-attack');
+  await seg(page, 'attack');
   await idle(page);
   await barRect('attack');
   await clickT(page, 'afghanistan');
   await barRect('armed');
   await clickBtn(page, 'btn-blitz');
+  await page.waitForTimeout(250);
+  await barRect('rolling');
   await idle(page);
   if ((await state(page))!.phase.kind === 'occupy') await barRect('occupy');
   if ((await state(page))!.phase.kind === 'occupy') await clickBtn(page, 'btn-move');
   await idle(page);
-  await page.keyboard.press('Escape');
-  await clickBtn(page, 'btn-fortify');
+  await seg(page, 'fortify');
   await idle(page);
   await barRect('fortify');
-  await clickBtn(page, 'btn-endTurn');
+  await seg(page, 'endTurn');
   await page.waitForTimeout(700);
   await barRect('watching');
   const distinct = new Set(Object.values(rects));
   check(distinct.size === 1, `bottom strip rect identical across ${Object.keys(rects).join(', ')}: ${[...distinct].join(' | ')}`, results);
+  const trackSet = new Set(Object.values(tracks));
+  check(trackSet.size === 1 && [...trackSet][0].startsWith('Place|Attack|Fortify|End turn @'), `Turn Track identical across ${Object.keys(tracks).join(', ')}: ${[...trackSet].join(' | ')}`, results);
   await browser.close();
   if (errors.length) results.push(`FAIL console errors: ${errors.join(' | ')}`);
 }

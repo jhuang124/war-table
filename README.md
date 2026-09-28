@@ -18,8 +18,9 @@ For a production build: `npm run build`, then `npm run preview` (http://127.0.0.
 
 ## Playing
 
-**New game.** Name the seats (2–4), pick each seat's color and Human/AI (Easy · Normal · Hard). Pick a
-length and a setup, then **Start**. The line above Start says exactly what you picked.
+**New game.** Name the seats (2–4), pick Human/AI (Easy · Normal · Hard), and click a seat's colour
+emblem to pick from the six colours (defaults: crimson, cobalt, amber, emerald). Pick a length and a
+setup, then **Start**. The line above Start says exactly what you picked.
 
 | Length | Goal | Estimate |
 |---|---|---|
@@ -34,22 +35,34 @@ against three AIs.
 | Setup | What happens |
 |---|---|
 | Quick deal (default) | Territories dealt at random, armies placed for you. You're playing in seconds. |
-| Place your own | Territories dealt at random; you place your starting armies in two passes. Pick a territory, choose how many, **Place**; **Done** commits the pass. |
+| Place your own | Territories dealt at random; you place your starting armies in two passes. Pick a territory, choose how many, **Place**; **Done** on the track commits the pass. |
 
-**A turn.** The strip at the bottom shows the step (Place · Attack · Fortify), one line saying what to
-do, and at most two buttons. The top strip shows each player and how many territories they hold.
+**A turn.** The board fills the screen; the HUD floats on it. At the top, one pill per player (how many
+territories they hold) and ≡. At the bottom, one strip: the **Turn Track** on the left
+(**Place · Attack · Fortify · End turn**), one line saying what to do, and on the right the action
+zone: at most one count control and two buttons.
 
-1. **Place.** Click one of your territories, pick how many armies (defaults to all), press **Place**.
-   **Undo** takes back the last placement. Holding a card set? **Trade cards +8** cashes your best set
-   (at 5 cards you must). **Attack →** when you're done.
+The track is how you move through a turn: click the next segment you want. It never goes back; a
+segment you can't reach yet tells you why in the line ("Place your 3 armies first"); the one that's
+recommended next glows. A click on the board only ever selects; buttons commit.
+
+1. **Place.** Click one of your territories, pick how many armies (defaults to all; − N + for a few, a
+   slider for more), press **Place N**. **Undo** takes back the last placement. **Cards N** shows your
+   hand and trades your best set (at 5 cards you must trade first). Then click **Attack** on the track.
 2. **Attack.** Click an enemy next to you; your strongest neighbour attacks (click another of yours to
-   switch). The line shows the odds. **Blitz** keeps rolling until it falls; **Roll** rolls once. After
-   a win, pick how many to move in (a sensible default is set) or just click your next target.
-   Conquer at least one territory to earn a card.
-3. **Fortify.** One move through your own territories, then the turn ends. Or **End turn**.
+   switch). The line shows the odds, `Ural → Siberia · 82%`. **Blitz** keeps rolling until it falls;
+   **Roll** rolls once. After a win, pick how many to move in (the line shows what each side keeps)
+   and press **Move N**; the new territory is then ready to keep attacking. Clicking the ocean or Esc
+   clears a selection. Conquer at least one territory to earn a card.
+3. **Fortify.** One move through your own territories: pick where from, where to, how many, then
+   **Move N · end turn**. Or click **End turn** on the track (from Attack it skips fortifying).
 
-AI turns play as a short highlight reel. Change their pace in Settings. A click during an AI turn skips
-the current fight; a click during your own animation finishes it.
+Pieces show army size like the board game: a soldier for 1–4, a horse for 5–9, a cannon for 10+; the
+number is the exact count. If you orbit or zoom away, **Reset view** appears next to ≡.
+
+AI turns play as a short highlight reel: the AI's marker moves along the same track and the line says
+what it did ("Cobalt takes Siam"). Change their pace in Settings. A click during an AI turn skips the
+current fight; a click during your own animation finishes it (the track waits while dice roll).
 
 **Ending.** First to the goal wins, or the menu (≡ or Esc) → **End game now** calls it for whoever holds the
 most territories. Victory shows awards (Nemesis, Hot/Cursed dice, Biggest cash-in), a territories
@@ -59,15 +72,16 @@ The game autosaves after every action. Close the tab, come back, press **Continu
 
 ## Controls
 
-Everything works with the mouse and the on-screen buttons. A few keys speed things up:
+Everything works with the mouse: the board to select, the buttons and the Turn Track to act. A few
+hidden keys speed things up:
 
 | Input | Does |
 |---|---|
-| Click a tile | What the bottom line says |
-| Double-click your tile (Place) | Place all remaining armies there |
-| Left-drag / right-drag / wheel | Orbit / pan / zoom (the camera returns home at your next turn) |
-| Enter | The brass button |
-| Space | Blitz, or confirm a move / placement |
+| Click a tile | Selects (what the bottom line says); never commits |
+| Click the ocean | Clears the selection |
+| Left-drag / right-drag / wheel | Orbit / pan / zoom (**Reset view**, or the camera returns home at your next turn) |
+| Enter | The brass thing: the brass button, or the glowing track segment |
+| Space | Blitz, or confirm a move / placement (never changes phase) |
 | Esc | Back out one step, then the menu |
 
 ## House rules (New game → House rules)
@@ -95,7 +109,7 @@ reduce motion (also follows the system setting).
   and the volume in Settings.
 - **Port 5273 is busy**: another dev server is running. Stop it, or run `npx vite --port 5280`.
 - **Everything is tiny on the TV**: Text size → TV on the title screen (or Settings).
-- **The camera got lost**: it returns home when your next turn starts; F frames your selection.
+- **The camera got lost**: click **Reset view** (top right); it also returns home when your next turn starts.
 - **Start over**: Pause → Restart, or clear the site's storage (`risk3d.*` keys in localStorage).
 
 ## For developers
@@ -114,4 +128,6 @@ reduce motion (also follows the system setting).
 
 Dev pages: `render-sandbox.html` (the board alone, with an AI game and every animation on buttons),
 `audio.html` (every sound), `ui-gallery.html` (every HUD state). `window.__risk` is the test API
-(SPEC §9). The design lives in `docs/SPEC.md` (what) and `docs/UX.md` (how it feels).
+(SPEC §9). The design lives in `docs/SPEC.md` (what) and `docs/UX.md` (how it feels); `docs/ROUND2.md`
+(the Turn Track, board clicks select / buttons commit, the full-screen board, sculpted pieces) overrides
+both where they differ.
