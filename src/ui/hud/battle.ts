@@ -20,7 +20,7 @@ class Side {
   }
   update(s: BattleSideVM): void {
     setStyle(this.el, '--seat-light', PLAYER_COLORS[s.seat.color].light);
-    setText(this.terr, s.territory.toUpperCase());
+    setText(this.terr, s.territory); // caps by CSS (phones in portrait keep the name's own case)
     if (s.armies !== this.last) {
       if (this.last >= 0) pop(this.armies, 1.2, 160);
       this.last = s.armies;
@@ -78,6 +78,8 @@ export class BattleHeader {
       this.el.classList.remove('hidden', 'leaving');
       this.el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: 'ease-out' });
     }
+    // Phones hide the header while no tray is under it (mobile.css); it rides in and out with the tray.
+    toggle(this.el, 'no-tray', !vm.tray && !vm.rolling);
     this.att.update(vm.attacker);
     this.def.update(vm.defender);
     const cap = vm.captured;

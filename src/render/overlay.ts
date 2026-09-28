@@ -127,7 +127,17 @@ export class Overlay {
   private _ui = 1;
   private labScale = -1;
   zoomScale = 1;
+  /** Smallest count plaque, CSS px (× the text-size softening). Phones use 20 (docs/MOBILE.md §6). */
+  minPlaque = 22;
+  /** Phones: nudge overlapping count plaques apart (relaxPlaques). */
+  relax = false;
+  private pos = new Float64Array(TERRITORY_IDS.length * 6);
+  private off = new Float64Array(TERRITORY_IDS.length * 2);
   private labelsDirty = true;
+  /** Names need a re-layout (the board's render-on-demand loop asks). */
+  get dirty(): boolean {
+    return this.labelsDirty;
+  }
   width = 1;
   height = 1;
   /** Screen rect (container px) the dice tray covers while it shows; numbers under it hide. */
@@ -278,6 +288,8 @@ export class Overlay {
     const el = document.createElement('div');
     el.className = 'rb-loss';
     el.textContent = `−${n}`;
+    // Hidden until the next frame places it (never a flash at the corner).
+    el.style.visibility = 'hidden';
     this.root.insertBefore(el, this.cut);
     const chip: Chip = { el, id, t: 0, side, lastT: '' };
     this.chips.push(chip);
@@ -328,6 +340,67 @@ export class Overlay {
     return b.onScreen ? { x: b.x, y: b.y } : null;
   }
 
+  private overTray(x0: number, y0: number, x1: number, y1: number, above = 0): boolean {
+    const o = this.occluder;
+    return o.on && x1 > o.x0 && x0 < o.x1 && y1 > o.y0 - above && y0 < o.y1;
+  }
+  /** Height of the HUD's fight header line just above the tray (CSS px). */
+  get headerBand(): number {
+    // Phones only: there the tray band is tight and the header runs over the board; on desktop the band
+    // has its own text strip and the home view keeps pieces clear of the tray (behaviour unchanged).
+    return this.relax ? 30 * this._ui : 0;
+  }
+  private trayWasOn = false;
+
+  /**
+   * Phones: at the home scale the ≥ 20 px plaques are bigger than the tiles, and neighbours overlap. Nudge
+   * overlapping plaques apart along their shallower overlap, each by at most ~0.45 of its height from its
+   * piece, so every number stays readable and still sits at its own piece. Deterministic per layout.
+   */
+  private relaxPlaques(n: number): void {
+    const P = this.pos;
+    const O = this.off;
+    O.fill(0);
+    const gap = 1;
+    for (let it = 0; it < 4; it++) {
+      let any = false;
+      for (let i = 0; i < n; i++) {
+        const a = i * 6;
+        if (!P[a + 5]) continue;
+        for (let j = i + 1; j < n; j++) {
+          const b = j * 6;
+          if (!P[b + 5]) continue;
+          const dx = P[b] + O[j * 2] - (P[a] + O[i * 2]);
+          const dy = P[b + 1] + O[j * 2 + 1] - (P[a + 1] + O[i * 2 + 1]);
+          const ox = (P[a + 2] + P[b + 2]) / 2 + gap - Math.abs(dx);
+          const oy = (P[a + 3] + P[b + 3]) / 2 + gap - Math.abs(dy);
+          if (ox <= 0 || oy <= 0) continue;
+          any = true;
+          // Move along the axis that needs less (vertical slightly favoured: plaques are wider than tall).
+          if (oy <= ox * 1.2) {
+            const s = (dy >= 0 ? 1 : -1) * oy * 0.5;
+            O[i * 2 + 1] -= s;
+            O[j * 2 + 1] += s;
+          } else {
+            const s = (dx >= 0 ? 1 : -1) * ox * 0.5;
+            O[i * 2] -= s;
+            O[j * 2] += s;
+          }
+        }
+      }
+      for (let i = 0; i < n; i++) {
+        const lim = P[i * 6 + 3] * 0.45;
+        O[i * 2] = Math.max(-lim, Math.min(lim, O[i * 2]));
+        O[i * 2 + 1] = Math.max(-lim, Math.min(lim, O[i * 2 + 1]));
+      }
+      if (!any) break;
+    }
+    for (let i = 0; i < n; i++) {
+      P[i * 6] += O[i * 2];
+      P[i * 6 + 1] += O[i * 2 + 1];
+    }
+  }
+
   private underTray(x: number, y: number): boolean {
     const o = this.occluder;
     return o.on && x > o.x0 && x < o.x1 && y > o.y0 && y < o.y1;
@@ -353,10 +426,30 @@ export class Overlay {
   /** Plaque height for a projected base diameter: ~0.74 of the base, never under 22 px (× text size). */
   plaqueH(diam: number): number {
     const soft = 1 + (this._ui - 1) * 0.8;
-    return Math.max(22 * soft, Math.min(40 * soft, diam * 0.74));
+    return Math.max(this.minPlaque * soft, Math.min(40 * soft, diam * 0.74));
   }
   private plaqueW(h: number, digits: number): number {
     return digits >= 3 ? h * 1.62 : digits === 2 ? h * 1.28 : h;
+  }
+
+  /**
+   * The count plaque drawn under a container point (the numbers sit above the whole 3D board, so on touch
+   * the number under the finger is what was meant). Overlapping plaques: the one drawn on top (a staged
+   * "+N" plaque, else the later in document order) — the number the player can actually see there.
+   */
+  plaqueAt(x: number, y: number, pad = 0): TerritoryId | null {
+    let best: TerritoryId | null = null;
+    let bestZ = -1;
+    for (const b of this.badgeList) {
+      if (!b.visible || !b.onScreen || b.lastT === 'off') continue;
+      if (Math.abs(x - b.px) > b.pw / 2 + pad || Math.abs(y - b.py) > b.ph / 2 + pad) continue;
+      const z = b.ghostN > 0 ? 1 : 0;
+      if (z >= bestZ) {
+        bestZ = z;
+        best = b.id;
+      }
+    }
+    return best;
   }
 
   /** Every piece's screen box (container px) this frame, for the board's picking. Null = not drawn. */
@@ -372,32 +465,59 @@ export class Overlay {
     const r = dpr();
     const R = this.tokens.radius;
     let moved = false;
-    for (let i = 0; i < this.badgeList.length; i++) {
-      const b = this.badgeList[i];
+    const list = this.badgeList;
+    const n = list.length;
+    const P = this.pos;
+    for (let i = 0; i < n; i++) {
+      const b = list[i];
       const [x, y, d, z] = this.disc(this.tokens.top(b.id), R, camera);
       const [px, py0] = this.proj(this.tokens.plaquePoint(b.id), camera);
       const [, fy] = this.proj(this.tokens.figTop(b.id), camera);
       // the plaque hangs from the base's front rim, its top just over the rim
       const ph = this.plaqueH(d);
       const py = py0 + ph * 0.18;
-      if (Math.abs(px - b.px) > 0.25 || Math.abs(py - b.py) > 0.25 || Math.abs(fy - b.box[1]) > 0.25) moved = true;
       b.cx = x;
       b.cy = y;
       b.diam = d;
-      b.px = px;
-      b.py = py;
       b.x = x + rect.left;
       b.y = y + rect.top;
       b.onScreen = z < 1 && x > -20 && x < W + 20 && y > -20 && y < H + 20;
       const digits = String(Math.max(0, b.shown)).length;
-      const pw = this.plaqueW(ph, digits);
+      const o = i * 6;
+      P[o] = px;
+      P[o + 1] = py;
+      P[o + 2] = this.plaqueW(ph, digits);
+      P[o + 3] = ph;
+      P[o + 4] = fy;
+      P[o + 5] = b.visible && b.onScreen && this.tokens.visual(b.id) >= 0.05 ? 1 : 0;
+    }
+    if (this.relax) this.relaxPlaques(n);
+    for (let i = 0; i < n; i++) {
+      const b = list[i];
+      const o = i * 6;
+      const px = P[o];
+      const py = P[o + 1];
+      const pw = P[o + 2];
+      const ph = P[o + 3];
+      const fy = P[o + 4];
+      const x = b.cx;
+      const d = b.diam;
+      const digits = String(Math.max(0, b.shown)).length;
+      if (Math.abs(px - b.px) > 0.25 || Math.abs(py - b.py) > 0.25 || Math.abs(fy - b.box[1]) > 0.25) moved = true;
+      b.px = px;
+      b.py = py;
       b.ph = ph;
       b.pw = pw;
       const hw = Math.max((this.tokens.halfWidth(b.id) / R) * (d / 2), pw / 2);
-      b.box = [x - hw, Math.min(fy, py - ph / 2), x + hw, py + ph / 2];
+      // (A nudged plaque widens its piece's box, so a tap on the number still picks its own territory.)
+      b.box = this.relax
+        ? [Math.min(x - hw, px - pw / 2), Math.min(fy, py - ph / 2), Math.max(x + hw, px + pw / 2), py + ph / 2]
+        : [x - hw, Math.min(fy, py - ph / 2), x + hw, py + ph / 2];
       if (!b.visible) continue;
       const vis = this.tokens.visual(b.id);
-      const tray = this.underTray(px, py);
+      // Any part of the plaque over the dice tray, or behind the HUD's fight header just above it, hides it
+      // (a number straddling the tray's rim or cut by the header strip reads as broken).
+      const tray = this.overTray(px - pw / 2, py - ph / 2, px + pw / 2, py + ph / 2, this.headerBand);
       if (!b.onScreen || vis < 0.05 || tray) {
         if (b.lastT !== 'off') {
           b.el.style.visibility = 'hidden';
@@ -428,6 +548,10 @@ export class Overlay {
       }
     }
     this.updateTravelers(camera, R, r);
+    if (this.occluder.on !== this.trayWasOn) {
+      this.trayWasOn = this.occluder.on;
+      this.labelsDirty = true;
+    }
     this.updateLabels(moved, r);
     for (const c of this.chips) {
       const b = this.badges.get(c.id)!;
@@ -438,6 +562,7 @@ export class Overlay {
       const y = b.box[1] + 10 * this._ui - 18 * e * this._ui;
       const tr = `translate3d(${snap(x, r)}px,${snap(y, r)}px,0) translate(-50%,-50%)`;
       if (tr !== c.lastT) {
+        if (!c.lastT) c.el.style.visibility = 'visible';
         c.el.style.transform = tr;
         c.el.style.opacity = op.toFixed(3);
         c.lastT = tr;
@@ -541,6 +666,10 @@ export class Overlay {
       for (let k = 0; k < boxes.length; k += 4) if (hit([boxes[k], boxes[k + 1], boxes[k + 2], boxes[k + 3]], x0, y0, x1, y1)) return false;
       return true;
     };
+    const freeOfNames = (x0: number, y0: number, x1: number, y1: number): boolean => {
+      for (let k = 0; k < boxes.length; k += 4) if (hit([boxes[k], boxes[k + 1], boxes[k + 2], boxes[k + 3]], x0, y0, x1, y1)) return false;
+      return true;
+    };
     // Focused names first (they always show), then the rest in board order.
     const order = [...Array(n).keys()].sort((a, b) => Number(focus.has(this.labels[b].id)) - Number(focus.has(this.labels[a].id)));
     for (const i of order) {
@@ -567,8 +696,22 @@ export class Overlay {
         const above = shown ? b.box[1] - 2 - l.h : b.cy - 2 - l.h;
         if (free(i, x0, below, x1, below + l.h)) place = [b.cx, below];
         else if (shown && free(i, x0, above, x1, above + l.h)) place = [b.cx, above];
-        else if (isFocus) place = [b.cx, below];
+        else if (isFocus && !this.relax) place = [b.cx, below];
+        else if (isFocus) {
+          // Phones: a name that must show: beside its piece if that is clear, else wherever it at least misses the
+          // other names (the source and target names of a fight on a phone would otherwise stack).
+          const cands: [number, number][] = [];
+          for (const y of shown ? [below, above] : [below]) for (const dx of [0.55, -0.55]) cands.push([b.cx + dx * l.w, y]);
+          place = cands.find(([cx, y]) => free(i, cx - l.w / 2, y, cx + l.w / 2, y + l.h)) ?? null;
+          if (!place) {
+            const all: [number, number][] = [[b.cx, below], ...(shown ? ([[b.cx, above]] as [number, number][]) : []), ...cands];
+            place = all.find(([cx, y]) => freeOfNames(cx - l.w / 2, y, cx + l.w / 2, y + l.h)) ?? [b.cx, below];
+          }
+        }
       }
+      // While the dice tray shows, the HUD's header line above it names the fight: names that would sit in
+      // that line (or on the tray) stay hidden rather than print over it.
+      if (place && this.occluder.on && this.overTray(place[0] - l.w / 2, place[1] + 2, place[0] + l.w / 2, place[1] + l.h, this.headerBand)) place = null;
       const on = !!place;
       if (place) {
         boxes.push(place[0] - l.w / 2, place[1], place[0] + l.w / 2, place[1] + l.h);

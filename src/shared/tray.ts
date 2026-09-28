@@ -18,3 +18,17 @@ export function trayGeometry(W: number, H: number, band: number, uiScale: number
   const trayH = Math.min(band, Math.round(die * 1.9 + 8));
   return { trayW, die, trayH };
 }
+
+/**
+ * The tray the board actually draws (mirrors `boardTrayGeometry` in src/render/dice.ts, mobile pass):
+ * below 520 px wide the tray runs full width (minus 12 px a side) and the dice shrink to fit it; it is
+ * never taller than the shared formula. The HUD sizes the band and the fight header from this.
+ */
+export function boardTrayGeometry(W: number, H: number, band: number, uiScale: number): TrayGeometry {
+  const g = trayGeometry(W, H, band, uiScale);
+  if (W >= 520) return g;
+  const trayW = Math.max(g.trayW, W - 24);
+  const die = Math.min(g.die, (trayW - 24) / 9.4);
+  const trayH = Math.min(g.trayH, Math.round(die * 1.9 + 8));
+  return { trayW, die, trayH };
+}

@@ -51,6 +51,15 @@ export interface BoardStats {
    * ≤ 45). Read by __risk.metrics().maxCameraDegPerSec.
    */
   maxCameraDegPerSec?: number;
+  /**
+   * Additive (renderer, mobile pass): frames actually drawn per second. The board renders on demand
+   * (docs/MOBILE.md §7): 0 while nothing animates or moves; `fps` is still the rAF rate.
+   */
+  drawnFps?: number;
+  /** Additive (renderer, mobile pass): the canvas pixel ratio in use (capped at 2; 1.5 on a struggling touch GPU). */
+  pixelRatio?: number;
+  /** Additive (renderer, mobile pass): the WebGL context is lost and the board is rebuilding. */
+  contextLost?: boolean;
 }
 
 export interface PlayEventOptions {
@@ -167,6 +176,22 @@ export interface BoardView {
    * so the HUD's battle header can fade in lockstep (tray fades 300 ms, ~1 s after a decided fight).
    */
   onTrayChange?(cb: (visible: boolean) => void): void;
+
+  /**
+   * Additive (renderer, mobile pass; docs/MOBILE.md §3): a touch long-press (400 ms, one finger, not moved)
+   * on a territory — or on open water within ~22 px of one — calls `cb` with that territory and the
+   * finger's client position, so the HUD can show the name card above the finger. Sliding the held finger
+   * calls it again for each tile it moves onto; lifting (or a second finger / a cancel) calls `cb(null)`.
+   * A long-press never selects (no onTerritoryClick). Mouse input never fires it.
+   */
+  onTerritoryLongPress?(cb: (info: TerritoryPointerInfo | null) => void): void;
+  /**
+   * Additive (renderer, mobile pass; docs/MOBILE.md §7): the WebGL context was lost (`true`: show a quiet
+   * `Reloading the board…`) or the board has been rebuilt and has drawn again (`false`: hide it). The
+   * canvas shows the far-ocean colour meanwhile, never white. Game state, pending playEvent promises and
+   * highlights are unaffected.
+   */
+  onContextLoss?(cb: (lost: boolean) => void): void;
 
   /**
    * Screen position (client px) of a territory's army piece — the top centre of its base, which is always

@@ -14,19 +14,19 @@ import type {
   ViewportInsets,
 } from './BoardView';
 import type { GameEvent, GameState, PlayerId, TerritoryId } from '../engine/types';
-import { ADJACENCY, TERRITORY_IDS } from '../engine/mapData';
+import { ADJACENCY, TERRITORIES, TERRITORY_IDS } from '../engine/mapData';
 import type { AudioEngine, PlayOptions, SfxName } from '../audio/types';
 import { PLAYER_COLORS, type PlayerPalette } from '../shared/palette';
 import { Animator, ease, clamp, type Run } from './anim';
 import { buildScene } from './scene';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { TileSet, type Tile, type RimMode } from './tiles';
 import { TokenSystem } from './tokens';
-import { trayGeometry } from '../shared/tray';
 import { Overlay } from './overlay';
 import { Continents } from './continents';
 import { AttackArrow, FortifyRoute, Particles, Ripples, SeaLanes } from './fx';
-import { DiceTray } from './dice';
-import { CameraRig, HOME_PITCH } from './camera';
+import { DiceTray, boardTrayGeometry } from './dice';
+import { CameraRig, HOME_CLEAR_PX, HOME_PITCH } from './camera';
 import { paintGrainTexture } from './textures';
 import {
   IVORY,
@@ -82,36 +82,58 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   setBoardSize(G);
   await loadFonts();
 
+  // --- device profile (docs/MOBILE.md §7) ------------------------------------------
+  // Chosen by capability, not user agent: a coarse primary pointer = a touch device (phone or tablet);
+  // a small screen on top of that = a phone GPU budget.
+  const mq = (q: string) => typeof matchMedia === 'function' && matchMedia(q).matches;
+  const coarse = mq('(pointer: coarse)') || (!mq('(pointer: fine)') && (navigator.maxTouchPoints ?? 0) > 0);
+  const phoneGpu = coarse && Math.min(screen.width || 9999, screen.height || 9999) < 600;
+  /** Device pixel ratio cap: 2 everywhere; touch devices step down to 1.5 when frames miss budget (§7). */
+  let dprCap = 2;
+  const pixelRatio = () => Math.min(dprCap, window.devicePixelRatio || 1);
+
   // --- renderer -------------------------------------------------------------
-  const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true, powerPreference: 'high-performance', alpha: false });
-  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.08;
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFShadowMap;
-  renderer.shadowMap.autoUpdate = false;
-  renderer.shadowMap.needsUpdate = true;
-  renderer.autoClear = false;
-  renderer.info.autoReset = false;
-  const canvas = renderer.domElement;
-  Object.assign(canvas.style, {
-    position: 'absolute',
-    inset: '0',
-    width: '100%',
-    height: '100%',
-    display: 'block',
-    opacity: '0',
-    transition: 'opacity 400ms ease-out',
-    touchAction: 'none',
-    outline: 'none',
-  } as Partial<CSSStyleDeclaration>);
+  const makeRenderer = (): THREE.WebGLRenderer => {
+    const r = new THREE.WebGLRenderer({ antialias: true, stencil: true, powerPreference: 'high-performance', alpha: false });
+    r.setPixelRatio(pixelRatio());
+    r.outputColorSpace = THREE.SRGBColorSpace;
+    r.toneMapping = THREE.ACESFilmicToneMapping;
+    r.toneMappingExposure = 1.08;
+    r.shadowMap.enabled = true;
+    r.shadowMap.type = THREE.PCFShadowMap;
+    r.shadowMap.autoUpdate = false;
+    r.shadowMap.needsUpdate = true;
+    r.autoClear = false;
+    r.info.autoReset = false;
+    Object.assign(r.domElement.style, {
+      position: 'absolute',
+      inset: '0',
+      width: '100%',
+      height: '100%',
+      display: 'block',
+      opacity: '0',
+      transition: 'opacity 400ms ease-out',
+      touchAction: 'none',
+      outline: 'none',
+      // A lost context (or the first frames) shows the far ocean, never a white page.
+      background: '#0a1a1d',
+      webkitUserSelect: 'none',
+      userSelect: 'none',
+      webkitTouchCallout: 'none',
+      webkitTapHighlightColor: 'transparent',
+    } as Partial<CSSStyleDeclaration>);
+    return r;
+  };
+  let renderer = makeRenderer();
+  let canvas = renderer.domElement;
   if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
   container.appendChild(canvas);
 
   const anim = new Animator();
   const parts = buildScene(renderer, G);
   const scene = parts.scene;
+  // Cheaper lamp shadows on touch GPUs (the board's shadows only re-render when something moves).
+  if (coarse) parts.key.shadow.mapSize.set(phoneGpu ? 1024 : 2048, phoneGpu ? 1024 : 2048);
   const grain = paintGrainTexture();
   const tiles = new TileSet(G, grain);
   scene.add(tiles.group);
@@ -162,6 +184,13 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   let W = 1;
   let H = 1;
   let disposed = false;
+  /** Frames still to draw after the last change (a short tail, so settling values land). */
+  let hot = 3;
+  const invalidate = () => {
+    hot = Math.max(hot, 3);
+  };
+  /** playEvent promises still running: their handlers may change the board between tweens. */
+  let inflight = 0;
   let lastConquered: TerritoryId | null = null;
   let lastConquestAt = -1e9;
   let lastPairKey = '';
@@ -552,6 +581,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   const onPointerDown = (e: PointerEvent) => {
     if (disposed) return;
     audio?.unlock?.();
+    invalidate();
+    if (isTouch(e)) return onTouchDown(e);
     canvas.setPointerCapture?.(e.pointerId);
     const id = pick(e.clientX, e.clientY, true);
     down = { x: e.clientX, y: e.clientY, t: e.timeStamp, button: e.button, tile: id, id: e.pointerId };
@@ -571,6 +602,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   };
   const onPointerMove = (e: PointerEvent) => {
     if (disposed) return;
+    invalidate();
+    if (isTouch(e)) return onTouchMove(e);
     const r = rectOf();
     if (down) {
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
@@ -597,7 +630,10 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     else for (const cb of hoverCbs) cb(null);
   };
   const onPointerUp = (e: PointerEvent) => {
-    if (disposed || !down) return;
+    if (disposed) return;
+    invalidate();
+    if (isTouch(e)) return onTouchUp(e, false);
+    if (!down) return;
     const d = down;
     down = null;
     canvas.releasePointerCapture?.(e.pointerId);
@@ -624,30 +660,307 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       }
     }
   };
-  const onPointerCancel = () => {
+  const onPointerCancel = (e: PointerEvent) => {
+    invalidate();
+    if (isTouch(e)) return onTouchUp(e, true);
     down = null;
     dragging = false;
     releasePress();
     updateCursor();
   };
-  const onLeave = () => {
-    if (down) return;
+  const onLeave = (e: PointerEvent) => {
+    if (isTouch(e) || down) return;
     setHovered(null, null);
   };
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
+    invalidate();
     const r = rectOf();
     const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
     rig.zoomAt(e.clientX - r.left, e.clientY - r.top, clamp(dy, -240, 240));
   };
+
+  // --- touch (docs/MOBILE.md §3) ------------------------------------------------------------
+  // Tap = select (the click callback; a tap on open water picks the nearest selectable territory within
+  // ~22 px). One finger drags = pan, two = pinch-zoom about their midpoint (momentum + soft limits);
+  // no orbit, no double-tap zoom, and a drag never selects. Hold 400 ms = the name card
+  // (onTerritoryLongPress; sliding the held finger moves it to the tile under it; lifting clears it).
+  // A long-press never selects. The pressed tile shows its name (touch has no hover).
+  const TOUCH_SLOP = 10;
+  const TAP_TOLERANCE = 22;
+  const LONG_PRESS_MS = 400;
+  const isTouch = (e: PointerEvent) => e.pointerType === 'touch' || e.pointerType === 'pen';
+  const touches = new Map<number, { x: number; y: number; x0: number; y0: number; t0: number }>();
+  let tMode: 'none' | 'maybe' | 'pan' | 'pinch' | 'long' | 'done' = 'none';
+  let tPressed: TerritoryId | null = null;
+  let tNamed: TerritoryId | null = null;
+  let tLong: TerritoryId | null = null;
+  let tTimer: ReturnType<typeof setTimeout> | null = null;
+  let tPinch: { d: number; mx: number; my: number } | null = null;
+  const longCbs: ((i: TerritoryPointerInfo | null) => void)[] = [];
+  const emitLong = (info: TerritoryPointerInfo | null) => {
+    for (const cb of longCbs) {
+      try {
+        cb(info);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+  /** Distance (CSS px) from a canvas point to a territory: its tile outline or its piece, 0 inside. */
+  const pxDistTo = (id: TerritoryId, x: number, y: number, bp: [number, number] | null, upp: number, max: number): number => {
+    let d = Infinity;
+    const b = overlay.pieceBox(id);
+    if (b) {
+      const hw = (b[2] - b[0]) * 0.5 * 0.8;
+      const mx = (b[0] + b[2]) / 2;
+      const dx = Math.max(mx - hw - x, 0, x - mx - hw);
+      const dy = Math.max(b[1] + 2 - y, 0, y - b[3]);
+      d = Math.hypot(dx, dy);
+    }
+    if (bp && upp > 0) {
+      const t = tiles.get(id);
+      const [x0, y0, x1, y1] = t.bbox;
+      const bx = Math.max(x0 - bp[0], 0, bp[0] - x1);
+      const by = Math.max(y0 - bp[1], 0, bp[1] - y1);
+      if (Math.hypot(bx, by) / upp <= Math.min(d, max)) {
+        for (const ring of t.rings) {
+          if (pointInRing(bp[0], bp[1], ring)) return 0;
+          d = Math.min(d, distToRing(bp[0], bp[1], ring) / upp);
+        }
+      }
+    }
+    return d;
+  };
+  /**
+   * The territory a finger means: the tile or piece exactly under it; on open water, the nearest
+   * `pool` territory (the selectable ones for a tap, any for the name card) within TAP_TOLERANCE px.
+   */
+  const touchPick = (cx: number, cy: number, pool: Iterable<TerritoryId>): TerritoryId | null => {
+    const r0 = rectOf();
+    // A number under the finger wins: it is drawn above every piece and tile (a neighbour's figure may
+    // stand over it in 3D, e.g. Argentina's over Peru's plaque at the portrait zoom).
+    const onPlaque = overlay.plaqueAt(cx - r0.left, cy - r0.top);
+    if (onPlaque) return onPlaque;
+    const exact = pick(cx, cy, false);
+    if (exact) return exact;
+    const r = rectOf();
+    const x = cx - r.left;
+    const y = cy - r.top;
+    const bp = boardPoint(cx, cy);
+    const upp = bp ? unitsPerPx(bp[0], bp[1]) : 0;
+    let best: TerritoryId | null = null;
+    let bd = TAP_TOLERANCE;
+    for (const id of pool) {
+      const d = pxDistTo(id, x, y, bp, upp, bd);
+      if (d <= bd) {
+        bd = d;
+        best = id;
+      }
+    }
+    return best;
+  };
+  /** Name shown under the finger (the overlay's hover name; the mouse's own hover is restored after). */
+  const touchName = (id: TerritoryId | null) => {
+    if (id === tNamed) return;
+    tNamed = id;
+    overlay.setHover(id ?? hovered);
+  };
+  const touchPress = (id: TerritoryId | null) => {
+    if (tPressed === id) return;
+    if (tPressed) {
+      const t = tiles.get(tPressed);
+      tw(t, 'press', t.press, 0, 90, reduced ? ease.outCubic : ease.outBack(1.5));
+      setHoverLook(tPressed, false);
+    }
+    tPressed = id;
+    if (id) {
+      const t = tiles.get(id);
+      // Same-frame feedback: the tile dips and brightens under the finger.
+      tw(t, 'press', t.press, -0.05 * TILE_DEPTH, 60, ease.outQuad);
+      const light = 1;
+      if (Math.abs(t.light - light) > 1e-4) tw(t, 'light', t.light, light, 70);
+    }
+  };
+  const clearTimer = () => {
+    if (tTimer) clearTimeout(tTimer);
+    tTimer = null;
+  };
+  const endLong = () => {
+    if (!tLong) return;
+    setHoverLook(tLong, false);
+    tLong = null;
+    emitLong(null);
+  };
+  const longInfo = (id: TerritoryId, x: number, y: number): TerritoryPointerInfo => ({
+    territory: id,
+    clientX: x,
+    clientY: y,
+    shiftKey: false,
+    altKey: false,
+    metaKey: false,
+    button: 0,
+  });
+  const showLong = (id: TerritoryId, x: number, y: number) => {
+    if (tLong !== id) {
+      if (tLong) setHoverLook(tLong, false);
+      tLong = id;
+      setHoverLook(id, true);
+      touchName(id);
+    }
+    emitLong(longInfo(id, x, y));
+  };
+  const pinchOf = () => {
+    const [a, b] = [...touches.values()];
+    const r = rectOf();
+    return { d: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)), mx: (a.x + b.x) / 2 - r.left, my: (a.y + b.y) / 2 - r.top };
+  };
+  const onTouchDown = (e: PointerEvent) => {
+    canvas.setPointerCapture?.(e.pointerId);
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t0: e.timeStamp });
+    if (touches.size === 1) {
+      tMode = 'maybe';
+      const id = touchPick(e.clientX, e.clientY, clickable);
+      touchPress(id && clickable.has(id) ? id : null);
+      touchName(id);
+      clearTimer();
+      tTimer = setTimeout(() => {
+        tTimer = null;
+        if (disposed || tMode !== 'maybe' || touches.size !== 1) return;
+        const p = [...touches.values()][0];
+        const lid = touchPick(p.x, p.y, TERRITORY_IDS);
+        if (!lid) return;
+        tMode = 'long';
+        touchPress(null);
+        showLong(lid, p.x, p.y);
+        invalidate();
+      }, LONG_PRESS_MS);
+      return;
+    }
+    // A second finger: pinch (never a tap, never a long-press).
+    clearTimer();
+    touchPress(null);
+    touchName(null);
+    endLong();
+    if (touches.size === 2) {
+      tMode = 'pinch';
+      rig.touchBegin();
+      tPinch = pinchOf();
+    }
+  };
+  const onTouchMove = (e: PointerEvent) => {
+    const p = touches.get(e.pointerId);
+    if (!p) return;
+    const r = rectOf();
+    const px = p.x;
+    const py = p.y;
+    p.x = e.clientX;
+    p.y = e.clientY;
+    if (tMode === 'maybe') {
+      if (Math.hypot(p.x - p.x0, p.y - p.y0) <= TOUCH_SLOP) return;
+      clearTimer();
+      touchPress(null);
+      touchName(null);
+      tMode = 'pan';
+      rig.touchBegin();
+      rig.touchPan([p.x0 - r.left, p.y0 - r.top], [p.x - r.left, p.y - r.top]);
+      return;
+    }
+    if (tMode === 'pan') {
+      rig.touchPan([px - r.left, py - r.top], [p.x - r.left, p.y - r.top]);
+      return;
+    }
+    if (tMode === 'long') {
+      // Scrub: the card follows the finger to the tile under it.
+      const id = touchPick(p.x, p.y, TERRITORY_IDS);
+      if (id) showLong(id, p.x, p.y);
+      return;
+    }
+    if (tMode === 'pinch' && touches.size >= 2 && tPinch) {
+      const n = pinchOf();
+      rig.touchPan([tPinch.mx, tPinch.my], [n.mx, n.my]);
+      rig.touchZoom(n.mx, n.my, n.d / tPinch.d);
+      tPinch = n;
+    }
+  };
+  const onTouchUp = (e: PointerEvent, cancelled: boolean) => {
+    const p = touches.get(e.pointerId);
+    if (!p) return;
+    touches.delete(e.pointerId);
+    canvas.releasePointerCapture?.(e.pointerId);
+    if (tMode === 'pinch') {
+      if (touches.size === 1) {
+        // One finger stays: it carries on panning from where it is.
+        tMode = 'pan';
+        tPinch = null;
+        return;
+      }
+      if (touches.size >= 2) {
+        tPinch = pinchOf();
+        return;
+      }
+    }
+    if (touches.size > 0) return;
+    if (pendingRecenter) {
+      pendingRecenter = false;
+      if (!rig.displaced && tMode !== 'pan' && tMode !== 'pinch') void rig.goHome();
+    }
+    const mode = tMode;
+    tMode = 'none';
+    tPinch = null;
+    clearTimer();
+    touchPress(null);
+    touchName(null);
+    if (mode === 'long') endLong();
+    if (mode === 'pan' || mode === 'pinch') {
+      if (cancelled) rig.touchCancel();
+      else rig.touchEnd();
+      return;
+    }
+    if (mode !== 'maybe' || cancelled) return;
+    if (e.timeStamp - p.t0 >= LONG_PRESS_MS || Math.hypot(e.clientX - p.x0, e.clientY - p.y0) > TOUCH_SLOP) return;
+    const id = touchPick(e.clientX, e.clientY, clickable);
+    if (!id) return;
+    const info = pointerInfo(e, id, 0);
+    for (const cb of clickCbs) {
+      try {
+        cb(info);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+  // Safari's own pinch gesture events: never let the page zoom under the board.
+  const onGesture = (e: Event) => e.preventDefault();
+
   const onContext = (e: Event) => e.preventDefault();
-  canvas.addEventListener('pointerdown', onPointerDown);
-  canvas.addEventListener('pointermove', onPointerMove);
-  canvas.addEventListener('pointerup', onPointerUp);
-  canvas.addEventListener('pointercancel', onPointerCancel);
-  canvas.addEventListener('pointerleave', onLeave);
-  canvas.addEventListener('wheel', onWheel, { passive: false });
-  canvas.addEventListener('contextmenu', onContext);
+  const bindCanvas = (c: HTMLCanvasElement) => {
+    c.addEventListener('pointerdown', onPointerDown);
+    c.addEventListener('pointermove', onPointerMove);
+    c.addEventListener('pointerup', onPointerUp);
+    c.addEventListener('pointercancel', onPointerCancel);
+    c.addEventListener('pointerleave', onLeave);
+    c.addEventListener('wheel', onWheel, { passive: false });
+    c.addEventListener('contextmenu', onContext);
+    c.addEventListener('gesturestart', onGesture);
+    c.addEventListener('gesturechange', onGesture);
+    c.addEventListener('webglcontextlost', onContextLost, false);
+    c.addEventListener('webglcontextrestored', onContextRestored, false);
+  };
+  const unbindCanvas = (c: HTMLCanvasElement) => {
+    c.removeEventListener('pointerdown', onPointerDown);
+    c.removeEventListener('pointermove', onPointerMove);
+    c.removeEventListener('pointerup', onPointerUp);
+    c.removeEventListener('pointercancel', onPointerCancel);
+    c.removeEventListener('pointerleave', onLeave);
+    c.removeEventListener('wheel', onWheel);
+    c.removeEventListener('contextmenu', onContext);
+    c.removeEventListener('gesturestart', onGesture);
+    c.removeEventListener('gesturechange', onGesture);
+    c.removeEventListener('webglcontextlost', onContextLost, false);
+    c.removeEventListener('webglcontextrestored', onContextRestored, false);
+  };
+  bindCanvas(canvas);
   container.addEventListener('contextmenu', onContext);
 
   // --- camera helpers ------------------------------------------------------------------
@@ -973,6 +1286,21 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
           arrow.hide();
           arrowSource = null;
         }
+        if (rig.mode === 'fill') {
+          // Portrait phones: home centres on the new player's territories; the view eases there only if the
+          // player hasn't moved it (and never under a finger: then it waits for the lift).
+          setFocusFor(e.player);
+          rig.retarget();
+          if (autoCamera && !rig.attract && !rig.displaced && !rig.isHome(0.01)) {
+            if (touches.size > 0 || down) pendingRecenter = true;
+            else if (reduced || anim.instant) cutTo({ ...rig.home });
+            else {
+              void rig.goHome();
+              await waitCamera(run);
+            }
+          }
+          return;
+        }
         if (autoCamera && !rig.attract && !rig.isHome(0.1)) {
           if (reduced || anim.instant) cutTo({ ...rig.home });
           else {
@@ -1186,11 +1514,15 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     ensureColors(stateAfter);
     const run = anim.beginRun();
     const nb = NON_BLOCKING.has(e.type);
+    inflight++;
+    invalidate();
     return new Promise<void>((resolve) => {
       let settled = false;
       const finish = () => {
         if (settled) return;
         settled = true;
+        inflight--;
+        invalidate();
         clearTimeout(dog);
         anim.endRun(run);
         resolve();
@@ -1214,6 +1546,35 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     });
   };
 
+  // Portrait fill view: which player's territories home favours (the current player; before any owner,
+  // Europe and Africa).
+  let focusPlayer: PlayerId | -2 = -2;
+  let focusGame: string | null = null;
+  let pendingRecenter = false;
+  const FOCUS_FALLBACK = (() => {
+    const ids = TERRITORY_IDS.filter((id) => ['europe', 'africa'].includes(TERRITORIES[id].continent));
+    return ids.reduce((a, id) => a + tiles.get(id).anchorW.x, 0) / Math.max(1, ids.length);
+  })();
+  /**
+   * The fill view centres on where the player's turn happens: their front (their territories that border
+   * an enemy, and the enemies across it); with no front, all of theirs; with none, Europe / Africa.
+   */
+  function setFocusFor(p: PlayerId): void {
+    focusPlayer = p;
+    const mine = TERRITORY_IDS.filter((id) => owners[id] === p);
+    const front = new Set<TerritoryId>();
+    for (const id of mine) {
+      const foes = ADJACENCY[id].filter((n) => owners[n] !== p && owners[n] >= 0);
+      if (!foes.length) continue;
+      front.add(id);
+      for (const f of foes) front.add(f);
+    }
+    const ids = front.size ? [...front] : mine;
+    rig.setFocus(
+      ids.map((id) => tiles.get(id).anchorW.x),
+      FOCUS_FALLBACK,
+    );
+  }
   const syncState = (s: GameState) => {
     lastState = s;
     ensureColors(s);
@@ -1239,6 +1600,20 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       needShadow = true;
     }
     continents.refresh(owners, s, true);
+    // Portrait fill view: home follows the current player's territories. A new game / load / resume (a new
+    // state id) eases there; otherwise home is only re-aimed (turnStarted moves the camera, never mid-turn).
+    if (changed || focusPlayer !== s.currentPlayer || s.id !== focusGame) {
+      const fresh = s.id !== focusGame;
+      focusGame = s.id;
+      setFocusFor(s.currentPlayer);
+      if (rig.mode === 'fill') {
+        rig.retarget();
+        if (fresh && !rig.displaced && touches.size === 0 && !down && !rig.attract) {
+          if (reduced || anim.instant) cutTo({ ...rig.home });
+          else void rig.goHome();
+        }
+      }
+    }
   };
 
   // --- frame loop ------------------------------------------------------------------------------
@@ -1257,13 +1632,52 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   };
   let prevLift = new Float32Array(tiles.list.length);
 
+  /** Phone-sized layout (either side under 520 CSS px): phone framing, 20 px plaques, deeper zoom. */
+  let compact = false;
+  /** Landscape phones look down a little less steeply: a shorter land fits the short screen wider. */
+  let phoneLandPitch = HOME_PITCH;
+  let landClearOverride: number | null = null;
+  // The side safe areas (notch / Dynamic Island in landscape): the land runs to 12 px inside them.
+  const safeProbe = document.createElement('div');
+  Object.assign(safeProbe.style, {
+    position: 'absolute',
+    visibility: 'hidden',
+    pointerEvents: 'none',
+    width: '0',
+    height: '0',
+    paddingLeft: 'env(safe-area-inset-left, 0px)',
+    paddingRight: 'env(safe-area-inset-right, 0px)',
+  } as Partial<CSSStyleDeclaration>);
+  container.appendChild(safeProbe);
+  const readSafeArea = () => {
+    const cs = getComputedStyle(safeProbe);
+    rig.safeLeft = parseFloat(cs.paddingLeft) || 0;
+    rig.safeRight = parseFloat(cs.paddingRight) || 0;
+  };
   const resize = () => {
     const w = Math.max(1, container.clientWidth);
     const h = Math.max(1, container.clientHeight);
     clientOrigin();
+    invalidate();
     if (w === W && h === H) return;
     W = w;
     H = h;
+    compact = Math.min(W, H) < 520;
+    rig.trayKeepOutSoft = compact;
+    // Phones: portrait fills the height (east–west crops, pans); landscape fits the land edge to edge,
+    // tighter to the HUD bands. Desktop and tablets keep the round-2 home.
+    rig.mode = compact && H > W ? 'fill' : 'fit';
+    // Landscape phones are height-bound (the land is ~2.1:1, the free band ~3.5:1): the land's own edge
+    // (Arctic islands, Tierra del Fuego) may tuck under the translucent HUD bands, and the figures' tops a
+    // little under the top one; every count plaque and base stays 6 px clear, so every piece is tappable.
+    const phoneLand = compact && W > H;
+    rig.landClear = landClearOverride ?? (phoneLand ? -40 : compact ? 4 : HOME_CLEAR_PX);
+    rig.pieceClear = compact ? 6 : HOME_CLEAR_PX;
+    rig.figureClear = phoneLand ? -14 : null;
+    rig.homePitch = phoneLand ? phoneLandPitch : HOME_PITCH;
+    readSafeArea();
+    overlay.minPlaque = compact ? 20 : 22;
+    overlay.relax = compact;
     renderer.setSize(W, H, false);
     rig.setSize(W, H);
     overlay.width = W;
@@ -1276,7 +1690,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     layoutTray();
   };
   /** The dice tray's own band height when the HUD doesn't report one (tray + a little air). */
-  const nominalBand = () => trayGeometry(W, H, 1e9, uiScale).trayH + 12;
+  const nominalBand = () => boardTrayGeometry(W, H, 1e9, uiScale).trayH + 12;
   /** Largest band the HUD has reported (sticky): the home view's tray keep-out follows it. */
   let keepBand = 0;
   const layoutTray = () => {
@@ -1288,25 +1702,66 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     // mid-game (it re-homes once, the first time).
     keepBand = Math.max(keepBand, insets.trayBand);
     const kb = keepBand > 0 ? keepBand : nominalBand();
-    const g = trayGeometry(W, H, kb, uiScale);
+    const g = boardTrayGeometry(W, H, kb, uiScale);
     // Every piece (its plaque included) stays above the tray's top with a little air, and clear of its
     // sides. (The HUD's header line is centred and short; southern pieces near the tray's ends sit beside it.)
     const clear = 6 * uiScale;
     rig.trayKeepOut = { x0: W / 2 - g.trayW / 2 - 12, x1: W / 2 + g.trayW / 2 + 12, y0: H - insets.bottom - kb + (kb - g.trayH) / 2 - clear };
     setPieceExtents();
     rig.recomputeHome();
+    if (compact) {
+      // Phones: the count plaque (≥ 20 px) is far bigger than the piece at the home scale, so fit its real
+      // reach below the base (in board units at this scale), and let the player zoom in further.
+      for (let it = 0; it < 2; it++) {
+        const ppu = homePxPerUnit();
+        const ph = overlay.plaqueH(2 * tokens.radius * ppu);
+        const reach = (0.7 * ph) / Math.max(0.5, ppu * Math.sin((HOME_PITCH * Math.PI) / 180));
+        rig.pieceExtents = tokens.extentPoints(HOME_PITCH, Math.max(0.8 * (1 + (uiScale - 1) * 0.8), reach));
+        rig.recomputeHome();
+      }
+      rig.zoomInMax = clamp(40 / Math.max(1, homePxPerUnit()), 3.5, 9);
+    } else rig.zoomInMax = 3.5;
     continents.fitLabels(rig.homeCamera(), W);
+    invalidate();
+  };
+  /** CSS px per board unit at the centre of the board, at the home view. */
+  const homePxPerUnit = (): number => {
+    const cam = rig.homeCamera();
+    const a = toWorld(G.width / 2, G.height / 2, TILE_TOP).project(cam);
+    const b = toWorld(G.width / 2 + 1, G.height / 2, TILE_TOP).project(cam);
+    return Math.hypot((b.x - a.x) * 0.5 * W, (b.y - a.y) * 0.5 * H);
   };
 
   const ro = new ResizeObserver(() => resize());
   ro.observe(container);
   resize();
 
+  // --- power (docs/MOBILE.md §7): render on demand, pause when hidden, adaptive pixel ratio ----------
+  // The loop keeps ticking (cheap bookkeeping), but the GPU only draws when something changed: a tween,
+  // the camera, a piece, a particle, a pulsing outline, an API call or input (invalidate()).
+  let frameNo = 0;
+  let drawnN = 0;
+  let drawnAcc = 0;
+  let drawnFps = 0;
+  let drawnTotal = 0;
+  let drewLast = false;
+  /** Adaptive pixel ratio (touch GPUs): a smoothed frame time and how long it has been over budget. */
+  let emaMs = 16.7;
+  let overMs = 0;
+  let contextLost = false;
+  const applyPixelRatio = () => {
+    renderer.setPixelRatio(pixelRatio());
+    renderer.setSize(W, H, false);
+    particles.setViewportHeight(H * renderer.getPixelRatio(), camera.fov);
+    needShadow = true;
+    invalidate();
+  };
   const frame = () => {
     raf = requestAnimationFrame(frame);
     const now = performance.now();
     const rawDt = now - lastT;
     lastT = now;
+    frameNo++;
     if (rawDt > 0 && rawDt < 1000) {
       frameTimes.push(rawDt);
       if (frameTimes.length > 240) frameTimes.shift();
@@ -1314,12 +1769,17 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       fpsN++;
       if (fpsAcc >= 500) {
         fps = (fpsN * 1000) / fpsAcc;
+        drawnFps = (drawnN * 1000) / fpsAcc;
         fpsAcc = 0;
         fpsN = 0;
+        drawnN = 0;
       }
     }
+    if (contextLost) return;
     flushPlacements();
+    const tweening = anim.active > 0;
     anim.tick(rawDt);
+    const camMoving = rig.moving;
     rig.update(rawDt);
     // camera waiters
     for (let i = camWaiters.length - 1; i >= 0; i--) {
@@ -1329,6 +1789,63 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         w.resolve();
       }
     }
+    const disp = rig.displaced;
+    if (disp !== lastDisplaced) {
+      lastDisplaced = disp;
+      for (const cb of displacedCbs) {
+        try {
+          cb(disp);
+        } catch (err) {
+          console.error(err);
+        }
+      }
+    }
+    if (tray.lingerUntil && now >= tray.lingerUntil) {
+      tray.lingerUntil = 0;
+      hideTray(TRAY_FADE_MS);
+      invalidate();
+    }
+    // Anything to draw? (`pulsing` = an unarmed target outline breathes: ambient, 30 fps on phones.)
+    let pulsing = false;
+    let tileDirty = false;
+    for (const t of tiles.list) {
+      if (t.rimMode === 'target') pulsing = true;
+      if (t.dirty) tileDirty = true;
+    }
+    const busy =
+      hot > 0 ||
+      inflight > 0 ||
+      tweening ||
+      anim.active > 0 ||
+      camMoving ||
+      rig.moving ||
+      tokens.animating ||
+      tokens.needsUpdate ||
+      particles.alive > 0 ||
+      needShadow ||
+      tileDirty ||
+      overlay.dirty ||
+      overlay.chipCount > 0;
+    if (!busy && !pulsing) {
+      drewLast = false;
+      return;
+    }
+    if (!busy && pulsing && phoneGpu && frameNo % 2 === 1) return;
+    if (hot > 0) hot--;
+    // Adaptive pixel ratio on touch GPUs: over budget (< ~48 fps smoothed) for 2 s of continuous drawing
+    // drops the cap from 2 to 1.5, once.
+    if (coarse && drewLast && rawDt > 0 && rawDt < 250 && dprCap > 1.5 && (window.devicePixelRatio || 1) > 1.5) {
+      emaMs = emaMs * 0.92 + rawDt * 0.08;
+      overMs = emaMs > 21 ? overMs + rawDt : 0;
+      if (overMs > 2000) {
+        dprCap = 1.5;
+        overMs = 0;
+        applyPixelRatio();
+      }
+    }
+    drewLast = true;
+    drawnN++;
+    drawnTotal++;
     const pulse = 0.45 + 0.5 * (0.5 + 0.5 * Math.sin((now / 1200) * Math.PI * 2));
     const rimScale = 1;
     let moved = false;
@@ -1343,22 +1860,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     const tokensMoving = tokens.animating;
     tokens.setView(rig.cur.az, rig.cur.pitch);
     tokens.update();
-    const disp = rig.displaced;
-    if (disp !== lastDisplaced) {
-      lastDisplaced = disp;
-      for (const cb of displacedCbs) {
-        try {
-          cb(disp);
-        } catch (err) {
-          console.error(err);
-        }
-      }
-    }
     particles.update(Math.min(rawDt, 50) / 1000);
-    if (tray.lingerUntil && now >= tray.lingerUntil) {
-      tray.lingerUntil = 0;
-      hideTray(TRAY_FADE_MS);
-    }
     tray.tick(now);
     if (tray.showing !== trayShownEmitted) emitTray(tray.showing);
     parts.oceanUniforms.uTime.value = now / 1000;
@@ -1386,7 +1888,115 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       renderer.shadowMap.needsUpdate = true;
       renderer.render(tray.scene, tray.camera);
     }
+    if (reloading && !contextLost) {
+      reloading = false;
+      overlay.root.style.transition = 'opacity 300ms ease-out';
+      overlay.root.style.opacity = '1';
+      emitLoss(false);
+    }
   };
+  const onVisibility = () => {
+    if (disposed) return;
+    if (document.hidden) {
+      // Paused while hidden: no frames at all (the watchdogs still resolve every playEvent).
+      cancelAnimationFrame(raf);
+      raf = 0;
+      return;
+    }
+    if (!raf) {
+      lastT = performance.now();
+      invalidate();
+      needShadow = true;
+      raf = requestAnimationFrame(frame);
+    }
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+
+  // --- WebGL context loss (docs/MOBILE.md §7): a quiet reload, never a white screen ------------------
+  // Lost: stop drawing (the canvas shows the far-ocean colour) and tell the HUD (`Reloading the board…`).
+  // Restored: three.js re-creates its GL state and re-uploads every geometry and texture on the next draw;
+  // the board regenerates what only lived on the GPU (the environment map, the shadow maps) and redraws.
+  // No restore within 3 s: a fresh renderer (new canvas) takes over the same scene.
+  const lossCbs: ((lost: boolean) => void)[] = [];
+  let reloading = false;
+  let lossTimer: ReturnType<typeof setTimeout> | null = null;
+  const emitLoss = (lost: boolean) => {
+    for (const cb of lossCbs) {
+      try {
+        cb(lost);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+  const regenEnvironment = () => {
+    const pm = new THREE.PMREMGenerator(renderer);
+    const env = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+    pm.dispose();
+    const old = parts.envTexture;
+    parts.envTexture = env;
+    scene.environment = env;
+    tray.scene.environment = env;
+    old.dispose();
+  };
+  const afterRestore = () => {
+    contextLost = false;
+    if (lossTimer) clearTimeout(lossTimer);
+    lossTimer = null;
+    try {
+      regenEnvironment();
+    } catch (err) {
+      console.warn('[render] environment', err);
+    }
+    needShadow = true;
+    for (const t of tiles.list) t.dirty = true;
+    tokens.markDirty();
+    invalidate();
+    // `reloading` clears (and the HUD hears `false`) after the first frame is drawn.
+  };
+  function onContextLost(e: Event): void {
+    e.preventDefault(); // ask the browser to restore it
+    if (disposed || contextLost) return;
+    contextLost = true;
+    reloading = true;
+    // Numbers and names would float over an empty canvas: they wait for the board to come back.
+    overlay.root.style.transition = 'opacity 160ms ease-out';
+    overlay.root.style.opacity = '0';
+    emitLoss(true);
+    if (lossTimer) clearTimeout(lossTimer);
+    lossTimer = setTimeout(recreateRenderer, 3000);
+  }
+  function onContextRestored(): void {
+    if (disposed) return;
+    afterRestore();
+  }
+  function recreateRenderer(): void {
+    lossTimer = null;
+    if (disposed || !contextLost) return;
+    try {
+      const old = renderer;
+      const oldCanvas = canvas;
+      unbindCanvas(oldCanvas);
+      renderer = makeRenderer();
+      canvas = renderer.domElement;
+      canvas.style.opacity = '1';
+      container.insertBefore(canvas, oldCanvas);
+      oldCanvas.remove();
+      bindCanvas(canvas);
+      try {
+        old.dispose();
+      } catch {
+        /* the old context is gone */
+      }
+      renderer.setSize(W, H, false);
+      particles.setViewportHeight(H * renderer.getPixelRatio(), camera.fov);
+      afterRestore();
+    } catch (err) {
+      console.error('[render] renderer rebuild', err);
+      lossTimer = setTimeout(recreateRenderer, 3000);
+    }
+  }
+
   let needShadow = true;
 
   // --- warm-up: compile every material, render one hidden dice + flood frame ------------------
@@ -1517,7 +2127,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       // `bottom` (the round-1 convention) is recognised, so the home view never reserves the band.
       let bottom = i.bottom;
       const band = i.trayBand > 0 ? i.trayBand : 0;
-      if (band > 0 && bottom >= band + 40) bottom -= band;
+      // (Not when rects are sent: that HUD reports the strip's real top edge, whatever its height.)
+      if (band > 0 && bottom >= band + 40 && !(i.rects && i.rects.length)) bottom -= band;
       insets = { top: i.top, right: i.right, left: i.left, bottom, trayBand: band, rects: i.rects?.map((r) => ({ ...r })) };
       rig.setInsets(insets);
       layoutTray();
@@ -1550,6 +2161,12 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       // Fresh each call (not last frame's value), in client px.
       return overlay.project(t, camera, container.getBoundingClientRect());
     },
+    onTerritoryLongPress(cb: (info: TerritoryPointerInfo | null) => void) {
+      longCbs.push(cb);
+    },
+    onContextLoss(cb: (lost: boolean) => void) {
+      lossCbs.push(cb);
+    },
     getStats(): BoardStats {
       const sorted = [...frameTimes].sort((a, b) => a - b);
       const p95 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] : 0;
@@ -1562,6 +2179,9 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         cameraMoving: rig.moving,
         particles: particles.alive,
         maxCameraDegPerSec: Math.round(rig.maxAutoDegPerSec * 10) / 10,
+        drawnFps: Math.round(drawnFps * 10) / 10,
+        pixelRatio: renderer.getPixelRatio(),
+        contextLost,
       };
     },
     dispose() {
@@ -1570,13 +2190,10 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       cancelAnimationFrame(raf);
       ro.disconnect();
       anim.dispose();
-      canvas.removeEventListener('pointerdown', onPointerDown);
-      canvas.removeEventListener('pointermove', onPointerMove);
-      canvas.removeEventListener('pointerup', onPointerUp);
-      canvas.removeEventListener('pointercancel', onPointerCancel);
-      canvas.removeEventListener('pointerleave', onLeave);
-      canvas.removeEventListener('wheel', onWheel);
-      canvas.removeEventListener('contextmenu', onContext);
+      unbindCanvas(canvas);
+      clearTimer();
+      if (lossTimer) clearTimeout(lossTimer);
+      document.removeEventListener('visibilitychange', onVisibility);
       container.removeEventListener('contextmenu', onContext);
       for (const w of camWaiters.splice(0)) w.resolve();
       tiles.dispose();
@@ -1602,6 +2219,16 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     },
   };
 
+  // Every call from the controller may change what the board shows: draw the next frames.
+  for (const k of Object.keys(view) as (keyof BoardView)[]) {
+    const f = view[k];
+    if (typeof f !== 'function' || k === 'getStats' || k === 'getScreenPosition' || k === 'isViewDisplaced') continue;
+    (view as unknown as Record<string, unknown>)[k] = function (this: unknown, ...args: unknown[]) {
+      invalidate();
+      return (f as (...a: unknown[]) => unknown).apply(this, args);
+    };
+  }
+
   // Debug hook for the sandbox / e2e (cheap).
   (view as unknown as { __debug: unknown }).__debug = {
     rig,
@@ -1610,7 +2237,55 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     owners,
     armies,
     tiles,
-    renderer,
+    get renderer() {
+      return renderer;
+    },
+    get canvas() {
+      return canvas;
+    },
+    get compact() {
+      return compact;
+    },
+    set figureClear(v: number) {
+      rig.figureClear = v;
+      W = -1;
+      resize();
+    },
+    set landClear(v: number) {
+      landClearOverride = v;
+      W = -1;
+      resize();
+    },
+    set phoneLandPitch(v: number) {
+      phoneLandPitch = v;
+      W = -1;
+      resize();
+    },
+    get frameNo() {
+      return frameNo;
+    },
+    /** Why the render-on-demand loop is drawing right now (debugging idle redraws). */
+    busyWhy: () => ({
+      hot,
+      inflight,
+      tweens: anim.active,
+      cam: rig.moving,
+      tokens: tokens.animating || tokens.needsUpdate,
+      particles: particles.alive,
+      needShadow,
+      tileDirty: tiles.list.filter((t) => t.dirty).map((t) => t.id),
+      pulsing: tiles.list.filter((t) => t.rimMode === 'target').length,
+      overlay: overlay.dirty,
+      chips: overlay.chipCount,
+      tray: tray.visible,
+    }),
+    get drawn() {
+      return drawnTotal;
+    },
+    coarse,
+    phoneGpu,
+    touchPick: (x: number, y: number) => touchPick(x, y, clickable),
+    homePxPerUnit,
     tokens,
     overlay,
     get hovered() {

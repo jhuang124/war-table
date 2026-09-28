@@ -9,6 +9,18 @@ import { PLAYER_COLORS } from '../../shared/palette';
 import { ActionButton } from '../controls';
 import { countUp, EASE_IN_QUAD, h, minus, motion, pop, setAttr, setStyle, setText, toggle } from '../dom';
 
+/** Turn Track glyphs for the phone dock (docs/MOBILE.md §4): icon + short label, like a tab bar. */
+const SEG_ICON: Record<TrackSegId, string> = {
+  place: 'M12 4.5v9M7.5 9h9M5.5 19.5h13',
+  setup: 'M12 4.5v9M7.5 9h9M5.5 19.5h13',
+  attack: 'M5 4l9.5 9.5M4 5l1-1M14.5 13.5l-2 2 3 3 2-2zM19 4L9.5 13.5M20 5l-1-1M9.5 13.5l2 2-3 3-2-2z',
+  fortify: 'M4 8.5h14l-3.5-3.5M20 15.5H6l3.5 3.5',
+  endTurn: 'M6.5 20.5V4M6.5 4.5h11l-2.6 4 2.6 4h-11',
+  done: 'M5 12.5l4.5 4.5L19 7',
+};
+/** Short labels on phones: the track's segments are equal-width tabs there. */
+const SEG_SHORT: Partial<Record<TrackSegId, string>> = { endTurn: 'End' };
+
 /** The one line, with number-aware transitions. A change of wording never shows two lines at once:
  *  the outgoing line slides up while fading, then the new one comes in. */
 class Line {
@@ -142,7 +154,10 @@ class Track {
       b.type = 'button';
       b.dataset.testid = `seg-${id}`;
       b.dataset.seg = id;
-      b.append(h('span', 'tr-check', '✓'), h('span', 'tr-label'));
+      const icon = h('span', 'tr-icon');
+      icon.setAttribute('aria-hidden', 'true');
+      icon.innerHTML = `<svg viewBox="0 0 24 24"><path d="${SEG_ICON[id]}"/></svg>`;
+      b.append(h('span', 'tr-check', '✓'), icon, h('span', 'tr-label'), h('span', 'tr-short'));
       b.addEventListener('click', () => {
         const vm = this.vm;
         const seg = vm?.segments.find((x) => x.id === id);
@@ -197,6 +212,7 @@ class Track {
     for (const seg of vm.segments) {
       const b = this.segs.get(seg.id)!;
       setText(b.querySelector('.tr-label')!, seg.label);
+      setText(b.querySelector('.tr-short')!, SEG_SHORT[seg.id] ?? seg.label);
       b.dataset.state = seg.state;
       for (const st of ['done', 'current', 'eligible', 'locked'] as const) toggle(b, `is-${st}`, seg.state === st);
       const rec = vm.recommended === seg.id;
@@ -414,6 +430,7 @@ export class BottomStrip {
   private slider: CountSlider;
   private buttons: Buttons;
   private sweep: HTMLSpanElement;
+  private zone: HTMLDivElement;
   private vm: StripVM | null = null;
 
   constructor(send: (i: UiIntent) => void) {
@@ -427,7 +444,7 @@ export class BottomStrip {
     this.slider = new CountSlider(send);
     this.count.append(this.stepper.el, this.slider.el);
     this.buttons = new Buttons((b) => send({ type: 'button', id: b.id }));
-    const zone = h('div', 'st-zone');
+    const zone = (this.zone = h('div', 'st-zone'));
     zone.dataset.testid = 'action-zone';
     zone.append(this.count, this.buttons.el);
     this.sweep = h('span', 'st-sweep');
@@ -470,5 +487,8 @@ export class BottomStrip {
     else this.stepper.reset();
     if (c?.control === 'slider') this.slider.update(c);
     this.buttons.update(vm.buttons);
+    // Phones (portrait): the action row folds away when there is nothing to press.
+    toggle(this.zone, 'is-empty', !c && vm.buttons.length === 0);
+    this.el.dataset.buttons = String(vm.buttons.length + (c ? 1 : 0));
   }
 }

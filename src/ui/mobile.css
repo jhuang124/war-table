@@ -1,0 +1,494 @@
+/* War Table · touch and phone layouts (docs/MOBILE.md §2, §4–6)
+   Additive to styles.css. Every rule is scoped by the device class on <html> (src/ui/layout.ts):
+     .form-phone  a phone-sized viewport: the dock, compact seat pills, bottom sheets, one-column screens
+     .form-tablet a touch screen with room: the desktop layout with 44 px targets
+     .touch       pointer: coarse (phones and tablets): no keycaps, no hover-only affordances
+   .form-desktop gets nothing from this file except the hidden-by-default pieces just below. */
+
+:root {
+  --sa-t: env(safe-area-inset-top, 0px);
+  --sa-r: env(safe-area-inset-right, 0px);
+  --sa-b: env(safe-area-inset-bottom, 0px);
+  --sa-l: env(safe-area-inset-left, 0px);
+}
+
+/* A sheet sliding away never eats the next tap. */
+.scrim.leaving, .scrim.leaving *, .cards-scrim.leaving, .form-phone .cards-sheet.leaving, .form-phone .cards-sheet.leaving * { pointer-events: none !important; }
+
+/* Phone-only parts, off everywhere by default. */
+.grab, .tr-icon, .tr-short, .btn-glyph, .sw-title, .sw-name, .cards-scrim, .rotate-pill, .name-card { display: none; }
+
+/* ------------------------------------------------------------------------ */
+/* Touch (phones + tablets)                                                  */
+/* ------------------------------------------------------------------------ */
+
+.touch .ui-root button { touch-action: manipulation; }
+.touch .kc { display: none; }
+.touch .ui-root input { font-size: max(16px, 1rem); } /* never an iOS focus zoom */
+@media (hover: none) {
+  /* A tap leaves :hover stuck on iOS: no lift or scale from it. */
+  .touch .track.is-live:not(.is-disabled) .tr-seg.is-eligible:hover { transform: none; }
+  .touch .swatch:hover { transform: none; }
+  .touch .btn:hover { filter: none; }
+}
+
+/* The long-press name card (phones and tablets): a small popover above the finger. */
+.touch .name-card:not(.hidden) {
+  display: block; position: fixed; z-index: 40; pointer-events: none; min-width: 11.5rem; max-width: 16rem;
+  padding: 0.6rem 0.85rem 0.7rem; border-radius: 0.875rem;
+  background: rgba(14, 17, 21, 0.94); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--hair-soft); box-shadow: 0 0.6rem 1.6rem rgba(0, 0, 0, 0.5);
+}
+.name-card::before { content: ''; position: absolute; left: 0.85rem; right: 0.85rem; top: -1px; height: 3px; border-radius: 0 0 3px 3px; background: var(--seat); }
+.nc-title { font-family: var(--display); font-weight: 700; font-size: 1.125rem; letter-spacing: 0.04em; color: var(--ivory); line-height: 1.15; }
+.nc-cont { margin-top: 0.15rem; font-size: 0.875rem; font-weight: 600; color: var(--brass-hi); }
+.nc-owner { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; padding-top: 0.45rem; border-top: 1px solid var(--ivory-08); font-size: 0.9375rem; font-weight: 600; color: var(--ivory-90); }
+.nc-emb .emb { width: 0.9rem; height: 0.9rem; }
+.nc-armies { margin-left: auto; padding-left: 0.9rem; font-weight: 700; color: var(--ivory); white-space: nowrap; }
+.nc-nub {
+  position: absolute; left: var(--nub-x, 50%); bottom: -6px; width: 11px; height: 11px; margin-left: -5.5px; transform: rotate(45deg);
+  background: rgb(14, 17, 21); border-right: 1px solid var(--hair-soft); border-bottom: 1px solid var(--hair-soft);
+}
+.name-card.side .nc-nub { display: none; }
+.name-card.below .nc-nub { bottom: auto; top: -6px; border: 0; border-left: 1px solid var(--hair-soft); border-top: 1px solid var(--hair-soft); }
+
+/* Every device: the board's WebGL context was lost and is rebuilding. */
+.board-lost {
+  position: absolute; z-index: 95; left: 0; right: 0; top: 50%; margin: -1.25rem auto 0; width: max-content; height: 2.5rem;
+  display: flex; align-items: center; padding: 0 1.1rem; border-radius: 1.25rem; font-weight: 600; color: var(--ivory-90);
+  background: rgba(12, 15, 19, 0.86); border: 1px solid var(--hair-soft); animation: lost-breathe 1.6s ease-in-out infinite alternate;
+}
+@keyframes lost-breathe { from { opacity: 0.65; } to { opacity: 1; } }
+
+/* ------------------------------------------------------------------------ */
+/* Tablet: the desktop layout with 44 px targets                             */
+/* ------------------------------------------------------------------------ */
+
+:root.form-tablet { --pill-h: 2.75rem; --strip-h: 4.5rem; --top-h: calc(max(var(--gap), var(--sa-t)) + var(--pill-h)); }
+.form-tablet .topstrip { top: max(var(--gap), var(--sa-t)); left: max(var(--gap), var(--sa-l)); right: max(var(--gap), var(--sa-r)); }
+.form-tablet .strip { bottom: max(var(--gap), var(--sa-b)); }
+.form-tablet .cards-sheet { bottom: calc(var(--dock-clear, 96px) + 0.6rem); }
+.form-tablet .track { height: 3.25rem; }
+.form-tablet .st-buttons .btn { height: 2.875rem; }
+.form-tablet .stepper-ctl { height: 3.125rem; }
+.form-tablet .sp-btn { width: 2.75rem; height: 2.75rem; }
+.form-tablet .count-slider { height: 2.875rem; }
+.form-tablet .btn { min-height: 2.75rem; }
+.form-tablet .btn.link { min-height: 2.75rem; padding: 0 0.25rem; }
+.form-tablet .icon-btn { width: 2.75rem; height: 2.75rem; }
+.form-tablet .seg-row .seg-opt { height: 2.75rem; }
+.form-tablet .seg-row:has(.seg-detail) .seg-opt { height: 3.25rem; }
+.form-tablet .menu-item { height: 3rem; }
+.form-tablet .switch { min-height: 3rem; }
+.form-tablet .slider { padding: 1.2rem 0; }
+.form-tablet .name-input { height: 2.75rem; }
+.form-tablet .seat-emblem.swatch { width: 2.75rem; height: 2.75rem; }
+.form-tablet .swatch-pop .swatch { width: 2.75rem; height: 2.75rem; }
+.form-tablet .house-toggle { min-height: 2.75rem; }
+.form-tablet .seat-row { grid-template-columns: 1.4rem auto minmax(7rem, 1fr) auto 15rem 2.75rem; }
+
+/* ------------------------------------------------------------------------ */
+/* Phone                                                                      */
+/* ------------------------------------------------------------------------ */
+
+:root.form-phone {
+  --gap: 8px;
+  --pill-h: 2.125rem;
+  --top-h: calc(var(--edge-t) + 2.75rem);
+  /* Edges: inside the safe area; in landscape the side insets (the notch side and its mirror) are wider
+     than a bottom-corner control needs, so the dock and pills tuck ~22 px into them, clear of the curve. */
+  --edge-t: max(8px, var(--sa-t));
+  --edge-b: max(8px, calc(var(--sa-b) - 8px));
+  --edge-l: max(10px, calc(var(--sa-l) - 22px));
+  --edge-r: max(10px, calc(var(--sa-r) - 22px));
+  --sheet-bg: linear-gradient(180deg, rgba(24, 27, 33, 0.97), rgba(13, 16, 20, 0.98));
+  --spring: cubic-bezier(0.32, 0.72, 0, 1);
+}
+.form-phone .ui-root { --band-bottom: calc(var(--dock-clear, 84px) + 4px); }
+.form-phone .ui-root input { font-size: max(16px, 1.0625rem); }
+
+/* ---- Top: compact seat pills (emblem + count; the current seat shows its name) and ≡ ---- */
+.form-phone .topstrip { top: var(--edge-t); left: var(--edge-l); right: var(--edge-r); align-items: center; gap: 8px; }
+.form-phone .ts-seats { gap: 5px; }
+.form-phone .seat-chip { height: 2.125rem; padding: 0 0.7rem 0 0.62rem; gap: 0.36rem; font-size: 0.9375rem; }
+.form-phone .seat-chip:not(.current) .sc-name { display: none; }
+.form-phone .seat-chip .emb { width: 0.85rem; height: 0.85rem; }
+.form-phone .ts-fill { height: 2.125rem; border-radius: 1.0625rem; }
+.form-phone .ts-right { position: relative; gap: 6px; }
+.form-phone .ts-menu.pill { width: 2.75rem; height: 2.75rem; border-radius: 50%; }
+.form-phone .ts-reset.pill { height: 2.75rem; padding: 0 1rem; font-size: 0.875rem; }
+.form-phone.portrait .ts-reset.pill { position: absolute; top: calc(100% + 8px); right: 0; }
+
+/* ---- The dock: Turn Track · line · actions, hugging the bottom safe area ---- */
+.form-phone .strip {
+  left: var(--edge-l); right: var(--edge-r); bottom: var(--edge-b); width: auto; transform: none;
+  gap: 8px; padding: 6px; border-radius: 1.375rem;
+  background: rgba(12, 15, 19, 0.8);
+}
+.form-phone .strip::before, .form-phone .st-sweep { left: 1.25rem; right: 1.25rem; }
+.form-phone .st-rule { display: none; }
+.form-phone .tr-label { display: none; }
+.form-phone .tr-short { display: inline; }
+.form-phone .tr-seg.is-done .tr-check { display: none; }
+.form-phone .tr-icon { display: block; flex: none; }
+.form-phone .tr-icon svg { width: 1.25rem; height: 1.25rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.form-phone .tr-seg.is-done .tr-icon { opacity: 0.8; }
+.form-phone .st-line { font-size: 0.9375rem; line-height: 1.22; letter-spacing: 0; }
+.form-phone .ln-text { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.form-phone .st-zone { gap: 6px; }
+.form-phone .st-buttons { gap: 6px; }
+.form-phone .st-buttons .btn { height: 2.75rem; min-width: 4.25rem; padding: 0 1rem; font-size: 0.9375rem; border-radius: 1.0625rem; }
+.form-phone .stepper-ctl { height: 3rem; padding: 2px; border-radius: 1.125rem; gap: 0; }
+.form-phone .sp-btn { width: 2.75rem; height: 2.75rem; font-size: 1.375rem; }
+.form-phone .sp-n { min-width: 1.9rem; font-size: 1.3125rem; }
+.form-phone .count-slider { height: 2.75rem; width: 9rem; gap: 0.3rem; }
+.form-phone .cs-track { margin: 0 0.8rem; height: 0.35rem; }
+.form-phone .cs-knob { width: 1.625rem; height: 1.625rem; margin: -0.8125rem 0 0 -0.8125rem; }
+/* `Cards 3` → a card-stack glyph with a count badge */
+.form-phone .st-buttons .btn[data-id='cards'] { min-width: 2.75rem; width: 2.75rem; padding: 0; position: relative; overflow: visible; }
+.form-phone .btn[data-id='cards'] .btn-label { display: none; }
+.form-phone .btn[data-id='cards'] .btn-glyph { display: grid; place-items: center; }
+.form-phone .btn-glyph svg { width: 1.375rem; height: 1.375rem; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round; }
+.form-phone .btn-badge {
+  position: absolute; top: -0.3rem; right: -0.3rem; min-width: 1.125rem; height: 1.125rem; padding: 0 0.25rem; border-radius: 0.6rem;
+  display: grid; place-items: center; font: 800 0.6875rem/1 var(--font); color: var(--brass-ink); background: var(--brass-hi);
+  box-shadow: 0 0 0 2px rgba(12, 15, 19, 0.9);
+}
+.form-phone .btn[data-id='cards'].brass .btn-badge { background: var(--ivory); }
+
+/* Landscape: one ~60 px row. The track is a compact tab bar (icon over a short label). */
+.form-phone.landscape .strip { height: 4rem; }
+.form-phone.landscape .track { height: 3.25rem; padding: 3px; gap: 2px; border-radius: 1.2rem; }
+.form-phone.landscape .tr-fill { top: 3px; bottom: 3px; border-radius: 0.9rem; }
+.form-phone.landscape .tr-seg { flex-direction: column; gap: 1px; min-width: 3.375rem; padding: 0 0.3rem; border-radius: 0.9rem; font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.03em; }
+.form-phone.landscape .tr-seg.is-current { font-weight: 800; }
+.form-phone.landscape .st-line { padding-left: 4px; }
+
+/* Portrait (phones, and tablets narrower than the desktop strip): stacked. Row 1 the track (four equal tabs), row 2 the line, row 3 the actions (thumb zone;
+   the primary takes the rest of the row). Row 3 folds away when there's nothing to press. */
+.dock-stacked .strip {
+  height: auto; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: 'track' 'line' 'zone';
+  row-gap: 6px; padding: 7px; border-radius: 1.5rem;
+}
+.dock-stacked .track { grid-area: track; height: 3.125rem; padding: 3px; gap: 2px; border-radius: 1.25rem; }
+.dock-stacked .tr-fill { top: 3px; bottom: 3px; border-radius: 1rem; }
+.dock-stacked .tr-seg { flex: 1 1 0; min-width: 0; padding: 0 0.25rem; gap: 0.35rem; font-size: 0.875rem; border-radius: 1rem; }
+.dock-stacked .tr-icon svg { width: 1.125rem; height: 1.125rem; }
+.dock-stacked .st-line { grid-area: line; height: auto; min-height: 3.05rem; padding: 0.3rem 0.6rem; font-size: 1rem; }
+.dock-stacked .st-zone { grid-area: zone; display: flex; min-width: 0; }
+.dock-stacked .st-zone.is-empty { display: none; }
+.dock-stacked .st-buttons { flex: 1 1 auto; min-width: 0; }
+.dock-stacked .st-buttons .btn { height: 3rem; flex: 0 1 auto; border-radius: 1.125rem; font-size: 1rem; }
+.dock-stacked .st-buttons .btn.role-primary { flex: 1 1 0; }
+.form-phone.dock-stacked .st-buttons .btn[data-id='cards'] { width: 3rem; min-width: 3rem; flex: none; }
+.form-tablet.dock-stacked .st-buttons .btn.role-secondary { padding: 0 1.4rem; }
+.dock-stacked .count-slider { flex: 1 1 8rem; width: auto; min-width: 7rem; }
+.dock-stacked .st-count { flex: 0 1 auto; min-width: 0; }
+.dock-stacked .st-count:has(.count-slider:not(.hidden)) { flex: 1 1 8rem; }
+.dock-stacked .st-rule { display: none; }
+/* Tablet portrait: the same stack, a centred 40 rem card with full labels */
+.form-tablet.dock-stacked .strip { width: min(40rem, calc(100vw - 2rem)); bottom: max(12px, var(--sa-b)); border-radius: 1.75rem; padding: 8px; row-gap: 8px; }
+.form-tablet.dock-stacked .track { height: 3.375rem; }
+.form-tablet.dock-stacked .tr-seg { font-size: 0.9375rem; }
+.form-tablet.dock-stacked .st-line { min-height: 2.75rem; font-size: 1.125rem; display: flex; align-items: center; }
+.form-tablet.dock-stacked .st-buttons .btn { height: 3.125rem; font-size: 1.0625rem; border-radius: 1.5rem; }
+.form-tablet.dock-stacked .stepper-ctl { height: 3.125rem; }
+.form-tablet .ui-root { --band-bottom: calc(var(--dock-clear, 84px) + 4px); }
+.form-tablet.dock-stacked .cards-sheet { right: calc((100vw - min(40rem, calc(100vw - 2rem))) / 2); bottom: calc(var(--dock-clear, 200px) + 0.6rem); }
+/* Tablet portrait victory: one column */
+.form-tablet.portrait .v-mid { grid-template-columns: minmax(0, 1fr); }
+.form-tablet.portrait .v-body { height: auto; min-height: 100%; }
+.form-tablet.portrait .v-body > .v-mid { flex: none; }
+.form-tablet.portrait .v-chart .chart-plot { flex: none; height: 20rem; }
+
+/* ---- Dice tray header, banner ---- */
+/* Only with the tray under it; each side's name gives way before its number does. */
+.form-phone .battle { width: calc(100vw - 16px); transition: opacity 200ms ease-out; }
+.form-phone .battle.no-tray { opacity: 0; }
+.form-phone .bt-head { gap: 0.55rem; padding: 0 0.5rem; }
+.form-phone .bt-head::before { inset: 0.15rem 4%; }
+.form-phone .bt-side { font-size: 0.9375rem; letter-spacing: 0.03em; gap: 0.35rem; min-width: 0; max-width: 45%; }
+.form-phone .bt-terr { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Portrait: names in their own case (caps cost a third more width), so both sides fit. */
+.form-phone.portrait .bt-terr { text-transform: none; }
+.form-phone.portrait .bt-side { letter-spacing: 0.01em; font-size: 1rem; }
+.form-phone.portrait .bt-armies { font-size: 1.0625rem; }
+.form-phone .bt-captured { font-size: 1rem; }
+.form-phone .bt-vs { font-size: 0.75rem; flex: none; }
+.form-phone.landscape .bt-side { font-size: 1rem; }
+.form-phone .announce { top: calc(var(--edge-t) + 3.4rem); width: calc(100vw - 16px); }
+.form-phone.portrait .announce { top: calc(var(--edge-t) + 3.75rem); }
+.form-phone .ribbon { padding: 0.55rem 2.25rem 0.65rem; }
+.form-phone .rb-title { font-size: 1.375rem; gap: 0.5rem; }
+.form-phone .rb-sub { font-size: 0.9375rem; }
+.form-phone .rb-recap { font-size: 0.875rem; }
+.form-phone .banner-elimination .rb-title { font-size: 1.75rem; }
+
+/* ---- The rotate hint (portrait, once) ---- */
+.form-phone.portrait .rotate-pill:not(.hidden) {
+  display: flex; position: absolute; z-index: 25; left: 0; right: 0; margin: 0 auto; width: max-content;
+  top: calc(var(--edge-t) + 3.5rem); align-items: center; gap: 0.55rem; height: 2.75rem; padding: 0 0.25rem 0 0.9rem;
+  border-radius: 1.375rem; pointer-events: auto; white-space: nowrap; font-size: 0.9375rem; font-weight: 600; color: var(--ivory);
+  background: rgba(12, 15, 19, 0.86); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--hair); box-shadow: 0 0.4rem 1.2rem rgba(0, 0, 0, 0.4);
+}
+.rp-icon svg { width: 1.25rem; height: 1.25rem; fill: none; stroke: var(--brass-hi); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.rp-close { appearance: none; width: 2.25rem; height: 2.25rem; border-radius: 50%; border: 0; background: transparent; color: var(--ivory-70); display: grid; place-items: center; cursor: pointer; }
+.rp-close svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.rp-close::after { content: ''; position: absolute; inset: 0; } /* the whole pill dismisses */
+
+/* ---- Bottom sheets: menu, settings, rules, log, confirm, cards, hand-off, colour picker ---- */
+.form-phone .grab { display: flex; flex: none; justify-content: center; align-items: center; height: 1.375rem; margin: 0 -1rem 0.25rem; cursor: grab; }
+.form-phone .grab i { display: block; width: 2.25rem; height: 5px; border-radius: 3px; background: rgba(243, 234, 216, 0.32); }
+
+.form-phone .scrim {
+  place-items: end center; align-content: end; padding: calc(var(--sa-t) + 12px) 0 0;
+  background: rgba(0, 0, 0, 0.42); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+}
+.form-phone .scrim > .sheet {
+  width: 100%; max-width: 100%; max-height: 100%; display: flex; flex-direction: column; overflow: hidden;
+  border-radius: 1.5rem 1.5rem 0 0; border-bottom: 0; background: var(--sheet-bg);
+  padding: 0.3rem max(1.1rem, var(--sa-r)) calc(var(--sa-b) + 1rem) max(1.1rem, var(--sa-l));
+  box-shadow: 0 -0.5rem 2.5rem rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(243, 234, 216, 0.07);
+}
+.form-phone.landscape .scrim > .sheet { max-width: 36rem; padding-left: 1.25rem; padding-right: 1.25rem; padding-bottom: calc(var(--sa-b) + 0.75rem); }
+.form-phone .scrim > .sheet::before { display: none; }
+.form-phone .sheet-head { flex: none; min-height: 2.75rem; margin-bottom: 0.6rem; }
+.form-phone .sheet-title { font-size: 1.375rem; }
+.form-phone .sheet-head .btn { height: 2.75rem; padding: 0 0.75rem; font-size: 1rem; color: var(--brass-hi); }
+.form-phone .menu-list, .form-phone .rules-blocks, .form-phone .settings-cols, .form-phone .log-list {
+  min-height: 0; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+}
+
+/* Menu */
+.form-phone .pause-sheet { width: 100%; }
+.form-phone .pause-head { flex: none; }
+.form-phone .pause-sheet .sheet-title { margin-bottom: 0.75rem; font-size: 1.25rem; letter-spacing: 0.12em; }
+.form-phone .menu-list { gap: 0.4rem; }
+.form-phone .menu-item { flex: none; height: 3rem; padding: 0 1.1rem; font-size: 1.0625rem; border-radius: 0.875rem; }
+.form-phone .menu-item.quiet { background: rgba(243, 234, 216, 0.03); }
+.form-phone .menu-sep { flex: none; margin: 0.3rem 0; }
+.form-phone.landscape .menu-list { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; }
+.form-phone.landscape .menu-list > :first-child, .form-phone.landscape .menu-sep { grid-column: 1 / -1; }
+.form-phone.landscape .menu-item { height: 2.75rem; }
+.form-phone.landscape .pause-sheet .sheet-title { margin-bottom: 0.5rem; font-size: 1.0625rem; }
+
+/* Rules */
+.form-phone .rules-blocks { grid-template-columns: 1fr; gap: 1.1rem; padding-bottom: 0.5rem; }
+.form-phone.landscape .rules-blocks { grid-template-columns: 1fr 1fr; gap: 1rem 1.25rem; }
+.form-phone .rule p { font-size: 0.9375rem; }
+
+/* Settings */
+.form-phone .settings-cols { grid-template-columns: 1fr; gap: 1.25rem; padding-bottom: 0.5rem; }
+.form-phone .settings-col:last-child { margin-top: -0.25rem; }
+.form-phone .settings-sheet .seg-row { display: flex; width: 100%; }
+.form-phone .settings-sheet .seg-row .seg-opt { flex: 1 1 0; height: 2.75rem; }
+.form-phone .switch { min-height: 3.25rem; padding: 0.6rem 0; }
+.form-phone .slider { padding: 1.2rem 0; }
+.form-phone .slider-knob { width: 1.5rem; height: 1.5rem; margin: -0.75rem 0 0 -0.75rem; }
+.form-phone .menu-item.seat-item { height: 3rem; }
+
+/* Log */
+.form-phone .log-sheet { height: 100%; }
+.form-phone .log-list { flex: 1 1 auto; margin-right: 0; padding-right: 0; }
+.form-phone .log-line { padding: 0.6rem 0.1rem; }
+
+/* Confirm: an action sheet (Keep playing nearest the thumb) */
+.form-phone .confirm-box { max-width: 34rem; }
+.form-phone .confirm-text { font-size: 1.0625rem; text-align: center; margin: 0.35rem 0.25rem 1.1rem; }
+.form-phone .confirm-row { flex-direction: column-reverse; gap: 0.5rem; }
+.form-phone .confirm-row .btn { width: 100%; height: 3.25rem; font-size: 1.0625rem; border-radius: 0.875rem; }
+
+/* Cards: a sheet over the dock, with a scrim */
+.form-phone .cards-scrim:not(.hidden) { display: block; position: absolute; inset: 0; z-index: 19; pointer-events: auto; background: rgba(0, 0, 0, 0.42); }
+.form-phone .cards-sheet {
+  left: 0; right: 0; bottom: 0; width: 100%; max-width: 34rem; margin: 0 auto;
+  border-radius: 1.5rem 1.5rem 0 0; border-bottom: 0; background: var(--sheet-bg);
+  padding: 0.3rem max(1.1rem, var(--sa-r)) calc(var(--sa-b) + 1rem) max(1.1rem, var(--sa-l)); gap: 0.75rem;
+}
+.form-phone .cs-title { font-size: 1.25rem; }
+.form-phone .cs-head .icon-btn { width: 2.75rem; height: 2.75rem; }
+.form-phone .cards-grid { gap: 0.75rem; }
+.form-phone.landscape .cards-grid { grid-template-columns: repeat(auto-fill, minmax(5rem, 5.75rem)); justify-content: center; }
+.form-phone.landscape .cards-sheet { max-width: 38rem; padding-bottom: calc(var(--sa-b) + 0.6rem); }
+.form-phone .card-terr, .form-phone .card-sym { font-size: 0.8125rem; }
+.form-phone .cs-foot .btn { height: 2.75rem; padding: 0 1.1rem; border-radius: 0.875rem; }
+
+/* Hand-off: the cover stays opaque; its content is a sheet at the bottom (pull down = start turn) */
+.form-phone .handoff { place-items: end center; }
+.form-phone .ho-box {
+  width: 100%; max-width: 34rem; gap: 0.7rem; background: var(--sheet-bg);
+  padding: 0.3rem 1.5rem calc(var(--sa-b) + 1.25rem); border-radius: 1.5rem 1.5rem 0 0; border: 1px solid var(--hair); border-bottom: 0;
+  box-shadow: 0 -0.5rem 2.5rem rgba(0, 0, 0, 0.5);
+}
+.form-phone .ho-box .grab { align-self: stretch; }
+.form-phone .ho-emb .emb { width: 2.5rem; height: 2.5rem; }
+.form-phone .ho-title { font-size: 2rem; line-height: 1.1; }
+.form-phone .ho-sub { font-size: 1rem; margin-bottom: 0.35rem; }
+.form-phone .ho-box .btn.big { width: 100%; height: 3.5rem; border-radius: 1rem; font-size: 1.125rem; }
+.form-phone.landscape .ho-box { gap: 0.45rem; padding-bottom: calc(var(--sa-b) + 0.8rem); }
+.form-phone.landscape .ho-title { font-size: 1.625rem; }
+.form-phone.landscape .ho-emb .emb { width: 1.75rem; height: 1.75rem; }
+.form-phone.landscape .ho-box .btn.big { height: 3rem; }
+
+/* ---- Title ---- */
+.form-phone .title-textsize { display: none; } /* Text size lives in Settings on phones */
+.form-phone .title-menu .btn.big { justify-content: center; border-radius: 1rem; }
+.form-phone .title-menu .btn.continue .btn-row { justify-content: center; }
+.form-phone .title-menu .btn.continue .btn-sub { text-align: center; }
+.form-phone .title-links .btn.link { height: 2.75rem; padding: 0 1.1rem; font-size: 1rem; }
+
+.form-phone.portrait .title-scrim {
+  background: linear-gradient(180deg, rgba(8, 10, 13, 0.94) 0%, rgba(8, 10, 13, 0.6) 26%, rgba(8, 10, 13, 0.08) 44%, rgba(8, 10, 13, 0.1) 58%, rgba(8, 10, 13, 0.78) 74%, rgba(8, 10, 13, 0.96) 100%);
+}
+.form-phone.portrait .title-col {
+  left: 0; right: 0; top: 0; bottom: 0; width: auto; transform: none; align-items: stretch;
+  padding: calc(var(--sa-t) + 8vh) max(1.25rem, var(--sa-r)) calc(var(--sa-b) + 1rem) max(1.25rem, var(--sa-l));
+}
+.form-phone.portrait .lockup { align-items: center; }
+.form-phone.portrait .lk-risk { font-size: 3.6rem; align-items: center; margin: 0 -0.16em 0 0; }
+.form-phone.portrait .lk-sub { justify-content: center; font-size: 0.875rem; margin-top: 0.8rem; }
+.form-phone.portrait .lk-rule, .form-phone.portrait .lk-rule:first-child { flex: 1 1 0; background: linear-gradient(90deg, rgba(194, 160, 98, 0.1), rgba(194, 160, 98, 0.7)); }
+.form-phone.portrait .lk-rule:last-child { background: linear-gradient(90deg, rgba(194, 160, 98, 0.7), rgba(194, 160, 98, 0.1)); }
+.form-phone.portrait .title-tag { text-align: center; margin: auto auto 0; padding-top: 1rem; font-size: 0.9375rem; max-width: 19rem; }
+.form-phone.portrait .title-menu { margin-top: 1.4rem; align-items: stretch; gap: 0.6rem; }
+.form-phone.portrait .title-menu .btn.big { min-width: 0; width: 100%; height: 3.5rem; font-size: 1.125rem; }
+.form-phone.portrait .title-menu .btn.continue { height: 4.25rem; }
+.form-phone.portrait .title-links { justify-content: center; gap: 0.5rem; margin-top: 0.1rem; padding: 0; }
+
+.form-phone.landscape .title-col { left: max(1.75rem, calc(var(--sa-l) + 0.25rem)); width: min(21rem, 48vw); transform: translateY(-50%); }
+.form-phone.landscape .lk-risk { font-size: 2.75rem; }
+.form-phone.landscape .lk-sub { font-size: 0.75rem; margin-top: 0.55rem; gap: 0.6rem; }
+.form-phone.landscape .title-tag { display: none; }
+.form-phone.landscape .title-menu { margin-top: 1.1rem; gap: 0.5rem; }
+.form-phone.landscape .title-menu .btn.big { min-width: 15rem; height: 3rem; }
+.form-phone.landscape .title-menu .btn.continue { height: 3.6rem; }
+.form-phone.landscape .title-links { margin-top: 0; gap: 0.25rem; padding: 0; }
+.form-phone.landscape .title-links .btn.link:first-child { padding-left: 0.1rem; }
+
+/* ---- New game: one column, a card per seat, sticky Start ---- */
+.form-phone .newgame-screen { padding: 0; place-items: stretch; background: #0c0f13; }
+.form-phone .ng-sheet {
+  width: 100%; height: 100%; max-height: none; border: 0; border-radius: 0; padding: 0; box-shadow: none;
+  backdrop-filter: none; -webkit-backdrop-filter: none; background: linear-gradient(180deg, #161a20 0%, #0d1014 60%);
+}
+.form-phone .ng-sheet::before { display: none; }
+.form-phone .ng-sheet > .sheet-head {
+  margin: 0; padding: calc(var(--sa-t) + 0.4rem) max(0.75rem, var(--sa-r)) 0.4rem max(1rem, var(--sa-l));
+  border-bottom: 1px solid var(--ivory-08); min-height: calc(var(--sa-t) + 3.4rem);
+}
+.form-phone .ng-sheet > .sheet-head .btn { color: var(--brass-hi); }
+.form-phone .ng-sheet > .ng-grid {
+  margin: 0; padding: 0.5rem max(1rem, var(--sa-r)) 1.25rem max(1rem, var(--sa-l));
+  grid-template-columns: minmax(0, 1fr); gap: 0.4rem; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+}
+.form-phone .ng-grid > .ng-label { padding-top: 0.85rem; font-size: 0.8125rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ivory-55); font-family: var(--font); font-weight: 700; }
+.form-phone .ng-grid > .ng-label:empty, .form-phone .ng-grid > div:empty { display: none; }
+.form-phone .seats { gap: 0.5rem; }
+.form-phone .seat-row {
+  grid-template-columns: 2.75rem minmax(0, 1fr) minmax(0, 1fr) 2.75rem; grid-template-areas: 'emb name name rm' 'kind kind diff diff';
+  gap: 0.55rem 0.6rem; padding: 0.6rem 0.65rem 0.65rem; border: 1px solid var(--ivory-08); border-radius: 1rem;
+  background: rgba(243, 234, 216, 0.035); position: relative;
+}
+.form-phone .seat-row::before { content: ''; position: absolute; left: -1px; top: 0.9rem; bottom: 0.9rem; width: 3px; border-radius: 0 3px 3px 0; background: var(--seat); }
+.form-phone .seat-num { display: none; }
+.form-phone .seat-color { grid-area: emb; }
+.form-phone .seat-row .name-input { grid-area: name; height: 2.75rem; }
+.form-phone .seat-row > .seg { grid-area: kind; display: flex; }
+.form-phone .seat-row > .diff-wrap { grid-area: diff; }
+.form-phone .seat-row > .diff-wrap > .seg { display: flex; }
+.form-phone .seat-row .seg-row .seg-opt { flex: 1 1 0; height: 2.75rem; padding: 0 0.3rem; font-size: 0.9375rem; }
+.form-phone .seat-row .remove-seat { grid-area: rm; width: 2.75rem; height: 2.75rem; }
+.form-phone .seat-emblem.swatch { width: 2.75rem; height: 2.75rem; }
+.form-phone .seat-emblem.swatch .emb { width: 1.2rem; height: 1.2rem; }
+.form-phone .add-seat { height: 2.75rem; margin-top: 0.1rem; color: var(--ivory-90); }
+.form-phone .seg-cards { gap: 0.5rem; }
+.form-phone .seg-cards .seg-opt { min-height: 0; padding: 0.7rem 0.7rem 0.75rem; border-radius: 0.875rem; }
+.form-phone .seg-cards .seg-label { font-size: 0.9375rem; }
+.form-phone .seg-cards .seg-detail { font-size: 0.8125rem; }
+.form-phone .seg-cards .seg-meta { font-size: 0.8125rem; }
+.form-phone .house-toggle { min-height: 2.75rem; }
+.form-phone .house { padding: 0.8rem 0.85rem 0.9rem; }
+.form-phone .house-grid { grid-template-columns: minmax(0, 1fr); gap: 0.9rem; }
+.form-phone .house-grid .seg-row { display: flex; width: 100%; }
+.form-phone .house-grid .seg-row .seg-opt { flex: 1 1 0; height: 2.75rem; padding: 0 0.3rem; }
+.form-phone .house-grid .seg-row:has(.seg-detail) .seg-opt { height: 3.25rem; }
+.form-phone .seed-input { max-width: none; height: 2.75rem; }
+.form-phone .ng-foot {
+  margin: 0; padding: 0.7rem max(1rem, var(--sa-r)) calc(var(--sa-b) + 0.75rem) max(1rem, var(--sa-l));
+  flex-direction: column; align-items: stretch; gap: 0.55rem; border-top: 1px solid var(--hair-soft);
+  background: rgba(12, 15, 19, 0.97); box-shadow: 0 -0.75rem 1.5rem rgba(0, 0, 0, 0.35);
+}
+.form-phone .ng-sum { align-items: center; text-align: center; }
+.form-phone .ng-summary { font-size: 0.875rem; color: var(--ivory-70); }
+.form-phone .ng-foot .btn.big { width: 100%; min-width: 0; height: 3.25rem; border-radius: 1rem; font-size: 1.125rem; }
+/* Landscape: the desktop's one-line seat rows fit; the footer is one row */
+.form-phone.landscape .seat-row { grid-template-columns: 2.75rem minmax(6rem, 1fr) auto minmax(0, 13rem) 2.75rem; grid-template-areas: 'emb name kind diff rm'; padding: 0.35rem 0.5rem; }
+.form-phone.landscape .seat-row > .seg .seg-opt { min-width: 4.5rem; }
+.form-phone.landscape .ng-foot { flex-direction: row; align-items: center; padding-top: 0.5rem; padding-bottom: calc(var(--sa-b) + 0.5rem); }
+.form-phone.landscape .ng-sum { align-items: flex-start; text-align: left; flex: 1; }
+.form-phone.landscape .ng-foot .btn.big { width: auto; min-width: 11rem; height: 2.875rem; }
+.form-phone.landscape .ng-sheet > .sheet-head { min-height: 0; padding-top: 0.3rem; padding-bottom: 0.3rem; }
+.form-phone.landscape .ng-sheet > .sheet-head .sheet-title { font-size: 1.25rem; }
+.form-phone.landscape .ng-sheet > .ng-grid, .form-phone.landscape .ng-sheet > .sheet-head, .form-phone.landscape .ng-foot {
+  padding-left: max(1.25rem, calc(var(--sa-l) - 8px)); padding-right: max(1.25rem, calc(var(--sa-r) - 8px));
+}
+
+/* The colour picker: six big swatches in a sheet (the pop itself is the scrim) */
+.form-phone .swatch-pop {
+  position: fixed; inset: 0; z-index: 90; left: 0; top: 0; transform: none; padding: 0; border: 0; border-radius: 0; box-shadow: none;
+  display: flex; align-items: flex-end; justify-content: center; background: rgba(0, 0, 0, 0.45);
+}
+.form-phone .sw-sheet {
+  width: 100%; max-width: 34rem; background: var(--sheet-bg); border: 1px solid var(--hair); border-bottom: 0; border-radius: 1.5rem 1.5rem 0 0;
+  padding: 0.3rem 1.25rem calc(var(--sa-b) + 1.5rem); box-shadow: 0 -0.5rem 2.5rem rgba(0, 0, 0, 0.5);
+}
+.form-phone .sw-title { display: block; text-align: center; font-family: var(--display); font-weight: 600; font-size: 1.125rem; letter-spacing: 0.06em; margin-bottom: 1.1rem; }
+.form-phone .sw-sheet .swatches { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem 0.5rem; justify-items: center; }
+.form-phone.landscape .sw-sheet .swatches { grid-template-columns: repeat(6, 1fr); }
+.form-phone .sw-sheet .swatch { width: 3.5rem; height: 3.5rem; position: relative; margin-bottom: 1.6rem; }
+.form-phone .sw-sheet .swatch .emb { width: 1.3rem; height: 1.3rem; }
+.form-phone .sw-name { display: block; position: absolute; top: calc(100% + 0.4rem); left: 50%; transform: translateX(-50%); font-size: 0.8125rem; font-weight: 600; color: var(--ivory-70); white-space: nowrap; }
+.form-phone .swatch.on .sw-name { color: var(--ivory); }
+
+/* ---- Victory: one column, awards swipe, chart full width, sticky Rematch ---- */
+.form-phone .victory-screen { overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.form-phone .v-banner { padding: 1rem 1.25rem 1.1rem; width: calc(100vw - 1.5rem); max-width: 36rem; }
+.form-phone .v-banner .rb-edge { width: 6rem; margin-left: -3rem; }
+.form-phone .v-title { font-size: clamp(1.5rem, 7vw, 2.25rem); text-align: center; line-height: 1.12; }
+.form-phone .v-intro.docked { top: calc(var(--sa-t) + 0.4rem); }
+.form-phone .v-intro.docked .v-title { font-size: 1.1875rem; }
+.form-phone .v-intro.docked .v-banner { padding: 0.55rem 1rem 0.65rem; }
+.form-phone .v-intro.docked .v-emb .emb { width: 1.1rem; height: 1.1rem; }
+.form-phone .v-intro.docked .rb-sub { font-size: 0.875rem; }
+.form-phone .v-body {
+  width: 100%; height: auto; min-height: 100%; gap: 0.75rem;
+  padding: calc(var(--sa-t) + 7rem) max(0.75rem, var(--sa-r)) 0 max(0.75rem, var(--sa-l));
+}
+.form-phone .v-body.stats-open { min-height: 100%; }
+.form-phone .v-awards {
+  display: flex; overflow-x: auto; scroll-snap-type: x mandatory; gap: 0.6rem; margin: 0 calc(-1 * max(0.75rem, var(--sa-l))); padding: 0 max(0.75rem, var(--sa-l)) 0.2rem;
+  scrollbar-width: none; touch-action: pan-x pan-y; overscroll-behavior-x: contain;
+}
+.form-phone .v-awards > .award { flex: 0 0 min(80%, 19rem); scroll-snap-align: center; padding: 0.85rem 0.95rem; }
+.form-phone .v-mid { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
+.form-phone .v-body > .v-mid, .form-phone .v-body.stats-open > .v-mid { flex: none; height: auto; min-height: 0; }
+.form-phone .v-chart .chart-plot { flex: none; height: 13rem; }
+.form-phone .v-chart, .form-phone .v-stand, .form-phone .v-stats { padding: 0.85rem 0.9rem 0.9rem; }
+.form-phone .chart-head { margin-bottom: 0.4rem; }
+.form-phone .v-stats { touch-action: pan-x pan-y; }
+.form-phone .v-actions {
+  position: sticky; bottom: 0; z-index: 3; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem;
+  margin: 0 calc(-1 * max(0.75rem, var(--sa-l))); padding: 1.25rem max(0.75rem, var(--sa-r)) calc(var(--sa-b) + 0.75rem) max(0.75rem, var(--sa-l));
+  background: linear-gradient(180deg, rgba(8, 10, 13, 0), rgba(8, 10, 13, 0.94) 32%);
+}
+.form-phone .v-actions > [data-testid='rematch'] { grid-column: 1 / -1; height: 3.375rem; font-size: 1.125rem; border-radius: 1rem; }
+.form-phone .v-actions .v-spacer { display: none; }
+.form-phone .v-actions .btn { height: 2.75rem; min-width: 0; padding: 0 0.5rem; font-size: 0.9375rem; border-radius: 0.875rem; }
+.form-phone .v-actions .btn.role-exit { border-color: var(--ivory-16); background: rgba(243, 234, 216, 0.04); color: var(--ivory-90); }
+.form-phone.landscape .v-body { padding-top: calc(var(--sa-t) + 5.25rem); padding-left: max(1rem, calc(var(--sa-l) - 8px)); padding-right: max(1rem, calc(var(--sa-r) - 8px)); }
+.form-phone.landscape .v-mid { grid-template-columns: minmax(0, 1fr) 15rem; }
+.form-phone.landscape .v-actions { grid-template-columns: 2fr 1fr 1fr 1fr; padding-top: 0.9rem; }
+.form-phone.landscape .v-actions > [data-testid='rematch'] { grid-column: auto; height: 2.875rem; }
+.form-phone.landscape .v-awards > .award { flex-basis: min(46%, 19rem); }
+.form-phone.landscape .v-intro:not(.docked) .v-title { font-size: 2rem; }

@@ -93,19 +93,34 @@ export const DEFAULT_SETTINGS: Settings = {
   autoCamera: true,
 };
 
-export function sanitizeSettings(x: unknown): Settings {
-  const s = { ...DEFAULT_SETTINGS };
+/** Settings file version (v3: the hand-off cover defaults on for touch devices, docs/MOBILE.md §5). */
+export const SETTINGS_VERSION = 3;
+
+/**
+ * Defaults for this device. A phone or tablet is physically passed around, so the hand-off cover (which
+ * hides the next player's cards) defaults on there; it only ever shows with 2+ humans.
+ */
+export function defaultSettings(touch = false): Settings {
+  return { ...DEFAULT_SETTINGS, hideCardsBetweenTurns: touch };
+}
+
+export function sanitizeSettings(x: unknown, touch = false): Settings {
+  const s = defaultSettings(touch);
   if (!x || typeof x !== 'object') return s;
   const o = x as Partial<Settings>;
+  const v = (x as { v?: number }).v ?? 1;
   if (o.animationSpeed === 0 || o.animationSpeed === 1 || o.animationSpeed === 2) s.animationSpeed = o.animationSpeed;
   if (o.aiSpeed === 'watch' || o.aiSpeed === 'fast' || o.aiSpeed === 'instant') s.aiSpeed = o.aiSpeed;
   if (o.textSize === 'laptop' || o.textSize === 'couch' || o.textSize === 'tv') s.textSize = o.textSize;
   for (const k of ['hideCardsBetweenTurns', 'muted', 'music', 'reduceMotion', 'showWinChance', 'autoCamera'] as const) {
     if (typeof o[k] === 'boolean') s[k] = o[k] as boolean;
   }
+  // Before v3 the cover defaulted off everywhere, so a saved `false` on a touch device was the old
+  // default, not a choice: only an explicit `true` (or a v3 file) counts there.
+  if (touch && v < 3 && o.hideCardsBetweenTurns === false) s.hideCardsBetweenTurns = true;
   // Territory names went off by default in the simplify pass (settings v2): a v1 file's `true` was the
   // old default, not a choice, so only a v2 file's value counts.
-  if ((x as { v?: number }).v === 2 && typeof o.showLabels === 'boolean') s.showLabels = o.showLabels;
+  if (v >= 2 && typeof o.showLabels === 'boolean') s.showLabels = o.showLabels;
   if (typeof o.sfxVolume === 'number' && Number.isFinite(o.sfxVolume)) s.sfxVolume = Math.min(1, Math.max(0, o.sfxVolume));
   return s;
 }

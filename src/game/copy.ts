@@ -6,6 +6,20 @@ import { CONTINENTS, TERRITORIES, type ContinentId, type GameState, type PlayerI
 import type { SeatRef } from './viewModel';
 
 export const SEP = ' · ';
+
+/** Touch devices say "tap", everything else "click" (docs/MOBILE.md). Set by the controller. */
+let touchCopy = false;
+export function setTouchCopy(on: boolean): void {
+  touchCopy = on;
+}
+/** 'click' / 'tap', for the line's instructions. */
+export function click(): string {
+  return touchCopy ? 'tap' : 'click';
+}
+/** 'Click' / 'Tap'. */
+export function Click(): string {
+  return touchCopy ? 'Tap' : 'Click';
+}
 export const MINUS = '−';
 
 export function tName(t: TerritoryId): string {

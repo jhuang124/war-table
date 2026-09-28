@@ -4,7 +4,7 @@
 // fortify `Move N · end turn`, which says so). Pure: built from the displayed state + the selection.
 
 import { attackSources, attackTargets, fortifySources, fortifyTargets, winProbability, type GameState, type TerritoryId } from '../engine';
-import { SEP, armies, pName, pct, poss, seatRef, tName } from './copy';
+import { Click, SEP, armies, click, pName, pct, poss, seatRef, tName } from './copy';
 import { bestSet, oddsWord } from './helpers';
 import type { ButtonId, ButtonVM, CountVM, StripVM, TrackSegId, TrackSegVM, TrackVM } from './viewModel';
 
@@ -87,7 +87,7 @@ export function trackLockReason(s: GameState, sel: Sel, seg: TrackSegId): string
   const ph = s.phase;
   switch (ph.kind) {
     case 'setup-claim':
-      return seg === 'done' ? `Claim a territory first${SEP}click an open tile` : null;
+      return seg === 'done' ? `Claim a territory first${SEP}${click()} an open tile` : null;
     case 'setup-place': {
       if (seg !== 'done') return null;
       const left = placeLeft(s, sel);
@@ -292,12 +292,12 @@ export function buildStrip(inp: StripInput): StripVM {
   switch (ph.kind) {
     case 'setup-claim':
       if (s.config.setupMode !== 'draft') return make('setup', dealingLine());
-      return make('setup', `Claim a territory${SEP}click an open tile`);
+      return make('setup', `Claim a territory${SEP}${click()} an open tile`);
     case 'setup-place': {
       const staged = stagedTotal(sel);
       const left = Math.max(0, ph.toPlace - staged);
       const undo = sel.placements.length > 0 ? [btn('undo', 'Undo')] : [];
-      if (left === 0) return make('setup', `All ${ph.toPlace} placed${SEP}click Done`, { buttons: undo });
+      if (left === 0) return make('setup', `All ${ph.toPlace} placed${SEP}${click()} Done`, { buttons: undo });
       if (sel.selected && s.territories[sel.selected].owner === me) {
         const n = placeValue(s, sel);
         return make('setup', `Place on ${tName(sel.selected)}`, {
@@ -305,7 +305,7 @@ export function buildStrip(inp: StripInput): StripVM {
           buttons: [...undo, btn('place', `Place ${n}`, true)],
         });
       }
-      const line = staged > 0 ? `Place ${left} more${SEP}click a territory` : `Place ${armies(left)}${SEP}click a territory`;
+      const line = staged > 0 ? `Place ${left} more${SEP}${click()} a territory` : `Place ${armies(left)}${SEP}${click()} a territory`;
       return make('setup', line, { buttons: undo });
     }
     case 'reinforce': {
@@ -332,7 +332,7 @@ export function buildStrip(inp: StripInput): StripVM {
           buttons: [...(second ? [second] : []), btn('place', `Place ${n}`, true)],
         });
       }
-      const line = placedAny ? `Place ${ph.remaining} more${SEP}click a territory` : `Place ${armies(ph.remaining)}${SEP}click a territory`;
+      const line = placedAny ? `Place ${ph.remaining} more${SEP}${click()} a territory` : `Place ${armies(ph.remaining)}${SEP}${click()} a territory`;
       return make('place', line, { buttons: secondaries });
     }
     case 'attack': {
@@ -343,9 +343,9 @@ export function buildStrip(inp: StripInput): StripVM {
           buttons: [btn('roll', 'Roll'), btn('blitz', 'Blitz', true)],
         });
       }
-      if (sel.selected && s.territories[sel.selected].owner === me) return make('attack', `Attack from ${tName(sel.selected)}${SEP}click an enemy`);
+      if (sel.selected && s.territories[sel.selected].owner === me) return make('attack', `Attack from ${tName(sel.selected)}${SEP}${click()} an enemy`);
       if (attackSources(s, me).length === 0) return make('attack', `No attacks left${SEP}end your turn`);
-      return make('attack', 'Click an enemy territory to attack');
+      return make('attack', `${Click()} an enemy territory to attack`);
     }
     case 'occupy': {
       const value = Math.min(ph.max, Math.max(ph.min, sel.occupyCount ?? ph.max));
@@ -365,7 +365,7 @@ export function buildStrip(inp: StripInput): StripVM {
           buttons: [btn('move', `Move ${value}${SEP}end turn`, true)],
         });
       }
-      if (sel.selected && s.territories[sel.selected].owner === me) return make('fortify', `Move from ${tName(sel.selected)}${SEP}click where to`);
+      if (sel.selected && s.territories[sel.selected].owner === me) return make('fortify', `Move from ${tName(sel.selected)}${SEP}${click()} where to`);
       if (!canFortifyAny(s)) return make('fortify', `Nothing to move${SEP}end your turn`);
       return make('fortify', 'Move armies once, or end your turn');
     }

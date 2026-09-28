@@ -2,8 +2,8 @@
 
 **Play: https://jhuang124.github.io/war-table/**
 
-The classic game of world conquest for 2 to 4 players around one computer — a laptop on the coffee table or a TV. Any seat
-can be an AI. A 3D board on a walnut table, real dice in a tray, and a HUD that always says what to do
+The classic game of world conquest for 2 to 4 players around one screen — a laptop on the coffee table, a TV, or
+one phone or tablet passed around the table. Any seat can be an AI. A 3D board on a walnut table, real dice in a tray, and a HUD that always says what to do
 next. No accounts, no server, no online play: everything runs in the browser and saves to it.
 
 ## Start
@@ -17,6 +17,24 @@ Open **http://127.0.0.1:5273** in Chrome, Edge, Safari or Firefox (any browser w
 Plug the laptop into the TV if you have one, and pick **Text size · TV** on the title screen.
 
 For a production build: `npm run build`, then `npm run preview` (http://127.0.0.1:5274).
+
+## On a phone or tablet
+
+Open the link in Safari (iPhone, iPad) or Chrome (Android). **Share → Add to Home Screen** (Safari) or
+**Install app** (Chrome) makes it a full-screen app with its own icon, and after the first visit it
+plays offline.
+
+- **Landscape is best on a phone** (the map is wide); portrait works too — the first time, a pill
+  suggests rotating.
+- **Tap** a territory to select it, **drag** to pan, **pinch** to zoom (**Reset view** brings the map
+  home). **Touch and hold** a territory for its name card: continent and bonus, owner, armies.
+- The bottom **dock** is the Turn Track (Place · Attack · Fortify · End), the line, and the buttons,
+  in thumb reach. In portrait it stacks in rows. The card-stack button is your hand.
+- Menu, Settings, Rules, Log, your cards and the hand-off cover open as **sheets from the bottom**:
+  pull one down by its handle (or tap outside it) to close it.
+- **Hide cards between turns** is on by default on phones and tablets: with 2+ humans, the next
+  player sees a "Pass to …" cover before their cards show (pull it down or press the button).
+- Android phones buzz lightly on a select, the dice landing, and a conquest.
 
 ## Playing
 
@@ -98,9 +116,10 @@ hidden keys speed things up:
 
 Text size (Laptop · Couch · TV), animation speed for your own turns (1× · 2× · Instant), AI speed
 (Watch · Fast · Skip), sound volume, mute, music (a quiet ambient bed, off by default), territory
-names on the board, show win chance, **Hide cards between turns** (a pass-the-laptop cover between two
-humans, off by default because on one TV everyone can see anyway), return camera home each turn, and
-reduce motion (also follows the system setting).
+names on the board, show win chance, **Hide cards between turns** (a pass-the-device cover between two
+humans; off by default on a laptop or TV, where everyone can see anyway, and on by default on phones and
+tablets, which get passed around), return camera home each turn, and reduce motion (also follows the
+system setting). On a phone, Text size steps are smaller (1.0 · 1.1 · 1.2) and live in Settings only.
 
 ## Troubleshooting
 
@@ -113,6 +132,10 @@ reduce motion (also follows the system setting).
 - **Everything is tiny on the TV**: Text size → TV on the title screen (or Settings).
 - **The camera got lost**: click **Reset view** (top right); it also returns home when your next turn starts.
 - **Start over**: Pause → Restart, or clear the site's storage (`risk3d.*` keys in localStorage).
+- **The installed app shows an old version**: it updates itself whenever it's opened online (the page is
+  always fetched fresh first); close and reopen it once.
+- **"Reloading the board…"**: the phone reclaimed the graphics memory; the board rebuilds itself and
+  the game carries on where it was.
 
 ## For developers
 
@@ -127,9 +150,19 @@ reduce motion (also follows the system setting).
 | `npm run verify:map` | Checks board geometry against the classic borders and writes `artifacts/map/preview.png` |
 | `npm run verify:audio` | Offline + live checks of the synthesized sound effects |
 | `npm run gallery` | The HUD fixture gallery (`ui-gallery.html`) |
+| `npx tsx tests/e2e/mobile-screens.ts [out] [devices]` | Screenshot sweep of every state on emulated phones / tablets (server on `RISK_URL`) |
+| `npx tsx tests/e2e/pwa-icons.ts` | Re-render the app icons in `public/icons/` from `icon.svg` |
+
+Mobile: layouts are chosen by capability, never the user agent (`src/ui/layout.ts`): a phone-sized
+viewport gets the phone layout (dock, sheets, one-column screens; `src/ui/mobile.css`), a touch screen
+with room gets the desktop layout with 44 px targets, everything else is the desktop layout unchanged.
+The mobile e2e flows (`mobile-turn`, `mobile-sheets`, `mobile-flow`, `pwa`) run on Playwright device
+emulation (iPhone 15 Pro, Pixel 7, iPad Pro 11) with touch. The service worker (`public/sw.js`) is
+stamped with a version and its precache list by `vite.config.ts` at build time and only registers in
+production builds.
 
 Dev pages: `render-sandbox.html` (the board alone, with an AI game and every animation on buttons),
 `audio.html` (every sound), `ui-gallery.html` (every HUD state). `window.__risk` is the test API
 (SPEC §9). The design lives in `docs/SPEC.md` (what) and `docs/UX.md` (how it feels); `docs/ROUND2.md`
 (the Turn Track, board clicks select / buttons commit, the full-screen board, sculpted pieces) overrides
-both where they differ.
+both where they differ, and `docs/MOBILE.md` overrides all three on touch devices.

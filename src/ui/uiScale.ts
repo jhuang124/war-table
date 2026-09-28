@@ -12,7 +12,19 @@ export const TEXT_SCALE: Record<TextSize, number> = { laptop: 1, couch: 1.25, tv
 /** The CSS viewport the HUD needs at scale 1.0. */
 export const BASE_VIEWPORT = { width: 1280, height: 720 } as const;
 
+/**
+ * Phones (docs/MOBILE.md §6): the phone layout is built for scale 1.0 at 390 px, so the desktop fit rule
+ * (which would pin every size to 1.0) doesn't apply; the setting still works, in smaller steps.
+ */
+export const PHONE_TEXT_SCALE: Record<TextSize, number> = { laptop: 1, couch: 1.1, tv: 1.2 };
+
+/** A phone-sized viewport (either orientation). Mirrors src/ui/layout.ts without the pointer check. */
+export function isPhoneViewport(width: number, height: number): boolean {
+  return Math.min(width, height) <= 540 && Math.max(width, height) <= 1000;
+}
+
 export function effectiveUiScale(size: TextSize, width: number, height: number): number {
+  if (isPhoneViewport(width, height)) return PHONE_TEXT_SCALE[size] ?? 1;
   const nominal = TEXT_SCALE[size] ?? 1;
   const room = Math.max(1, Math.min(width / BASE_VIEWPORT.width, height / BASE_VIEWPORT.height));
   return Math.min(nominal, Math.round(room * 1000) / 1000);

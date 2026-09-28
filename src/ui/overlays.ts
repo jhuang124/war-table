@@ -6,6 +6,8 @@ import type { GameVM, LogLineVM, SeatRef, Settings, UiIntent, ViewModel } from '
 import { PLAYER_COLORS } from '../shared/palette';
 import { Segmented, Slider, Switch, uiButton } from './controls';
 import { animateIn, emblem, h, minus, motion, setAttr, setStyle, setText, titleText, toggle } from './dom';
+import { isPhone } from './layout';
+import { dragToDismiss, grabHandle, resetSheet, sheetIn, sheetOut } from './sheet';
 
 type Send = (i: UiIntent) => void;
 
@@ -21,13 +23,18 @@ export class Handoff {
   private emb: HTMLDivElement;
   private seat: SeatRef | null = null;
   private vmRef: GameVM['handoff'] = null;
+  private box: HTMLDivElement;
 
   constructor(send: Send) {
     this.el = h('div', 'handoff hidden');
     this.el.setAttribute('role', 'dialog');
     this.el.setAttribute('aria-modal', 'true');
     this.el.append(h('div', 'ho-band'));
+    // Phones: the cover's content is a bottom sheet; pulling it down is the same as the button.
     const box = h('div', 'ho-box');
+    box.append(grabHandle('handoff-grab'));
+    dragToDismiss(box, [box], { onDismiss: () => send({ type: 'handoffAccept' }) });
+    this.box = box;
     this.emb = h('div', 'ho-emb');
     this.title = h('h1', 'ho-title');
     this.sub = h('p', 'ho-sub num');
@@ -52,9 +59,13 @@ export class Handoff {
       }
       return;
     }
+    const was = !!this.seat;
     this.seat = vm.seat;
     this.el.getAnimations().forEach((a) => a.cancel());
     this.el.classList.remove('hidden');
+    // The cover itself mounts opaque at once; on phones its sheet rises into place.
+    resetSheet(this.box);
+    if (!was && isPhone()) sheetIn(this.box);
     const pal = PLAYER_COLORS[vm.seat.color];
     setStyle(this.el, '--seat', pal.base);
     setStyle(this.el, '--seat-light', pal.light);
@@ -84,7 +95,13 @@ export class Confirm {
     this.el.setAttribute('role', 'alertdialog');
     this.el.setAttribute('aria-modal', 'true');
     this.box = h('div', 'sheet confirm-box');
+    this.box.append(grabHandle());
     this.text = h('p', 'confirm-text num');
+    // Phones: an action sheet; a tap on the scrim or a pull down is "Keep playing".
+    this.el.addEventListener('click', (e) => {
+      if (e.target === this.el && isPhone()) send({ type: 'confirm', yes: false });
+    });
+    dragToDismiss(this.box, [this.box], { scrim: () => this.el, onDismiss: () => send({ type: 'confirm', yes: false }) });
     const row = h('div', 'confirm-row');
     this.yes = uiButton('', 'brass role-primary', () => send({ type: 'confirm', yes: true }), undefined, 'confirm-yes');
     this.yesLabel = this.yes.querySelector('.btn-label')!;
@@ -102,7 +119,8 @@ export class Confirm {
     setText(this.text, vm.text);
     setText(this.yesLabel, vm.kind === 'endGame' ? 'End game' : 'Restart');
     if (!was) {
-      animateIn(this.box, { dy: 8 });
+      if (isPhone()) sheetIn(this.box, this.el);
+      else animateIn(this.box, { dy: 8 });
     }
   }
 }
@@ -125,14 +143,17 @@ class LogSheet {
   private list: HTMLDivElement;
   private empty: HTMLDivElement;
   private lines: LogLineVM[] | null = null;
+  head!: HTMLDivElement;
 
   constructor(back: () => void) {
     this.el = h('div', 'sheet log-sheet');
+    this.el.append(grabHandle());
     const head = h('div', 'sheet-head');
     head.append(h('h1', 'sheet-title', 'Log'), uiButton('Close', 'role-exit', back, undefined, 'log-close'));
     this.list = h('div', 'log-list');
     this.empty = h('div', 'log-empty', 'Nothing yet. Battles show up here, one line each.');
     this.el.append(head, this.list, this.empty);
+    this.head = head;
   }
 
   update(lines: LogLineVM[]): void {
@@ -177,14 +198,16 @@ export class Overlays {
     this.el = h('div', 'scrim overlays hidden');
     this.el.setAttribute('role', 'dialog');
     this.el.setAttribute('aria-modal', 'true');
-    // A click on the scrim itself (not a sheet) closes the menu.
+    // A click on the scrim itself (not a sheet) closes the menu; on phones, any sheet.
     this.el.addEventListener('click', (e) => {
-      if (e.target === this.el && this.current === 'pause') send({ type: 'overlay', overlay: null });
+      if (e.target === this.el && (this.current === 'pause' || (isPhone() && this.current))) send({ type: 'overlay', overlay: null });
     });
 
     // Menu
     this.pause = h('div', 'sheet pause-sheet');
-    this.pause.append(h('h1', 'sheet-title', 'Menu'));
+    const ph = h('div', 'pause-head');
+    ph.append(h('h1', 'sheet-title', 'Menu'));
+    this.pause.append(grabHandle(), ph);
     const list = h('div', 'menu-list');
     list.append(
       uiButton('Resume', 'brass role-primary menu-item', () => send({ type: 'overlay', overlay: null }), undefined, 'pause-resume'),
@@ -200,6 +223,7 @@ export class Overlays {
 
     // Rules
     this.rules = h('div', 'sheet rules-sheet');
+    this.rules.append(grabHandle());
     const rh = h('div', 'sheet-head');
     rh.append(h('h1', 'sheet-title', 'How to play'));
     rh.append(uiButton('Close', 'role-exit', () => send({ type: 'overlay', overlay: this.backTarget() }), undefined, 'rules-close'));
@@ -215,6 +239,7 @@ export class Overlays {
 
     // Settings
     this.settings = h('div', 'sheet settings-sheet');
+    this.settings.append(grabHandle());
     const sh = h('div', 'sheet-head');
     sh.append(h('h1', 'sheet-title', 'Settings'));
     sh.append(uiButton('Done', 'role-exit', () => send({ type: 'overlay', overlay: this.backTarget() }), undefined, 'settings-done'));
@@ -278,7 +303,24 @@ export class Overlays {
     this.log = new LogSheet(() => send({ type: 'overlay', overlay: this.backTarget() }));
 
     this.el.append(this.pause, this.rules, this.settings, this.log.el);
+    // Phones: pull any sheet down by its handle / header to close it (back to the board).
+    const close = () => {
+      this.dragged = true;
+      send({ type: 'overlay', overlay: null });
+    };
+    for (const [sheet, head] of [
+      [this.pause, ph],
+      [this.rules, rh],
+      [this.settings, sh],
+      [this.log.el, this.log.head],
+    ] as const)
+      dragToDismiss(sheet, [sheet.querySelector<HTMLElement>('.grab')!, head], { scrim: () => this.el, onDismiss: close });
   }
+
+  /** The last close was a drag: the sheet has already slid off, so hide at once. */
+  private dragged = false;
+  /** A phone sheet sliding out after its overlay closed (the scrim stays up until it's gone). */
+  private leaving: HTMLElement | null = null;
 
   /** The chosen text size was fitted down to this screen (src/ui/uiScale.ts). */
   setFitted(on: boolean): void {
@@ -295,10 +337,37 @@ export class Overlays {
     this.screen = vm.screen;
     const o = vm.overlay;
     if (o !== this.current && o !== null && o !== 'pause') this.fromPause = this.current === 'pause' || (this.fromPause && this.current !== null);
-    toggle(this.el, 'hidden', !o);
-    toggle(this.el, 'over-menu', vm.screen !== 'game');
     const sheets = { pause: this.pause, rules: this.rules, settings: this.settings, log: this.log.el };
+    const phone = isPhone();
+    // Phones: a closing sheet slides down before the scrim goes (a drag already slid it off).
+    if (!o && this.current && phone && !this.dragged && !this.leaving) {
+      const out = sheets[this.current as keyof typeof sheets];
+      this.leaving = out;
+      // While it slides away, taps go through to the board and HUD underneath.
+      this.el.classList.add('leaving');
+      sheetOut(out, this.el, () => {
+        if (this.leaving !== out) return;
+        this.leaving = null;
+        this.el.classList.remove('leaving');
+        if (!this.current) {
+          this.el.classList.add('hidden');
+          toggle(out, 'hidden', true);
+        }
+      });
+    } else if (o && this.leaving) {
+      this.el.classList.remove('leaving');
+      this.leaving.getAnimations().forEach((a) => a.cancel());
+      resetSheet(this.leaving);
+      this.leaving = null;
+    }
+    this.dragged = false;
+    if (!this.leaving) toggle(this.el, 'hidden', !o);
+    toggle(this.el, 'over-menu', vm.screen !== 'game');
     for (const [k, el] of Object.entries(sheets)) {
+      if (el === this.leaving) {
+        setAttr(el, 'data-testid', null);
+        continue;
+      }
       toggle(el, 'hidden', o !== k);
       setAttr(el, 'data-testid', o === k ? k : null);
     }
@@ -307,8 +376,17 @@ export class Overlays {
       this.current = o;
       const sheet = o ? sheets[o] : null;
       if (sheet) {
-        if (!prev && !motion.reduced) this.el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: 'ease-out' });
-        animateIn(sheet, { dy: 12 });
+        if (phone) {
+          // The first sheet rises from the bottom edge; moving between sheets swaps in place.
+          if (!prev) sheetIn(sheet, this.el);
+          else {
+            resetSheet(sheet);
+            animateIn(sheet, { dy: 10, ms: 200 });
+          }
+        } else {
+          if (!prev && !motion.reduced) this.el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: 'ease-out' });
+          animateIn(sheet, { dy: 12 });
+        }
       }
     }
     if (o === 'settings') {

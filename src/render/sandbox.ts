@@ -61,8 +61,33 @@ function floatRects(W: number, H: number, s: number): { x: number; y: number; w:
   ];
 }
 
+/**
+ * Phone HUD mock (docs/MOBILE.md §4). Landscape: emblem pills top-left (the current seat's pill shows its
+ * name), `≡` 44×44 top-right, a ~64 px dock along the bottom. Portrait: the pills in one row with `≡` at
+ * the right, and a two-row dock (Turn Track 44 px + the line / count / buttons 48 px).
+ */
+function phoneRects(W: number, H: number): { rects: { x: number; y: number; w: number; h: number }[]; top: number; bottom: number; labels: string[] } {
+  const portrait = H > W;
+  const m = 8;
+  const pills = [96, 52, 52, 52];
+  const rects: { x: number; y: number; w: number; h: number }[] = [];
+  let x = 12;
+  for (const w of pills) {
+    rects.push({ x, y: m, w, h: 40 });
+    x += w + 6;
+  }
+  rects.push({ x: W - 12 - 44, y: m - 2, w: 44, h: 44 });
+  const dockH = portrait ? 44 + 8 + 48 + 16 : 64;
+  rects.push({ x: m, y: H - m - dockH, w: W - 2 * m, h: dockH });
+  return { rects, top: m + 44 + 4, bottom: m + dockH + 4, labels: ['▲ John 11', '● 10', '■ 11', '◆ 10', '≡', portrait ? 'Place · Attack · Fortify · End\nJohn — pick a territory       [ Attack ]' : 'Place · Attack · Fortify · End   John — pick a territory   [ Attack ]'] };
+}
+
 const PRESETS: Record<string, (W: number, H: number, s: number) => ViewportInsets> = {
   none: () => ({ top: 0, right: 0, bottom: 0, left: 0, trayBand: 0 }),
+  phone: (W, H, s) => {
+    const p = phoneRects(W, H);
+    return { top: p.top, right: 0, bottom: p.bottom, left: 0, trayBand: solveBand(H, s, W), rects: p.rects };
+  },
   // docs/ROUND2.md §C: glass pills float on the ocean — seat chips top-left, ≡ top-right (12 px from the
   // edges, 40 px tall), and a 64 px bottom strip at bottom: 12 px. Insets = the pills' inner edges (+4).
   float: (W, H, s) => ({
@@ -85,11 +110,12 @@ const PRESETS: Record<string, (W: number, H: number, s: number) => ViewportInset
     return { top: 56 * s + 8, left: Math.min(232 * s, W * 0.2), right: 64 * s, bottom: bar + 16 + band, trayBand: band };
   },
 };
-let preset = params.get('insets') ?? 'float';
+let preset = params.get('insets') ?? (Math.min(innerWidth, innerHeight) < 520 ? 'phone' : 'float');
 let uiScale = Number(params.get('scale') ?? 1);
 let showHudText = false;
 let displaced = false;
 let hudText: { header: string; result: string } = { header: '', result: '' };
+let lastSbHl: import('./BoardView').BoardHighlights = {};
 
 function applyInsets(): void {
   const W = innerWidth;
@@ -106,6 +132,21 @@ function applyInsets(): void {
     hud.appendChild(d);
     return d;
   };
+  if (preset === 'phone') {
+    const p = phoneRects(W, H);
+    p.rects.forEach((r, i) => {
+      const d = z(r.x, r.y, r.w, r.h, 'zone pill');
+      d.textContent = p.labels[i];
+      d.style.whiteSpace = 'pre';
+      d.style.fontSize = i === p.rects.length - 1 ? '13px' : '14px';
+    });
+    if (displaced) {
+      const d = z(W - 12 - 44 - 8 - 104, 6, 104, 44, 'zone pill');
+      d.textContent = 'Reset view';
+      d.dataset.reset = '1';
+    }
+    return;
+  }
   if (preset === 'float' || preset === 'floatBands') {
     const pill = (l: number, t: number, w: number, h: number, txt = '') => {
       const d = z(l, t, w, h, 'zone pill');
@@ -570,7 +611,37 @@ async function boot(): Promise<void> {
   if (reduced) view.setReducedMotion?.(true);
   applyInsets();
   addEventListener('resize', applyInsets);
-  view.onTerritoryClick((i) => log.push(`click ${i.territory} b${i.button}`));
+  view.onTerritoryClick((i) => {
+    log.push(`click ${i.territory} b${i.button}`);
+    // Tap / click to pick, as the controller would: the source with its targets, then arm one.
+    const hl = lastSbHl;
+    if (hl.selected && hl.targets?.includes(i.territory)) {
+      lastSbHl = { ...hl, arrow: { from: hl.selected, to: i.territory, kind: 'attack' } };
+    } else {
+      const targets = attackTargets(state, i.territory);
+      lastSbHl = state.territories[i.territory].owner === state.currentPlayer ? { selected: i.territory, targets, dimOthers: true } : {};
+    }
+    if (params.get('pick') === '1') view.setHighlights(lastSbHl);
+  });
+  // Long-press name card mock (the HUD renders the real one).
+  const card = document.createElement('div');
+  Object.assign(card.style, { position: 'fixed', display: 'none', transform: 'translate(-50%, calc(-100% - 28px))', padding: '8px 12px', borderRadius: '12px',
+    background: 'rgba(16,19,24,.92)', color: '#f3ead8', font: '600 14px Inter Variable, system-ui', boxShadow: '0 6px 24px rgba(0,0,0,.45)', border: '1px solid rgba(243,234,216,.2)',
+    pointerEvents: 'none', zIndex: '20', whiteSpace: 'nowrap' });
+  document.body.appendChild(card);
+  view.onTerritoryLongPress?.((i) => {
+    log.push(i ? `long ${i.territory}` : 'long end');
+    if (!i) {
+      card.style.display = 'none';
+      return;
+    }
+    const ts = state.territories[i.territory];
+    card.textContent = `${i.territory.replace(/_/g, ' ')} · ${state.players[ts.owner]?.name ?? ''} · ${ts.armies}`;
+    card.style.left = `${i.clientX}px`;
+    card.style.top = `${i.clientY}px`;
+    card.style.display = 'block';
+  });
+  view.onContextLoss?.((lost) => log.push(lost ? 'context lost' : 'context back'));
   view.onTerritoryHover(() => {});
   view.onViewDisplacedChange?.((d) => {
     displaced = d;

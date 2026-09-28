@@ -9,10 +9,11 @@
 // reference compares and no DOM writes.
 
 import './styles.css';
+import './mobile.css';
 import type { MountUi, Screen, UiIntent, ViewModel } from '../game/viewModel';
 import type { ViewportInsets } from '../render/BoardView';
 import { h, motion, setAttr, toggle } from './dom';
-import { trayGeometry } from '../shared/tray';
+import { boardTrayGeometry as trayGeometry } from '../shared/tray';
 import { Announcements } from './hud/announce';
 import { BattleHeader } from './hud/battle';
 import { CardsSheet } from './hud/cards';
@@ -23,6 +24,8 @@ import { NewGameScreen } from './screens/newgame';
 import { TitleScreen } from './screens/title';
 import { VictoryScreen } from './screens/victory';
 import { effectiveUiScale, isFitted } from './uiScale';
+import { installLayout, layout, onLayout } from './layout';
+import { NameCard, RotatePill } from './hud/mobile';
 
 /**
  * Dice-tray band, just above the bottom strip. The renderer centres its tray in the band
@@ -74,7 +77,11 @@ export const mountUi: MountUi = (host, api) => {
   // Always-laid-out twin of the tray band, so the insets are right while the header is hidden.
   const bandProbe = h('div', 'band-probe');
   bandProbe.setAttribute('aria-hidden', 'true');
-  hud.append(top.el, battle.el, strip.el, cards.el, announce.el, bandProbe);
+  // Phones only (docs/MOBILE.md): the one-time rotate hint and the long-press name card.
+  const rotate = new RotatePill();
+  const nameCard = new NameCard();
+  hud.append(top.el, battle.el, strip.el, cards.scrim, cards.el, announce.el, bandProbe, rotate.el, nameCard.el);
+  installLayout();
 
   const title = new TitleScreen(send);
   const newGame = new NewGameScreen(send);
@@ -82,7 +89,11 @@ export const mountUi: MountUi = (host, api) => {
   const handoff = new Handoff(send);
   const overlays = new Overlays(send);
   const confirm = new Confirm(send);
-  root.append(hud, title.el, newGame.el, victory.el, handoff.el, overlays.el, confirm.el);
+  // A lost WebGL context (mobile GPUs drop it under memory pressure): a quiet pill while the board rebuilds.
+  const lost = h('div', 'board-lost hidden', 'Reloading the board…');
+  lost.setAttribute('role', 'status');
+  lost.dataset.testid = 'board-lost';
+  root.append(hud, title.el, newGame.el, victory.el, handoff.el, overlays.el, confirm.el, lost);
   current = { newGame, victory };
 
   const screens: Partial<Record<Screen, HTMLElement>> = { title: title.el, newGame: newGame.el, victory: victory.el };
@@ -128,7 +139,25 @@ export const mountUi: MountUi = (host, api) => {
   const measure = () => {
     const H = window.innerHeight;
     const W = window.innerWidth;
-    const { band, strip: headerStrip, trayTop } = solveBand(H, scale, W);
+    const solved = solveBand(H, scale, W);
+    let { band, trayTop } = solved;
+    const headerStrip = solved.strip;
+    // Portrait phones fold the dock's action row away when there's nothing to press; the board keeps
+    // the room for it anyway, so the home view never jumps as buttons come and go.
+    const zone = strip.el.querySelector<HTMLElement>('.st-zone');
+    const folded = layout.stacked && !!zone?.classList.contains('is-empty');
+    const reserve = folded ? Math.round((layout.form === 'phone' ? 3 : 3.125) * 16 * scale + (layout.form === 'phone' ? 6 : 8)) : 0;
+    const st0 = strip.el.getBoundingClientRect();
+    const dockTop = st0.top - reserve;
+    const bottomEdge = Math.round(H - dockTop + 4);
+    // The board reads a `bottom` of ≥ band + 40 as the round-1 convention (band folded into bottom) and
+    // subtracts the band. The portrait phone dock is that tall on its own, so the band grows to stay
+    // clear of that rule; the tray stays centred in it and the header follows (same geometry).
+    if (bottomEdge >= band + 40) {
+      band = bottomEdge - 39;
+      const trayH = trayGeometry(W, H, band, scale).trayH;
+      trayTop = Math.floor((band - trayH) / 2) + trayH;
+    }
     root.style.setProperty('--tray', `${band}px`);
     root.style.setProperty('--strip', `${headerStrip}px`);
     root.style.setProperty('--tray-top', `${trayTop}px`);
@@ -140,6 +169,9 @@ export const mountUi: MountUi = (host, api) => {
     }
     if (!topEdge) topEdge = top.el.getBoundingClientRect().bottom;
     const st = strip.el.getBoundingClientRect();
+    // Phones: the dock's height varies (two rows in portrait), so the tray band and its header sit on
+    // its measured top edge rather than the desktop constant.
+    root.style.setProperty('--dock-clear', `${Math.max(0, Math.round(H - dockTop))}px`);
     // The persistent floating HUD as rectangles (seat pills, ≡, the strip; not the transient Reset view
     // pill), so the home view can run the board up between the corner pills.
     const rects: { x: number; y: number; w: number; h: number }[] = [];
@@ -148,15 +180,22 @@ export const mountUi: MountUi = (host, api) => {
       if (r.width > 0 && r.height > 0) rects.push({ x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
     };
     const seatsRow = top.el.querySelector('.ts-seats');
-    if (seatsRow) rectOf(seatsRow);
     const menuPill = top.el.querySelector('.ts-menu');
-    if (menuPill) rectOf(menuPill);
-    rectOf(strip.el);
+    if (layout.form === 'phone') {
+      // Phones: the pills and ≡ go in as one full-width top band. On a 343 px landscape screen the board's
+      // fit between the corner pills put Alaska and Greenland under them (and their taps on the pills).
+      rects.push({ x: 0, y: 0, w: Math.round(W), h: Math.round(topEdge) });
+    } else {
+      if (seatsRow) rectOf(seatsRow);
+      if (menuPill) rectOf(menuPill);
+    }
+    if (reserve) rects.push({ x: Math.round(st.left), y: Math.round(dockTop), w: Math.round(st.width), h: Math.round(st.height + reserve) });
+    else rectOf(strip.el);
     const insets: ViewportInsets = {
       top: Math.round(topEdge),
       left: 0,
       right: 0,
-      bottom: Math.round(H - st.top + 4),
+      bottom: bottomEdge,
       trayBand: band,
       rects,
     };
@@ -175,6 +214,11 @@ export const mountUi: MountUi = (host, api) => {
       measure();
     });
   };
+  const unLayout = onLayout(() => {
+    applyScale(true);
+    queueMeasure();
+    if (vm) rotate.update(vm.screen === 'game' && !vm.overlay && !vm.game?.banner && !vm.game?.handoff, layout.form === 'phone' && layout.portrait);
+  });
   const ro = new ResizeObserver(queueMeasure);
   for (const el of [top.el, strip.el, bandProbe, top.el.querySelector('.ts-seats')!]) ro.observe(el);
   window.addEventListener('resize', queueMeasure);
@@ -213,6 +257,12 @@ export const mountUi: MountUi = (host, api) => {
     if (!prev || prev.settings.textSize !== next.settings.textSize) applyScale(!!prev);
     showScreen(next.screen);
     toggle(root, 'in-game', next.screen === 'game');
+    // After the turn banner (never over it) and never over the hand-off cover.
+    rotate.update(next.screen === 'game' && !next.overlay && !next.game?.banner && !next.game?.handoff && !next.game?.viewMoved, layout.form === 'phone' && layout.portrait);
+    // Panning / zooming answers the hint (and `Reset view` takes the same corner): it goes.
+    if (next.game?.viewMoved) rotate.dismiss();
+    nameCard.update(next.screen === 'game' ? next.game?.nameCard : null);
+    toggle(lost, 'hidden', !next.boardLost);
 
     if (next.screen === 'title' || next.overlay) title.update(next);
     if (next.screen === 'newGame') newGame.update(next.newGame);
@@ -264,6 +314,8 @@ export const mountUi: MountUi = (host, api) => {
     api.audio.play('uiClick');
   };
   const onOver = (e: PointerEvent) => {
+    // Touch has no hover: a tap would tick twice (hover + click).
+    if (e.pointerType === 'touch') return;
     const t = e.target instanceof Element ? e.target : null;
     const b = t?.closest<HTMLElement>('button');
     if (b && b !== lastHover) {
@@ -359,6 +411,7 @@ export const mountUi: MountUi = (host, api) => {
   return {
     dispose() {
       unsub();
+      unLayout();
       ro.disconnect();
       window.removeEventListener('resize', queueMeasure);
       window.removeEventListener('resize', onResizeScale);

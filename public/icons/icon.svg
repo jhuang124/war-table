@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- War Table app icon: crossed brass swords over "WT" on the board's ink-teal sea. Full bleed; the
+       artwork stays inside the maskable safe circle (r = 205 around the centre). -->
+  <defs>
+    <radialGradient id="sea" cx="50%" cy="42%" r="72%">
+      <stop offset="0" stop-color="#1d4a4f"/>
+      <stop offset="0.55" stop-color="#11292e"/>
+      <stop offset="1" stop-color="#0a1215"/>
+    </radialGradient>
+    <linearGradient id="brass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f0d9a6"/>
+      <stop offset="0.45" stop-color="#cfae70"/>
+      <stop offset="1" stop-color="#9c7a42"/>
+    </linearGradient>
+    <linearGradient id="blade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#b8965a"/>
+      <stop offset="0.5" stop-color="#f3e2b8"/>
+      <stop offset="0.52" stop-color="#c9a867"/>
+      <stop offset="1" stop-color="#97763f"/>
+    </linearGradient>
+    <filter id="drop" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#000" flood-opacity="0.55"/>
+    </filter>
+    <g id="sword">
+      <!-- local origin = where the blades cross; the tip points up -->
+      <path d="M-10 -40 L-10 -176 L0 -206 L10 -176 L10 -40 Z" fill="url(#blade)" stroke="#5e461f" stroke-width="2.5" stroke-linejoin="round"/>
+      <path d="M0 -44 L0 -178" stroke="#7d5f2e" stroke-width="2" opacity="0.55"/>
+      <rect x="-44" y="-42" width="88" height="15" rx="7.5" fill="url(#brass)" stroke="#5e461f" stroke-width="2.5"/>
+      <rect x="-8" y="-27" width="16" height="50" rx="4" fill="#3b2a14" stroke="#5e461f" stroke-width="2"/>
+      <path d="M-8 -17h16M-8 -7h16M-8 3h16M-8 13h16" stroke="#8a6a36" stroke-width="2.2"/>
+      <circle cx="0" cy="33" r="12.5" fill="url(#brass)" stroke="#5e461f" stroke-width="2.5"/>
+    </g>
+  </defs>
+  <rect width="512" height="512" fill="url(#sea)"/>
+  <!-- faint map graticule, like the board's ocean -->
+  <g stroke="#e8d6a8" stroke-opacity="0.06" stroke-width="2" fill="none">
+    <path d="M0 150 Q256 120 512 150M0 256 Q256 226 512 256M0 362 Q256 332 512 362"/>
+    <path d="M150 0 Q130 256 150 512M256 0 Q236 256 256 512M362 0 Q342 256 362 512"/>
+  </g>
+  <circle cx="256" cy="256" r="196" fill="none" stroke="#c2a062" stroke-opacity="0.55" stroke-width="3"/>
+  <circle cx="256" cy="256" r="184" fill="none" stroke="#c2a062" stroke-opacity="0.22" stroke-width="1.5"/>
+  <g filter="url(#drop)">
+    <use href="#sword" transform="translate(256 214) rotate(-40) translate(0 116)"/>
+    <use href="#sword" transform="translate(256 214) rotate(40) translate(0 116)"/>
+  </g>
+  <text x="256" y="420" text-anchor="middle" font-family="Cinzel, 'Trajan Pro', Georgia, serif" font-weight="700" font-size="78" letter-spacing="10" fill="url(#brass)" stroke="#3d2c12" stroke-width="1.5" filter="url(#drop)">WT</text>
+</svg>

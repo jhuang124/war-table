@@ -2,14 +2,39 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The game provides its own zoom (pinch on the board) and a Text size setting (docs/MOBILE.md §2). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no" />
     <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0c0f13" />
+    <meta name="description" content="The classic game of world conquest in 3D, for 2 to 4 players around one screen." />
     <title>War Table</title>
+    <!-- Installed app: manifest + icons (public/), status bar over the board. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="64x64" href="/icons/favicon-64.png" />
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="War Table" />
+    <meta name="format-detection" content="telephone=no" />
     <!-- Fonts: the @fontsource files, copied to public/fonts so they can be preloaded at stable URLs
          with font-display: block (SPEC §8.8: no font swap on a cold load). -->
     <link rel="preload" href="/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/cinzel-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/cinzel-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <script>
+      // Device class before first paint (src/ui/layout.ts keeps it current): no desktop-layout flash on a
+      // phone. By capability and viewport size, never the user agent.
+      (function () {
+        var w = innerWidth, h = innerHeight, c = document.documentElement.classList;
+        var coarse = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+        var phone = Math.min(w, h) <= 540 && Math.max(w, h) <= 1000;
+        c.add(phone ? 'form-phone' : coarse ? 'form-tablet' : 'form-desktop', h > w ? 'portrait' : 'landscape');
+        if (coarse) c.add('touch');
+        if (h > w && (phone || (coarse && w < 1100))) c.add('dock-stacked');
+      })();
+    </script>
     <style>
       @font-face {
         font-family: 'Inter Variable';
@@ -32,7 +57,16 @@
         font-weight: 700;
         src: url(/fonts/cinzel-latin-700-normal.woff2) format('woff2');
       }
-      html { background: #0c0f13; }
+      /* App shell (docs/MOBILE.md §2): one fixed screen. No page scroll, zoom, rubber-banding,
+         pull-to-refresh, text selection, tap highlight or long-press callouts; 100dvh, never 100vh. */
+      html, body {
+        margin: 0; height: 100%; height: 100dvh; overflow: hidden; background: #0c0f13;
+        overscroll-behavior: none; -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+        -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+      }
+      body { position: fixed; inset: 0; width: 100%; touch-action: manipulation; }
+      #board { position: fixed; inset: 0; touch-action: none; }
+      #ui { position: fixed; inset: 0; pointer-events: none; }
       /* Boot splash: invisible for the first 600 ms, so fast boots never flash it (UX.md §8.8). */
       #boot-splash {
         position: fixed; inset: 0; display: grid; place-content: center; justify-items: center;
@@ -47,14 +81,19 @@
         content: ''; position: absolute; inset: 0; background: #c2a062; transform-origin: left;
         transform: scaleX(0); animation: boot-fill 2.4s cubic-bezier(0.2, 0.7, 0.2, 1) 600ms forwards;
       }
+      /* The installed app starts on the splash straight away (no 600 ms grace: there is no page behind it). */
+      @media (display-mode: standalone), (display-mode: fullscreen) {
+        #boot-splash { animation-delay: 0ms; }
+        #boot-splash i::after { animation-delay: 0ms; }
+      }
       @keyframes boot-in { to { opacity: 1; } }
       @keyframes boot-fill { to { transform: scaleX(0.92); } }
     </style>
   </head>
   <!-- Contract: #board (WebGL canvas container) sits under #ui (HTML overlay). src/main.ts boots both. -->
-  <body style="margin:0;background:#0c0f13;overflow:hidden">
-    <div id="board" style="position:fixed;inset:0"></div>
-    <div id="ui" style="position:fixed;inset:0;pointer-events:none">
+  <body>
+    <div id="board"></div>
+    <div id="ui">
       <div id="boot-splash" aria-hidden="true">WAR TABLE<i></i></div>
     </div>
     <script type="module" src="/src/main.ts"></script>

@@ -4,6 +4,8 @@
 import type { CardVM, CardsVM, UiIntent } from '../../game/viewModel';
 import { uiButton } from '../controls';
 import { animateIn, animateOut, h, setText, toggle } from '../dom';
+import { isPhone } from '../layout';
+import { dragToDismiss, grabHandle, sheetIn, sheetOut } from '../sheet';
 import { pictogram, SYMBOL_NAME } from './pictograms';
 
 class CardFace {
@@ -44,6 +46,8 @@ class CardFace {
 
 export class CardsSheet {
   readonly el: HTMLElement;
+  /** Phones: the scrim behind the bottom sheet (a tap closes it). Mounted just before `el`. */
+  readonly scrim: HTMLDivElement;
   private grid: HTMLDivElement;
   private status: HTMLDivElement;
   private trade: HTMLButtonElement;
@@ -55,6 +59,9 @@ export class CardsSheet {
   constructor(send: (i: UiIntent) => void) {
     this.el = h('section', 'cards-sheet panel hidden');
     this.el.setAttribute('aria-label', 'Your cards');
+    this.scrim = h('div', 'cards-scrim hidden');
+    this.scrim.addEventListener('click', () => send({ type: 'cardsPanel', open: false }));
+    this.el.append(grabHandle());
     const head = h('div', 'cs-head');
     const close = h('button', 'icon-btn nofocus');
     close.type = 'button';
@@ -70,7 +77,16 @@ export class CardsSheet {
     const foot = h('div', 'cs-foot');
     foot.append(this.status, this.trade);
     this.el.append(head, this.grid, foot);
+    dragToDismiss(this.el, [this.el.querySelector<HTMLElement>('.grab')!, head], {
+      scrim: () => this.scrim,
+      onDismiss: () => {
+        this.dragged = true;
+        send({ type: 'cardsPanel', open: false });
+      },
+    });
   }
+
+  private dragged = false;
 
   update(vm: CardsVM | null): void {
     if (vm === this.vm) return;
@@ -78,17 +94,32 @@ export class CardsSheet {
     const open = !!vm?.open;
     if (open !== this.shown) {
       this.shown = open;
+      const phone = isPhone();
       if (open) {
         this.el.getAnimations().forEach((a) => a.cancel());
         this.el.classList.remove('hidden');
         this.el.dataset.testid = 'cards';
-        animateIn(this.el, { dy: 10 });
+        if (phone) {
+          this.scrim.classList.remove('hidden', 'leaving');
+          this.el.classList.remove('leaving');
+          sheetIn(this.el, this.scrim);
+        } else animateIn(this.el, { dy: 10 });
       } else {
         delete this.el.dataset.testid;
-        animateOut(this.el, { dy: 8, remove: false }, () => {
-          if (!this.shown) this.el.classList.add('hidden');
-        });
+        const hide = () => {
+          this.scrim.classList.remove('leaving');
+          this.el.classList.remove('leaving');
+          if (this.shown) return;
+          this.el.classList.add('hidden');
+          this.scrim.classList.add('hidden');
+        };
+        this.scrim.classList.add('leaving');
+        if (phone) this.el.classList.add('leaving');
+        if (phone && this.dragged) hide();
+        else if (phone) sheetOut(this.el, this.scrim, hide);
+        else animateOut(this.el, { dy: 8, remove: false }, hide);
       }
+      this.dragged = false;
     }
     if (!vm) return;
     const seen = new Set<number>();

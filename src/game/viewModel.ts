@@ -29,7 +29,7 @@ export interface Settings {
   textSize: TextSize; // root font scale 1.0 / 1.25 / 1.5
   /** Territory names on every tile (off by default: the hovered and picked tiles show theirs). */
   showLabels: boolean;
-  hideCardsBetweenTurns: boolean; // hand-off cover, default false
+  hideCardsBetweenTurns: boolean; // hand-off cover: default off, on for touch devices (docs/MOBILE.md §5)
   sfxVolume: number; // 0..1
   muted: boolean;
   music: boolean; // default false
@@ -193,6 +193,11 @@ export interface BattleVM {
   defender: BattleSideVM;
   rolling: boolean;
   captured: string | null;
+  /**
+   * Additive (mobile pass): the board's dice tray is on screen (BoardView.onTrayChange). Phones show the
+   * header only with the tray (an armed fight's header alone would float mid-board).
+   */
+  tray?: boolean;
 }
 
 export interface CardVM {
@@ -253,6 +258,25 @@ export interface GameVM {
   seatActions: { seat: SeatRef; label: string; intent: UiIntent }[];
   /** The player orbited / zoomed away from the home view: the `Reset view` pill shows beside ≡. */
   viewMoved: boolean;
+  /**
+   * Additive (mobile pass, docs/MOBILE.md §3): the long-press name card on touch, shown above the finger
+   * while it is held (hover doesn't exist on touch). null / absent = none.
+   */
+  nameCard?: NameCardVM | null;
+}
+
+/** The long-press name card: territory, continent + bonus, owner, armies; anchored at the finger. */
+export interface NameCardVM {
+  territory: string; // 'Siberia'
+  continent: string; // 'Asia'
+  bonus: number; // the continent's bonus, 7
+  owner: SeatRef | null;
+  armies: number;
+  /** Client px of the finger. */
+  x: number;
+  y: number;
+  /** Bumps on every new press. */
+  key: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +310,8 @@ export interface ViewModel {
   victory: VictoryVM | null;
   /** Rules sheet, 'This game': the goal, the round limit, card sets, the fortify rule. */
   rulesNotes: string[];
+  /** Additive (mobile pass): the board's WebGL context is lost and rebuilding (a quiet `Reloading the board…`). */
+  boardLost?: boolean;
 }
 
 export type UiIntent =

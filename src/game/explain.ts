@@ -12,7 +12,7 @@ import {
   type GameState,
   type TerritoryId,
 } from '../engine';
-import { SEP, pName, poss, tName } from './copy';
+import { SEP, click, pName, poss, tName } from './copy';
 import { autoSource, canAttackFrom, oddsWord, ownNeighbors } from './helpers';
 import { pct } from './copy';
 
@@ -124,7 +124,7 @@ function explainAttack(state: GameState, ui: ExplainUi, t: TerritoryId): Explana
     }
     return ok(verb, { kind: 'selectSource', t });
   }
-  if (sel) return no('own_as_target', `That's yours${SEP}click an enemy next to ${tName(sel)}`);
+  if (sel) return no('own_as_target', `That's yours${SEP}${click()} an enemy next to ${tName(sel)}`);
   if (ts.armies < 2) return no('one_army', `${tName(t)} has 1 army${SEP}you need 2 to attack`);
   return no('no_enemy_neighbors', `Everything next to ${tName(t)} is already yours`);
 }
@@ -141,7 +141,7 @@ export function explainTerritory(state: GameState, ui: ExplainUi, t: TerritoryId
   const ts = state.territories[t];
   if (!ts) return { ok: false, text: '' };
   const enemyName = ts.owner >= 0 ? pName(state, ts.owner) : '';
-  const notYours = () => no('not_yours', `That's ${poss(enemyName)}${SEP}click one of your territories`);
+  const notYours = () => no('not_yours', `That's ${poss(enemyName)}${SEP}${click()} one of your territories`);
 
   switch (ph.kind) {
     case 'setup-claim': {
@@ -153,7 +153,7 @@ export function explainTerritory(state: GameState, ui: ExplainUi, t: TerritoryId
     }
     case 'setup-place': {
       if (ts.owner !== me) return notYours();
-      if (stagedTotal(ui) >= ph.toPlace) return no('none_left', `All ${ph.toPlace} placed${SEP}click Done`);
+      if (stagedTotal(ui) >= ph.toPlace) return no('none_left', `All ${ph.toPlace} placed${SEP}${click()} Done`);
       return ok('Place here', { kind: 'pick', t });
     }
     case 'reinforce': {
@@ -166,7 +166,7 @@ export function explainTerritory(state: GameState, ui: ExplainUi, t: TerritoryId
         return ok('Place here', { kind: 'pick', t });
       }
       // All placed: the track moves on, never a board click.
-      return no('none_left', `All armies placed${SEP}click Attack to go on`);
+      return no('none_left', `All armies placed${SEP}${click()} Attack to go on`);
     }
     case 'attack':
       return explainAttack(state, ui, t);

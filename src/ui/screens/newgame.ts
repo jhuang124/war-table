@@ -5,6 +5,8 @@ import type { HouseRulesDraft, LengthPreset, NewGameVM, SeatDraft, SetupPreset, 
 import { PLAYER_COLOR_IDS, PLAYER_COLORS } from '../../shared/palette';
 import { Segmented, Switch, uiButton } from '../controls';
 import { animateIn, emblem, h, setAttr, setEmblem, setStyle, setText, toggle } from '../dom';
+import { isPhone, layout } from '../layout';
+import { dragToDismiss, grabHandle, sheetIn } from '../sheet';
 
 type Send = (i: UiIntent) => void;
 
@@ -14,6 +16,7 @@ class SeatRow {
   private swatches = new Map<PlayerColorId, HTMLButtonElement>();
   private colorBtn: HTMLButtonElement;
   private pop: HTMLDivElement;
+  private swSheet: HTMLDivElement;
   private open = false;
   private name: HTMLInputElement;
   private kind: Segmented<PlayerKind>;
@@ -37,12 +40,20 @@ class SeatRow {
       e.stopPropagation();
       this.setOpen(!this.open);
     });
+    // Desktop: a popover beside the emblem. Phones: a bottom sheet of six big swatches (mobile.css);
+    // the pop itself is the scrim there, so a tap outside the sheet closes it.
     this.pop = h('div', 'swatch-pop hidden');
+    const sheet = (this.swSheet = h('div', 'sw-sheet'));
     const sw = h('div', 'swatches');
     sw.setAttribute('role', 'radiogroup');
     sw.setAttribute('aria-label', `Seat ${index + 1} color`);
-    this.pop.append(sw);
-    this.pop.addEventListener('click', (e) => e.stopPropagation());
+    sheet.append(grabHandle(), h('div', 'sw-title', `Seat ${index + 1} colour`), sw);
+    this.pop.append(sheet);
+    this.pop.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (e.target === this.pop) this.setOpen(false);
+    });
+    dragToDismiss(sheet, [sheet], { scrim: () => this.pop, onDismiss: () => this.setOpen(false) });
     wrap.append(this.colorBtn, this.pop);
     for (const c of PLAYER_COLOR_IDS) {
       const b = h('button', 'swatch');
@@ -52,7 +63,7 @@ class SeatRow {
       b.dataset.tip = PLAYER_COLORS[c].name;
       b.dataset.testid = `seat-color-${index}-${c}`;
       setStyle(b, '--seat', PLAYER_COLORS[c].base);
-      b.append(emblem(c, 'emb', 'ink'));
+      b.append(emblem(c, 'emb', 'ink'), h('span', 'sw-name', PLAYER_COLORS[c].name));
       b.addEventListener('click', () => {
         send({ type: 'seat', index: this.index, patch: { color: c } });
         this.setOpen(false);
@@ -101,7 +112,8 @@ class SeatRow {
     toggle(this.pop, 'hidden', !on);
     this.colorBtn.setAttribute('aria-expanded', String(on));
     if (on) {
-      animateIn(this.pop.firstElementChild as HTMLElement, { dx: -6, dy: 0, ms: 160 });
+      if (isPhone()) sheetIn(this.swSheet, this.pop);
+      else animateIn(this.pop.firstElementChild as HTMLElement, { dx: -6, dy: 0, ms: 160 });
       this.onOpen?.(this);
     }
   }
@@ -286,6 +298,8 @@ export class NewGameScreen {
 
   /** On entering the screen: the first human seat's name, selected. */
   focusFirstName(): void {
+    // Touch: focusing a field raises the on-screen keyboard over the screen; the player taps a name to edit.
+    if (layout.touch || isPhone()) return;
     const row = this.rows.find((r) => r.kindValue === 'human');
     row?.focusName();
   }

@@ -571,6 +571,11 @@ export class TokenSystem {
     this.dirty = true;
   }
 
+  /** Instance data waits for the next update() (the render-on-demand loop must draw). */
+  get needsUpdate(): boolean {
+    return this.dirty;
+  }
+
   /** The figures turn and lean to face this camera pose (deg). Cheap; only re-lays out on change. */
   setView(azDeg: number, pitchDeg: number): void {
     if (Math.abs(azDeg - this.camAz) < 0.01 && Math.abs(pitchDeg - this.camPitch) < 0.01) return;

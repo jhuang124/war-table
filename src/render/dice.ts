@@ -7,7 +7,9 @@ import { Animator, ease, type Run } from './anim';
 import { crackTexture, diceFaceTexture, feltTexture } from './textures';
 import { IVORY } from './util';
 import type { PlayerPalette } from '../shared/palette';
-import { trayGeometry } from '../shared/tray';
+import { boardTrayGeometry } from '../shared/tray';
+// The tray the board draws (full width on narrow screens) lives in src/shared/tray.ts; re-exported here.
+export { boardTrayGeometry };
 
 // BoxGeometry material groups: +x, −x, +y, −y, +z, −z. +z faces the viewer (felt normal).
 const FACE_VALUES = [3, 4, 2, 5, 1, 6];
@@ -70,6 +72,8 @@ export interface RollSpec {
   onLand?: (side: -1 | 1, i: number) => void;
   onVerdict?: () => void;
 }
+
+
 
 export class DiceTray {
   scene = new THREE.Scene();
@@ -198,7 +202,7 @@ export class DiceTray {
     this.W = W;
     this.H = H;
     // Shared with the HUD's battle band (src/shared/tray.ts), so the text strips always clear the tray.
-    const { trayW, die: s, trayH } = trayGeometry(W, H, bandH, uiScale);
+    const { trayW, die: s, trayH } = boardTrayGeometry(W, H, bandH, uiScale);
     const changed = Math.abs(trayW - this.trayW) > 0.5 || Math.abs(trayH - this.trayH) > 0.5 || Math.abs(s - this.size) > 0.5;
     this.size = s;
     this.trayW = trayW;

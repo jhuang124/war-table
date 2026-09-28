@@ -8,6 +8,7 @@ import { h, setAttr, setText, toggle } from './dom';
 export class ActionButton {
   readonly el: HTMLButtonElement;
   private labelEl: HTMLSpanElement;
+  private glyph: HTMLSpanElement | null = null;
   vm: ButtonVM | null = null;
 
   constructor(onPress: (vm: ButtonVM) => void) {
@@ -26,6 +27,17 @@ export class ActionButton {
     if (this.vm === vm) return;
     this.vm = vm;
     setText(this.labelEl, vm.label);
+    // Phones: `Cards 3` is a card-stack glyph with the count as a badge (styles in mobile.css).
+    if (vm.id === 'cards') {
+      if (!this.glyph) {
+        this.glyph = h('span', 'btn-glyph');
+        this.glyph.setAttribute('aria-hidden', 'true');
+        this.glyph.innerHTML = '<svg viewBox="0 0 24 24"><rect x="8.5" y="3.5" width="10" height="14" rx="1.8"/><path d="M5.5 6.5v12a1.8 1.8 0 0 0 1.8 1.8H15"/></svg><b class="btn-badge num"></b>';
+        this.el.prepend(this.glyph);
+      }
+      setText(this.glyph.querySelector('.btn-badge')!, (/\d+/.exec(vm.label) ?? [''])[0]);
+      this.el.setAttribute('aria-label', vm.label);
+    }
     this.el.className = `btn nofocus ${vm.primary ? 'role-primary brass' : 'role-secondary'}${vm.busy ? ' is-busy' : ''}`;
     setAttr(this.el, 'data-id', vm.id);
     setAttr(this.el, 'data-testid', `btn-${vm.id}`);

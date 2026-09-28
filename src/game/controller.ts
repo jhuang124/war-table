@@ -11,6 +11,7 @@
 
 import {
   CONTINENTS,
+  TERRITORIES,
   TERRITORY_IDS,
   UNCLAIMED,
   applyAction,
@@ -44,7 +45,8 @@ import {
 import type { AudioEngine, PlayOptions, SfxName } from '../audio/types';
 import type { BoardHighlights, BoardView, PlayEventOptions, TerritoryPointerInfo, ViewportInsets } from '../render/BoardView';
 import { buildStrip, buildTrack, emptySel, placeLeft, placeValue, selectionTargets, stagedTotal, trackLockReason, type Placement, type Sel } from './strip';
-import { SEP, armies, cName, pName, pct, poss, seatRef, tName, upper } from './copy';
+import { SEP, armies, cName, pName, pct, poss, seatRef, setTouchCopy, tName, upper } from './copy';
+import { createHaptics, type Haptics } from './haptics';
 import { applyEventToDisplay, isBlocking } from './display';
 import { explainTerritory, type ClickPlan, type ExplainUi, type Explanation } from './explain';
 import { autoChain, bestSet, noSetStatus, occupyDefault } from './helpers';
@@ -72,6 +74,7 @@ import {
   isPlausibleState,
   readJson,
   sanitizeSettings,
+  SETTINGS_VERSION,
   writeJson,
   type KV,
   type SaveFile,
@@ -86,6 +89,7 @@ import type {
   ControllerApi,
   GameVM,
   LogLineVM,
+  NameCardVM,
   Overlay,
   Screen,
   SeatChipVM,
@@ -122,6 +126,19 @@ export interface ControllerOptions {
    * and victory). Off when src/ui is mounted (it owns those); on for the fallback debug HUD.
    */
   menuKeys?: boolean;
+  /**
+   * A touch device (pointer: coarse; docs/MOBILE.md): the hand-off cover defaults on, haptics play, the
+   * long-press name card replaces hover. Default false (desktop, Node tests).
+   */
+  touch?: boolean;
+}
+
+/** Additive board members from the mobile renderer pass (docs/MOBILE.md §3); used when present. */
+interface TouchBoard {
+  /** Long-press (≈ 400 ms) on a territory: the name card. null = released / cancelled. */
+  onTerritoryLongPress?(cb: (info: TerritoryPointerInfo | null) => void): void;
+  /** The WebGL context was lost (true) / the board has drawn again (false). */
+  onContextLoss?(cb: (lost: boolean) => void): void;
 }
 
 export interface TurnMetric {
@@ -397,6 +414,14 @@ class Controller {
   private clock: Clock;
   private prefersReduced: () => boolean;
   private menuKeys: boolean;
+  private touch: boolean;
+  private haptics: Haptics;
+  /** The long-press name card (touch), or null. */
+  private nameCard: NameCardVM | null = null;
+  /** The board's WebGL context is lost and rebuilding. */
+  private boardLost = false;
+  /** The board's dice tray is showing (onTrayChange). */
+  private trayUp = false;
   private disposers: (() => void)[] = [];
 
   // App
@@ -506,7 +531,10 @@ class Controller {
         }
       });
     this.menuKeys = opts.menuKeys ?? false;
-    this.settings = sanitizeSettings(readJson(this.kv, SETTINGS_KEY));
+    this.touch = opts.touch ?? false;
+    setTouchCopy(this.touch);
+    this.haptics = createHaptics(this.touch);
+    this.settings = sanitizeSettings(readJson(this.kv, SETTINGS_KEY), this.touch);
     const ui = readJson<UiFile>(this.kv, UI_KEY);
     if (ui?.lastSetup) this.draft = sanitizeDraft(ui.lastSetup);
     this.refreshSaveSummary();
@@ -520,10 +548,18 @@ class Controller {
     });
     // The tray started fading: a decided fight's header fades with it.
     this.board.onTrayChange?.((visible) => {
+      this.trayUp = visible;
       if (!visible) this.clearLinger();
+      this.invalidate();
     });
     // Only to tell an ocean click from a click on land (the board names hovered tiles itself).
     this.board.onTerritoryHover((info) => (this.overTile = info?.territory ?? null));
+    (this.board as BoardView & TouchBoard).onTerritoryLongPress?.((info) => this.onLongPress(info));
+    (this.board as BoardView & TouchBoard).onContextLoss?.((lost) => {
+      this.boardLost = lost;
+      if (lost) this.hideNameCard();
+      this.invalidate();
+    });
     this.applySettingsToBoard();
     this.board.setAttractMode(true);
     this.vm = this.buildVM();
@@ -668,8 +704,8 @@ class Controller {
   }
 
   private setSettings(patch: Partial<Settings>): void {
-    this.settings = sanitizeSettings({ ...this.settings, ...patch, v: 2 });
-    writeJson(this.kv, SETTINGS_KEY, { ...this.settings, v: 2 });
+    this.settings = sanitizeSettings({ ...this.settings, ...patch, v: SETTINGS_VERSION }, this.touch);
+    writeJson(this.kv, SETTINGS_KEY, { ...this.settings, v: SETTINGS_VERSION });
     if (patch.aiSpeed) this.sessionAiSpeed = null;
     this.applySettingsToBoard();
     this.invalidate();
@@ -1305,8 +1341,10 @@ class Controller {
     switch (ev.type) {
       case 'diceRolled':
         this.onRollEnd(ev);
+        if (!skip && e.opts?.style !== 'brief' && (this.isHumanSeat(ev.player) || this.isHumanSeat(ev.defender))) this.haptics.play('dice');
         break;
       case 'territoryConquered': {
+        if (!skip && (this.isHumanSeat(ev.player) || this.isHumanSeat(ev.previousOwner))) this.haptics.play('conquest');
         const g = this.eng;
         if (g && g.from === ev.from && g.to === ev.to) {
           g.conquered = true;
@@ -1323,6 +1361,7 @@ class Controller {
         if (ev.reason === 'fortify') this.log('system', ev.player, `${pName(d, ev.player)} moved ${ev.count} from ${tName(ev.from)} to ${tName(ev.to)}`);
         break;
       case 'playerEliminated': {
+        if (!skip) this.haptics.play('eliminated');
         const victim = pName(d, ev.player);
         this.announce('elimination', `${upper(victim)} IS OUT`, ev.by);
         this.log('elimination', ev.by, `${pName(d, ev.by)} knocked out ${victim}`);
@@ -1664,8 +1703,43 @@ class Controller {
   /** The territory under the pointer, or null over ocean and table. */
   private overTile: TerritoryId | null = null;
 
+  private nameCardKey = 0;
+
+  /** Long-press on touch (docs/MOBILE.md §3): the name card above the finger; release hides it. Never selects. */
+  private onLongPress(info: TerritoryPointerInfo | null | undefined): void {
+    const d = this.disp;
+    if (!info || !d || this.screen !== 'game' || this.overlay || this.confirm || this.handoff) {
+      this.hideNameCard();
+      return;
+    }
+    const t = info.territory;
+    const tile = d.territories[t];
+    if (!tile) return this.hideNameCard();
+    const c = TERRITORIES[t].continent;
+    const owner = tile.owner >= 0 && d.players[tile.owner] ? seatRef(d, tile.owner) : null;
+    this.nameCard = {
+      territory: tName(t),
+      continent: cName(c),
+      bonus: CONTINENTS[c].bonus,
+      owner,
+      armies: tile.armies,
+      x: info.clientX,
+      y: info.clientY,
+      key: ++this.nameCardKey,
+    };
+    this.haptics.play('select');
+    this.invalidate();
+  }
+
+  private hideNameCard(): void {
+    if (!this.nameCard) return;
+    this.nameCard = null;
+    this.invalidate();
+  }
+
   private onBoardClick(info: TerritoryPointerInfo): void {
     this.boardClicks++;
+    this.hideNameCard();
     if (this.turnBanner) this.dismissTurnBanner();
     const s = this.state;
     if (!s || this.screen !== 'game' || this.overlay || this.confirm) return;
@@ -1686,7 +1760,14 @@ class Controller {
       this.clickThrough(() => this.handleClick(info));
       return;
     }
+    const before = this.selKey();
     this.handleClick(info);
+    if (this.selKey() !== before) this.haptics.play('select');
+  }
+
+  /** What the player has picked (source, target, pending count), for the select haptic. */
+  private selKey(): string {
+    return JSON.stringify(this.sel);
   }
 
   private handleClick(info: TerritoryPointerInfo): void {
@@ -2743,6 +2824,7 @@ class Controller {
       game: this.buildGame(),
       victory: this.victory,
       rulesNotes: this.rulesNotes(),
+      boardLost: this.boardLost,
     };
   }
 
@@ -2765,6 +2847,7 @@ class Controller {
       confirm: this.confirm,
       seatActions: this.buildSeatActions(d),
       viewMoved: this.viewMoved,
+      nameCard: this.nameCard,
     };
   }
 
@@ -2915,6 +2998,7 @@ class Controller {
       defender: { seat: seatRef(d, defender), territory: tName(to), armies: def },
       rolling: this.rolling && useEng,
       captured: decided && g!.conquered ? `${tName(to)} captured` : null,
+      tray: this.trayUp,
     };
   }
 
@@ -3188,6 +3272,12 @@ class Controller {
       if (e.timeStamp - p.t > 350 || Math.hypot(e.clientX - p.x, e.clientY - p.y) > 6) return;
       this.oceanClick();
     };
+    // The long-press name card lives while the finger is down; any release hides it.
+    const onRelease = () => this.hideNameCard();
+    for (const ev of ['pointerup', 'pointercancel', 'touchend', 'touchcancel'] as const) window.addEventListener(ev, onRelease, true);
+    this.disposers.push(() => {
+      for (const ev of ['pointerup', 'pointercancel', 'touchend', 'touchcancel'] as const) window.removeEventListener(ev, onRelease, true);
+    });
     window.addEventListener('pointerdown', onBoardDown);
     window.addEventListener('pointermove', onBoardMove);
     window.addEventListener('wheel', onBoardWheel, { passive: true });
@@ -3338,6 +3428,7 @@ class Controller {
 
   autoplay(on: boolean): void {
     this.autoplayOn = on;
+    this.haptics.enabled = !on;
     this.applyBoardSpeed();
     this.invalidate();
     this.scheduleAi();

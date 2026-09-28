@@ -467,6 +467,7 @@
   background: linear-gradient(90deg, transparent, rgba(12, 15, 19, 0.6) 22%, rgba(12, 15, 19, 0.6) 78%, transparent);
 }
 .bt-side { display: inline-flex; align-items: baseline; gap: 0.45rem; font-weight: 700; font-size: max(2.1vh, 1.0625rem); letter-spacing: 0.05em; white-space: nowrap; color: var(--seat-light); }
+.bt-terr { text-transform: uppercase; }
 .bt-armies { font-weight: 800; color: var(--ivory); display: inline-block; min-width: 1.2ch; }
 .bt-vs { font-size: max(1.5vh, 0.875rem); font-weight: 600; letter-spacing: 0.08em; color: var(--ivory-55); }
 .bt-captured { font-weight: 800; font-size: max(2.1vh, 1.0625rem); letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--seat-light, var(--ivory)); display: inline-block; }
