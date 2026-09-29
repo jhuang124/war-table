@@ -42,13 +42,13 @@ if (!early) {
   await clickBtn(page, 'menu');
   await page.waitForSelector('[data-testid="pause"]', { timeout: 3000 });
   const items = await page.locator('[data-testid="pause"] .menu-item .btn-label').allTextContents();
-  check(items.join(' · ') === 'Resume · Rules · Settings · Log · Save & quit · End game now · Restart', `≡ → the menu: ${items.join(' · ')}`, results);
+  check(items.join(' · ') === 'Resume · How to play · Settings · Log · Save & quit · End game now · Restart', `≡ → the menu: ${items.join(' · ')}`, results);
   await page.screenshot({ path: `${ART}/endgame-pause.png` });
   // Log: read-only, newest first.
   await clickBtn(page, 'pause-log');
   await page.waitForSelector('[data-testid="log"]', { timeout: 3000 });
   const rounds = await page.locator('[data-testid="log"] .log-round').allTextContents();
-  const nums = rounds.filter(Boolean).map((r) => Number(r.slice(1)));
+  const nums = rounds.filter(Boolean).map((r) => Number(r.replace(/^\D+/, '')));
   check(nums.length > 5 && nums.every((n, i) => i === 0 || n <= nums[i - 1]), `log: ${nums.length} lines, newest first (R${nums[0]} … R${nums[nums.length - 1]})`, results);
   const clickable = await page.locator('[data-testid="log"] button:not([data-testid="log-close"])').count();
   check(clickable === 0, 'log lines are read-only', results);

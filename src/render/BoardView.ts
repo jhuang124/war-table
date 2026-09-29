@@ -60,6 +60,13 @@ export interface BoardStats {
   pixelRatio?: number;
   /** Additive (renderer, mobile pass): the WebGL context is lost and the board is rebuilding. */
   contextLost?: boolean;
+  /**
+   * Additive (renderer, ink overhaul; docs/INK.md A1): the living-calm layer is running (setAmbient on and
+   * not reduced motion). It runs off its own clock, never as tweens: `activeTweens` counts gameplay only.
+   */
+  ambientOn?: boolean;
+  /** Additive (renderer, ink overhaul): the calm's current amplitude — 1 at rest, 0.5 yielding to gameplay, 0 off. */
+  ambientLevel?: number;
 }
 
 export interface PlayEventOptions {
@@ -77,6 +84,13 @@ export interface PlayEventOptions {
    * fold it into the running conquest animation and resolve as soon as the token lands.
    */
   inlineMarch?: boolean;
+  /**
+   * Additive (controller, ink overhaul; docs/INK.md A5 "losing stings"): set on a `territoryConquered` whose
+   * previous owner is a human seat at the table, and on a `playerEliminated` of a human seat. The renderer
+   * plays the sting there: the torn, dark flood rim and the brush snap on contact (the elimination sweep for
+   * a knockout). Absent = an AI lost it: the plain flood.
+   */
+  sting?: boolean;
 }
 
 /**
@@ -192,6 +206,23 @@ export interface BoardView {
    * highlights are unaffected.
    */
   onContextLoss?(cb: (lost: boolean) => void): void;
+
+  /**
+   * Additive (lead, ink overhaul; docs/INK.md A2) — draw-to-attack. The controller says which territories
+   * may start a stroke right now (empty array = strokes off) and, for each, which territories it may end on.
+   * A pointer-down on a source followed by a drag draws a live brush stroke that follows the pointer (and
+   * takes precedence over pan for that gesture); other drags pan as before; taps are unaffected.
+   */
+  setStrokeSources?(sources: TerritoryId[], targetsOf: (source: TerritoryId) => TerritoryId[]): void;
+  /**
+   * Additive (lead, ink overhaul): stroke lifecycle. `to` is the eligible target currently under the pointer
+   * (null if none). `done: false` while dragging; `done: true` once on release — then `to` non-null means
+   * "arm this attack" (the controller arms it exactly like a target-first tap; the stroke settles into the
+   * attack arrow) and `to` null means cancelled (the stroke dries out). A stroke never commits a roll.
+   */
+  onStroke?(cb: (s: { from: TerritoryId; to: TerritoryId | null; done: boolean }) => void): void;
+  /** Additive (lead, ink overhaul; docs/INK.md A1): ambient "living calm" layer on/off (off under reduced motion). */
+  setAmbient?(on: boolean): void;
 
   /**
    * Screen position (client px) of a territory's army piece — the top centre of its base, which is always

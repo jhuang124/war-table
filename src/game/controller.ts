@@ -88,6 +88,7 @@ import type {
   CardsVM,
   ControllerApi,
   GameVM,
+  GoldVM,
   LogLineVM,
   NameCardVM,
   Overlay,
@@ -132,6 +133,9 @@ export interface ControllerOptions {
    */
   touch?: boolean;
 }
+
+/** A finished or live draw-to-attack stroke (BoardView.onStroke, docs/INK.md A2). */
+type StrokeInfo = { from: TerritoryId; to: TerritoryId | null; done: boolean };
 
 /** Additive board members from the mobile renderer pass (docs/MOBILE.md §3); used when present. */
 interface TouchBoard {
@@ -178,7 +182,7 @@ export interface UiSnapshot {
   /** The driver can click the track / it's visibly disabled. */
   trackLive: boolean;
   trackDisabled: boolean;
-  /** Every brass-filled thing on the strip (buttons and the track's recommended segment): at most one. */
+  /** The one gold thing's label (GameVM.gold: a button, a track segment, the cards trade); [] when none. */
   brass: string[];
   /** The bottom strip's one line. */
   line: string;
@@ -198,6 +202,10 @@ export interface UiSnapshot {
   cardsOpen: boolean;
   /** The `Reset view` pill is showing. */
   viewMoved: boolean;
+  /** The one gold element (GameVM.gold): 'button:blitz' · 'segment:attack' · 'cardsTrade' · 'handoff', or null. */
+  gold: string | null;
+  /** The banner's serif line ('John · 3 armies', 'Sam · taken by John · round 9'), or null. */
+  bannerLine: string | null;
 }
 
 export interface RiskHooks {
@@ -303,6 +311,8 @@ interface GameMeta {
   finalRoundShown: boolean;
   sel: Sel;
   lastTurnKind: 'human' | 'ai' | null;
+  /** Who knocked each seat out, and in which round (the empty seat ring, docs/INK.md A5). */
+  out?: Record<number, { by: PlayerId; round: number }>;
 }
 
 interface UiFile {
@@ -373,6 +383,10 @@ function restoreMeta(id: string, saved: Partial<GameMeta> | undefined): GameMeta
   m.finalRoundShown = !!saved.finalRoundShown;
   m.lastTurnKind = saved.lastTurnKind ?? null;
   m.sel = restoreSel(saved.sel);
+  if (saved.out && typeof saved.out === 'object') {
+    m.out = {};
+    for (const [k, v] of Object.entries(saved.out)) if (v && typeof v.by === 'number' && typeof v.round === 'number') m.out[Number(k)] = { by: v.by, round: v.round };
+  }
   return m;
 }
 
@@ -449,6 +463,10 @@ class Controller {
   private viewMoved = false;
   /** The last conquest on the displayed board: a continent banner needs a human in it. */
   private lastConquest: { attacker: PlayerId; victim: PlayerId } | null = null;
+  /** Per seat, bumps as each of its territories falls on the board (SeatChipVM.lostKey, the A5 ring dim). */
+  private lostKeys: Record<number, number> = {};
+  /** The draw-to-attack sources last handed to the board (change detection). */
+  private lastStrokeKey = '';
 
   // Queue
   private queue: Entry[] = [];
@@ -464,6 +482,8 @@ class Controller {
   private sleepers = new Set<() => void>();
   private handoff: { player: PlayerId } | null = null;
   private rolling = false;
+  /** A draw-to-attack stroke is being drawn (the board's gold stroke is the one gold). */
+  private strokeLive = false;
   /** Bumps on every new/loaded game so stale async work drops out. */
   private epoch = 0;
 
@@ -540,6 +560,8 @@ class Controller {
     this.refreshSaveSummary();
 
     this.board.onTerritoryClick((info) => this.onBoardClick(info));
+    // Draw-to-attack (docs/INK.md A2): a finished stroke arms exactly like a target-first tap.
+    this.board.onStroke?.((st) => this.onStroke(st));
     // The `Reset view` pill follows the board's own notion of "off home" when it has one.
     this.board.onViewDisplacedChange?.((moved) => {
       if (moved === this.viewMoved) return;
@@ -661,6 +683,9 @@ class Controller {
     this.audio.setVolume(this.settings.sfxVolume);
     this.audio.setMuted(this.settings.muted);
     this.audio.setMusic(this.settings.music);
+    this.audio.setMusicVolume?.(this.settings.musicVolume ?? 0.7);
+    // The living board (A1): off under reduced motion, whether that's the setting or the OS.
+    b.setAmbient?.((this.settings.ambient ?? true) && !this.reducedMotion());
     this.applyBoardSpeed();
   }
 
@@ -741,6 +766,16 @@ class Controller {
   // Game lifecycle
   // =========================================================================
 
+  /** The game's seed (config.seed): the ensō is drawn from it and the score is seeded by it (INK A4). */
+  private gameSeed(s: GameState): number {
+    const v = Number(s.config.seed);
+    return Number.isFinite(v) ? v >>> 0 : 0;
+  }
+
+  private seedScore(s: GameState): void {
+    this.audio.setMusicSeed?.(this.gameSeed(s));
+  }
+
   private randomSeed(): number {
     return Math.floor(Math.random() * 0x100000000) >>> 0;
   }
@@ -755,6 +790,7 @@ class Controller {
     this.resetGameLocals();
     this.state = state;
     this.meta = freshMeta(state.id);
+    this.seedScore(state);
     // The deal plays from an empty board.
     const blank = cloneState(state);
     for (const t of TERRITORY_IDS) blank.territories[t] = { owner: UNCLAIMED, armies: 0 };
@@ -804,6 +840,7 @@ class Controller {
     this.cardsOpen = false;
     this.viewMoved = false;
     this.lastConquest = null;
+    this.lostKeys = {};
     this.sessionAiSpeed = null;
     this.curTurn = null;
     this.lastBoardSpeed = -1;
@@ -816,6 +853,7 @@ class Controller {
     this.resetGameLocals();
     this.state = s;
     this.disp = cloneState(s);
+    this.seedScore(s);
     const ui = readJson<UiFile>(this.kv, UI_KEY);
     this.meta = restoreMeta(s.id, ui?.game);
     this.sel = this.meta.sel;
@@ -976,6 +1014,9 @@ class Controller {
         e.opts = { style: opts.style };
       }
       if (x.ev.type === 'territoryConquered') conquered = true;
+      // Losing stings (docs/INK.md A5): tell the board when the loser is a human at the table.
+      const victim = x.ev.type === 'territoryConquered' ? x.ev.previousOwner : x.ev.type === 'playerEliminated' ? x.ev.player : -1;
+      if (victim >= 0 && !this.autoplayOn && x.after.players[victim]?.kind === 'human') e.opts = { ...(e.opts ?? {}), sting: true };
       if (x.ev.type === 'armiesMoved' && x.ev.reason === 'occupy' && (conquered || opts.ai)) {
         e.opts = { ...(e.opts ?? {}), inlineMarch: true };
       }
@@ -1209,7 +1250,7 @@ class Controller {
   private onEventStart(e: Entry, skip: boolean): void {
     const ev = e.ev;
     const d = this.disp!;
-    const aiVol = (players: PlayerId[]) => (players.some((p) => this.isHumanSeat(p)) ? 1 : 0.6);
+    const aiVol = (players: PlayerId[]) => (players.some((p) => this.isHumanSeat(p)) ? 1 : 0.5);
     switch (ev.type) {
       case 'turnStarted': {
         this.closeEngagement();
@@ -1269,6 +1310,7 @@ class Controller {
         break;
       case 'territoryConquered':
         this.lastConquest = { attacker: ev.player, victim: ev.previousOwner };
+        if (ev.previousOwner >= 0) this.lostKeys[ev.previousOwner] = (this.lostKeys[ev.previousOwner] ?? 0) + 1;
         if (e.ai) this.narration = `${pName(d, ev.player)} takes ${tName(ev.to)}`;
         break;
       case 'armiesMoved':
@@ -1288,8 +1330,8 @@ class Controller {
           this.announce('continent', `${upper(name)} HOLDS ${upper(cName(c))}${SEP}+${bonus}`, ev.player, {
             name: 'continent',
             opts: { volume: aiVol([ev.player]) },
-          });
-        } else this.play('continent', { volume: 0.6 });
+          }, `${name} holds ${cName(c)}${SEP}+${bonus}`);
+        } else this.play('continent', { volume: 0.5 });
         this.log('continent', ev.player, `${name} holds ${cName(c)}${SEP}+${bonus} a turn`);
         break;
       }
@@ -1297,10 +1339,13 @@ class Controller {
         const by = pName(d, ev.to);
         const victim = pName(d, ev.player);
         this.log('continent', ev.to, `${by} broke ${poss(victim)} ${cName(ev.continent)}`);
+        // Losing stings (docs/INK.md A5): a human's broken continent gets the hand-damped bowl.
+        if (this.isHumanSeat(ev.player) && !this.autoplayOn && !skip) this.play('continent', { variant: 'somber' });
         break;
       }
       case 'playerEliminated': {
         if (e.ai) this.narration = `${pName(d, ev.by)} knocks out ${pName(d, ev.player)}`;
+        if (this.meta) this.meta.out = { ...(this.meta.out ?? {}), [ev.player]: { by: ev.by, round: d.round } };
         this.holdUntil = this.now() + 500;
         this.audio.stopAll?.();
         this.play('eliminated', { delay: 0.15 });
@@ -1363,7 +1408,8 @@ class Controller {
       case 'playerEliminated': {
         if (!skip) this.haptics.play('eliminated');
         const victim = pName(d, ev.player);
-        this.announce('elimination', `${upper(victim)} IS OUT`, ev.by);
+        // The epitaph names who did it (docs/INK.md A5): 'Sam · taken by John · round 9'.
+        this.announce('elimination', `${upper(victim)} IS OUT`, ev.by, undefined, `${victim}${SEP}taken by ${pName(d, ev.by)}${SEP}round ${Math.max(1, d.round)}`);
         this.log('elimination', ev.by, `${pName(d, ev.by)} knocked out ${victim}`);
         this.checkAllHumansOut();
         break;
@@ -1573,10 +1619,10 @@ class Controller {
   // Banners (docs/SIMPLIFY.md §5): the turn banner, continent captured, elimination. One at a time.
   // =========================================================================
 
-  private announce(kind: 'continent' | 'elimination', title: string, seat: PlayerId, sound?: { name: SfxName; opts?: PlayOptions }): void {
+  private announce(kind: 'continent' | 'elimination', title: string, seat: PlayerId, sound?: { name: SfxName; opts?: PlayOptions }, line?: string): void {
     const d = this.disp;
     const item: BannerItem = {
-      vm: { id: this.idSeq++, kind, title, sub: '', recap: null, seat: d?.players[seat] ? seatRef(d, seat) : null, holdMs: kind === 'elimination' ? 1600 : 1200 },
+      vm: { id: this.idSeq++, kind, title, line, sub: '', recap: null, seat: d?.players[seat] ? seatRef(d, seat) : null, holdMs: kind === 'elimination' ? 1600 : 1200 },
       createdAt: this.now(),
       sound,
     };
@@ -1613,7 +1659,8 @@ class Controller {
   private showTurnBanner(player: PlayerId, armiesIn: number | null, recap: string | null, s: GameState): void {
     const name = pName(s, player);
     const instant = this.settings.animationSpeed === 0;
-    const holdMs = instant ? 500 : recap ? 1200 : 1000;
+    // Non-blocking and click-through (any input dismisses it); a grudge line gets time to be read.
+    const holdMs = instant ? 500 : recap ? 1600 : 1000;
     // An elimination banner keeps its moment: the turn banner waits for it to leave, so the room never
     // sees two banners at once.
     if (this.banner && this.banner.vm.kind === 'elimination') {
@@ -1637,6 +1684,8 @@ class Controller {
       id: this.idSeq++,
       kind: 'turn',
       title: `${upper(poss(name))} TURN`,
+      // The turn breath's one serif line (docs/INK.md B2.6): 'John · 3 armies'.
+      line: armiesIn === null ? name : `${name}${SEP}${armies(armiesIn)}`,
       sub: armiesIn === null ? '' : `+${armiesIn} ${armiesIn === 1 ? 'army' : 'armies'}`,
       recap,
       seat: seatRef(s, player),
@@ -1763,6 +1812,90 @@ class Controller {
     const before = this.selKey();
     this.handleClick(info);
     if (this.selKey() !== before) this.haptics.play('select');
+  }
+
+  /**
+   * Draw-to-attack (docs/INK.md A2). While the pointer drags, the stroke is the player's attention: a turn
+   * line still showing bows out. Released over an eligible target it arms that fight exactly like a
+   * target-first tap from that source (the line, the odds, Roll / Blitz); released anywhere else it dries
+   * out and nothing changes. A stroke never commits. The same guards as a tap apply: the knockout hold,
+   * the tail-of-turn guard, and click-through (finish what's animating, then arm).
+   */
+  private onStroke(st: StrokeInfo): void {
+    // While the gold stroke is on the board, the board holds the one gold (buildGold).
+    const live = !st.done;
+    if (live !== this.strokeLive) {
+      this.strokeLive = live;
+      this.invalidate();
+    }
+    if (!st.done) {
+      this.hideNameCard();
+      if (this.turnBanner) this.dismissTurnBanner();
+      return;
+    }
+    if (!st.to) return;
+    const s = this.state;
+    if (!s || this.screen !== 'game' || this.overlay || this.confirm) return;
+    if (this.now() < this.holdUntil) {
+      this.inputDropped++;
+      return;
+    }
+    if (!this.interactive()) return;
+    if (this.now() < this.guardUntil) {
+      this.inputDropped++;
+      return;
+    }
+    const { from, to } = st;
+    if (this.busyBlocking()) {
+      this.clickThrough(() => this.armFromStroke(from, to));
+      return;
+    }
+    const before = this.selKey();
+    this.armFromStroke(from, to);
+    if (this.selKey() !== before) this.haptics.play('select');
+  }
+
+  private armFromStroke(from: TerritoryId, to: TerritoryId): void {
+    const s = this.state;
+    if (!s || !this.interactive() || s.phase.kind !== 'attack') return;
+    // The same reasoner as a tap on `to` with `from` picked: only a legal pairing arms.
+    const ex = explainTerritory(s, { ...this.explainUi(), selected: from, target: null }, to);
+    if (!ex.ok || ex.plan?.kind !== 'arm' || ex.plan.from !== from) return;
+    this.clearRejection();
+    this.runPlan(ex.plan);
+    this.invalidate();
+  }
+
+  /** Where a stroke may start now: your eligible attack sources in your own Attack step, else none. */
+  private strokeSources(): TerritoryId[] {
+    const s = this.state;
+    const d = this.disp;
+    if (!s || !d || this.screen !== 'game' || this.overlay || this.confirm) return [];
+    if (!this.interactive() || d.currentPlayer !== s.currentPlayer) return [];
+    // Not while the dice roll or an occupy holds the turn (the phase reads 'occupy' then).
+    if (s.phase.kind !== 'attack' || d.phase.kind !== 'attack' || this.fightPlaying()) return [];
+    return attackSources(s, s.currentPlayer).filter((t) => attackTargets(s, t).length > 0);
+  }
+
+  private strokeTargets = (src: TerritoryId): TerritoryId[] => {
+    const s = this.state;
+    if (!s || s.phase.kind !== 'attack' || s.territories[src]?.owner !== s.currentPlayer || s.territories[src].armies < 2) return [];
+    return attackTargets(s, src);
+  };
+
+  private pushStrokeSources(): void {
+    if (!this.board.setStrokeSources) return;
+    const src = this.strokeSources();
+    const s = this.state;
+    // The targets read the live state, but a new board (owners, armies) is a new offer.
+    const key = src.length && s ? `${s.turn}|${src.map((t) => `${t}:${attackTargets(s, t).join(',')}`).join(';')}` : '';
+    if (key === this.lastStrokeKey) return;
+    this.lastStrokeKey = key;
+    try {
+      this.board.setStrokeSources(src, this.strokeTargets);
+    } catch (err) {
+      console.error(err);
+    }
   }
 
   /** What the player has picked (source, target, pending count), for the select haptic. */
@@ -2836,11 +2969,14 @@ class Controller {
     const interactive = this.interactive() && d.currentPlayer === s.currentPlayer;
     const sel = this.viewSel();
     const banner = this.banner?.vm.kind === 'elimination' ? this.banner.vm : (this.turnBanner ?? this.banner?.vm ?? null);
+    const strip = this.buildStripVM(d, sel, interactive);
+    const cards = this.buildCards(d, interactive);
     return {
       seats: this.buildSeats(d),
-      strip: this.buildStripVM(d, sel, interactive),
+      strip,
+      gold: this.buildGold(d, strip, cards),
       battle: this.buildBattle(d, sel, interactive),
-      cards: this.buildCards(d, interactive),
+      cards,
       log: this.meta.log,
       banner,
       handoff: this.handoff ? { seat: seatRef(d, this.handoff.player), subline: this.handoffSubline(this.handoff.player) } : null,
@@ -2848,7 +2984,28 @@ class Controller {
       seatActions: this.buildSeatActions(d),
       viewMoved: this.viewMoved,
       nameCard: this.nameCard,
+      seed: this.gameSeed(s),
     };
+  }
+
+  /**
+   * One gold (docs/INK.md B2.1): the hand-off ring → the open Cards sheet's trade → the pending commit
+   * button → the recommended track segment → the current segment. Never two.
+   */
+  private buildGold(d: GameState, strip: StripVM, cards: CardsVM | null): GoldVM {
+    if (this.handoff) return { kind: 'handoff' };
+    if (this.screen !== 'game' || d.phase.kind === 'game-over') return null;
+    if (cards?.open && cards.trade) return { kind: 'cardsTrade' };
+    // Gold is "now" (INK B2.1, A9): while the board's gold is in flight (a stroke being drawn, the dice
+    // deciding), the HUD's gold steps down to ivory. The resting armed arrow is ivory, so Blitz takes it.
+    if (this.strokeLive || this.fightPlaying()) return null;
+    const b = strip.buttons.find((x) => x.primary);
+    if (b) return { kind: 'button', id: b.id };
+    const tr = strip.track;
+    if (tr.primary && tr.recommended) return { kind: 'segment', seg: tr.recommended };
+    if (strip.mode === 'idle') return null;
+    const cur = tr.segments.find((x) => x.state === 'current');
+    return cur ? { kind: 'segment', seg: cur.id } : null;
   }
 
   private handoffSubline(p: PlayerId): string {
@@ -2885,6 +3042,8 @@ class Controller {
       current: p.id === d.currentPlayer && d.phase.kind !== 'game-over',
       eliminated: p.eliminated,
       territories: territoryCount(d, p.id),
+      lostKey: this.lostKeys[p.id] ?? 0,
+      out: p.eliminated && this.meta?.out?.[p.id] && d.players[this.meta.out[p.id].by] ? { by: seatRef(d, this.meta.out[p.id].by), round: this.meta.out[p.id].round } : null,
     }));
   }
 
@@ -3093,6 +3252,7 @@ class Controller {
   }
 
   private pushHighlights(): void {
+    this.pushStrokeSources();
     const h = this.buildHighlights();
     const preview = this.boardPreview() ? this.previewTotals() : null;
     const key = JSON.stringify([h, preview]);
@@ -3131,14 +3291,14 @@ class Controller {
     const order = this.standingsOrder(s).filter((p) => p !== winner);
     const ranked = [winner, ...order];
     const reason = s.phase.kind === 'game-over' ? s.phase.reason : null;
-    const pctGoal = s.config.dominationPercent;
-    const subline =
-      called ??
-      (reason === 'turnLimit'
-        ? `Round ${s.round} of ${s.config.turnLimit}${SEP}most territories`
-        : reason === 'domination' && pctGoal >= 100
-          ? `Round ${s.round}${SEP}the whole world`
-          : `Round ${s.round}${SEP}${pctGoal}% of the world`);
+    // 'Round 14 · 31 territories' (docs/INK.md B5): real numbers, no percentages.
+    const held = territoryCount(s, winner);
+    const terr = `${held} ${held === 1 ? 'territory' : 'territories'}`;
+    const subline = called
+      ? `${called}${SEP}${terr}`
+      : reason === 'turnLimit'
+        ? `Round ${s.round} of ${s.config.turnLimit}${SEP}${terr}`
+        : `Round ${Math.max(1, s.round)}${SEP}${terr}`;
     const awards = meta ? buildAwards(meta.awards, s) : [];
     const timeline = [...s.timeline];
     if (called) {
@@ -3149,8 +3309,9 @@ class Controller {
       });
     }
     return {
+      seed: this.gameSeed(s),
       winner: seatRef(s, winner),
-      title: `${upper(pName(s, winner))} RULES THE WORLD`,
+      title: `${pName(s, winner)} holds the world`,
       subline,
       awards: awards.map((a) => ({ id: a.id, title: a.title, text: a.text, seat: seatRef(s, a.player) })),
       seats: s.players.map((p) => seatRef(s, p.id)),
@@ -3360,11 +3521,18 @@ class Controller {
     const b = g?.battle;
     const tr = strip?.track;
     const step = tr?.segments.find((x) => x.state === 'current')?.label ?? '';
-    const brass = [
-      ...(g?.cards?.open && g.cards.trade ? [g.cards.trade.label] : []),
-      ...(strip?.buttons.filter((x) => x.primary).map((x) => x.label) ?? []),
-      ...(tr?.primary && tr.recommended ? [tr.segments.find((x) => x.id === tr.recommended)!.label] : []),
-    ];
+    // The one gold thing's label (GameVM.gold), as the HUD draws it; the hand-off ring has no label.
+    const gd = g?.gold ?? null;
+    const brass =
+      !gd || gd.kind === 'handoff'
+        ? []
+        : gd.kind === 'cardsTrade'
+          ? g?.cards?.trade
+            ? [g.cards.trade.label]
+            : []
+          : gd.kind === 'button'
+            ? (strip?.buttons.filter((x) => x.id === gd.id).map((x) => x.label) ?? [])
+            : (tr?.segments.filter((x) => x.id === gd.seg).map((x) => x.label) ?? []);
     return {
       screen: vm.screen,
       step,
@@ -3385,6 +3553,8 @@ class Controller {
       seats: (g?.seats ?? []).map((c) => `${c.seat.name} ${c.territories}`),
       cardsOpen: !!g?.cards?.open,
       viewMoved: !!g?.viewMoved,
+      gold: !g?.gold ? null : g.gold.kind === 'button' ? `button:${g.gold.id}` : g.gold.kind === 'segment' ? `segment:${g.gold.seg}` : g.gold.kind,
+      bannerLine: g?.banner?.line ?? null,
     };
   }
 

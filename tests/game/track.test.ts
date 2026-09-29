@@ -45,9 +45,23 @@ describe('Turn Track states', () => {
     expect(states(s)).toEqual(['done:place', 'current:attack', 'eligible:fortify', 'eligible:endTurn']);
     expect(brass(strip(s))).toEqual([]);
     const armed = strip(s, { ...emptySel(), selected: 'ural', target: 'siberia' });
-    expect(armed.line).toMatch(/^Ural → Siberia · \d+%$/);
+    expect(armed.line).toMatch(/^Ural → Siberia · \d+% · (almost sure|likely|coin flip|long shot)$/);
     expect(armed.buttons.map((b) => b.label)).toEqual(['Roll', 'Blitz']);
     expect(brass(armed)).toEqual(['Blitz']);
+    // At most one stake, biggest first, and never past 60 characters (docs/INK.md B2.11).
+    const armedLine = (st: GameState, from: string, to: string, win = true) =>
+      strip(st, { ...emptySel(), selected: from as never, target: to as never }, { showWinChance: win }).line;
+    const ko = board({ kamchatka: [0, 6], alaska: [1, 1] });
+    expect(armedLine(ko, 'kamchatka', 'alaska')).toMatch(/^Kamchatka → Alaska · \d+% · almost sure · knocks out Sam$/);
+    const oz = board({ indonesia: [0, 6], new_guinea: [0, 1], western_australia: [0, 1] });
+    // Long names: the word gives way to the stake (the number already says the odds)…
+    expect(armedLine(oz, 'indonesia', 'eastern_australia')).toMatch(/^Indonesia → Eastern Australia · \d+% · takes Australia$/);
+    // …but with the number hidden the word is the odds, so the stake goes instead.
+    expect(armedLine(oz, 'indonesia', 'eastern_australia', false)).toBe('Indonesia → Eastern Australia · almost sure');
+    expect(armedLine(ko, 'kamchatka', 'alaska', false)).toBe('Kamchatka → Alaska · almost sure · knocks out Sam');
+    const brk = board({ siam: [0, 6], indonesia: [1, 1], new_guinea: [1, 1], western_australia: [1, 1], eastern_australia: [1, 1] });
+    expect(armedLine(brk, 'siam', 'indonesia')).toMatch(/ · breaks Sam's Australia$/);
+    for (const st of [ko, oz, brk]) for (const t of ['alaska', 'eastern_australia', 'indonesia']) expect(armedLine(st, 'kamchatka', t).length).toBeLessThanOrEqual(60);
     // Armed: the track is still all there, same words.
     expect(armed.track.segments.map((x) => x.label)).toEqual(['Place', 'Attack', 'Fortify', 'End turn']);
     const done = board({ ural: [0, 1] });

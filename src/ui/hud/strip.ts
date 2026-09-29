@@ -1,24 +1,20 @@
-// Bottom strip (docs/ROUND2.md §A): one floating glass pill, centered, 12 px off the bottom.
-//   [ ✓ Place | ATTACK | Fortify | End turn ] │ the one line ……… [ count ] [ secondary ] [ PRIMARY ]
-// The Turn Track at the left is the only phase control; the right end is an action zone only. The line
-// swaps (out, then in; never two at once) when its wording changes; when only a number changes it pops
-// (±1) or counts (≥ 5). Everything is patched in place.
+// The bottom of the board (docs/INK.md B5): the one line on the paper, the gold hairline rule across
+// the width with the game's ensō at its centre, and under it the Turn Track as words in one outlined
+// pill with the action pills beside it.
+//                         Ural → Siberia · 64% · likely
+//   ────────────────────────────────  ◯  ────────────────────────────────
+//              ( Place │ Attack │ Fortify │ End turn )   ( Roll )  ( Blitz )
+// Nothing is filled. ONE GOLD (GameVM.gold): the pending commit, or the recommended / current track
+// segment, drawn as a gold outline with gold text; everything else is ivory hairline. The line swaps
+// (the old one dries, the new one is drawn in; never two at once) when its wording changes; when only
+// a number changes it re-inks (±1) or counts (≥ 5). Everything is patched in place.
 
-import type { ButtonVM, CountVM, StripVM, TrackSegId, TrackVM, UiIntent } from '../../game/viewModel';
+import type { ButtonVM, CountVM, GoldVM, StripVM, TrackSegId, TrackVM, UiIntent } from '../../game/viewModel';
 import { PLAYER_COLORS } from '../../shared/palette';
 import { ActionButton } from '../controls';
-import { countUp, EASE_IN_QUAD, h, minus, motion, pop, setAttr, setStyle, setText, toggle } from '../dom';
+import { countUp, drawIn, EASE_BRUSH, EASE_IN_QUAD, ensoEl, h, minus, motion, pop, setAttr, setEnso, setStyle, setText, toggle } from '../dom';
 
-/** Turn Track glyphs for the phone dock (docs/MOBILE.md §4): icon + short label, like a tab bar. */
-const SEG_ICON: Record<TrackSegId, string> = {
-  place: 'M12 4.5v9M7.5 9h9M5.5 19.5h13',
-  setup: 'M12 4.5v9M7.5 9h9M5.5 19.5h13',
-  attack: 'M5 4l9.5 9.5M4 5l1-1M14.5 13.5l-2 2 3 3 2-2zM19 4L9.5 13.5M20 5l-1-1M9.5 13.5l2 2-3 3-2-2z',
-  fortify: 'M4 8.5h14l-3.5-3.5M20 15.5H6l3.5 3.5',
-  endTurn: 'M6.5 20.5V4M6.5 4.5h11l-2.6 4 2.6 4h-11',
-  done: 'M5 12.5l4.5 4.5L19 7',
-};
-/** Short labels on phones: the track's segments are equal-width tabs there. */
+/** Short labels on phones: the track's segments are equal-width words there. */
 const SEG_SHORT: Partial<Record<TrackSegId, string>> = { endTurn: 'End' };
 
 /** The one line, with number-aware transitions. A change of wording never shows two lines at once:
@@ -47,7 +43,44 @@ class Line {
     }
   }
 
+  /** While another line owns the slot the strip's line is stepping aside: changes wait, then land silently. */
+  private aside = false;
+  private asideAt = 0;
+  private pending: [string, StripVM['lineKind'], number, string | null] | null = null;
+  private pendingT = 0;
+
+  /**
+   * The strip's line steps aside for a breath line or the rotate hint (INK B4: one thing in the slot).
+   * The words on the paper stay as they were while they dry (160 ms, easeInQuad); whatever changed
+   * meanwhile is swapped in unseen, so the line comes back already current, and nothing slides.
+   */
+  setAside(on: boolean): void {
+    if (on === this.aside) return;
+    this.aside = on;
+    if (on) this.asideAt = performance.now();
+    else this.flush();
+  }
+
+  private flush(): void {
+    window.clearTimeout(this.pendingT);
+    const p = this.pending;
+    this.pending = null;
+    if (p) this.apply(...p, true);
+  }
+
   update(text: string, kind: StripVM['lineKind'], key: number, narr: string | null): void {
+    if (this.aside) {
+      this.pending = [text, kind, key, narr];
+      // Once it has dried, swap unseen (so a later reveal is already current).
+      window.clearTimeout(this.pendingT);
+      const left = Math.max(0, 170 - (performance.now() - this.asideAt));
+      this.pendingT = window.setTimeout(() => this.aside && this.flush(), left);
+      return;
+    }
+    this.apply(text, kind, key, narr, false);
+  }
+
+  private apply(text: string, kind: StripVM['lineKind'], key: number, narr: string | null, silent: boolean): void {
     text = minus(text);
     const sameKey = key === this.key;
     if (text === this.text && kind === this.kind && sameKey) return;
@@ -66,7 +99,7 @@ class Line {
     setStyle(this.el, '--narr', narr ?? 'var(--ivory)');
     this.el.title = text;
 
-    if (!rejection && !kindChanged && prevText && skeleton(prevText) === skeleton(text)) {
+    if (!silent && !rejection && !kindChanged && prevText && skeleton(prevText) === skeleton(text)) {
       // Same sentence, different number(s): patch the numbers in place.
       const a = nums(prevText);
       const b = nums(text);
@@ -94,36 +127,29 @@ class Line {
     this.fill(next, text);
     this.cur = next;
     this.el.append(next);
-    if (!prevText || motion.reduced) {
+    if (!prevText || motion.reduced || silent) {
       old.remove();
       return;
     }
     const quick = kind === 'rejection' || prevKind === 'rejection';
     const outMs = quick ? 70 : 100;
-    const inMs = quick ? 110 : 150;
     old.classList.add('ln-ghost');
-    const out = old.animate(
-      [
-        { opacity: 1, transform: 'translateY(-50%)' },
-        { opacity: 0, transform: 'translateY(calc(-50% - 6px))' },
-      ],
-      { duration: outMs, easing: EASE_IN_QUAD, fill: 'forwards' },
-    );
+    const out = old.animate([{ opacity: 1 }, { opacity: 0 }], { duration: outMs, easing: EASE_IN_QUAD, fill: 'forwards' });
     out.onfinish = () => old.remove();
-    next.animate(
-      [
-        { opacity: 0, transform: 'translateY(5px)' },
-        { opacity: 1, transform: 'translateY(0)' },
-      ],
-      { duration: inMs, delay: outMs, easing: 'ease-out', fill: 'backwards' },
-    );
+    next.style.opacity = '0';
+    window.setTimeout(() => {
+      next.style.opacity = '';
+      if (this.cur === next) drawIn(next, quick ? 150 : 220);
+    }, outMs);
   }
 }
 
 /**
- * The Turn Track (docs/ROUND2.md §A): Place · Attack · Fortify · End turn (or Setup · Done) in one pill
- * group. The marker (a fill in the seat's colour) slides to the new segment in 180 ms; the recommended
- * next segment glows; forward segments are the buttons that change phase. It never hides or renames.
+ * The Turn Track (docs/ROUND2.md §A, INK.md B5): Place · Attack · Fortify · End turn (or Setup · Done) as
+ * words in one outlined pill. The marker is a hairline outline that slides to the new segment (180 ms);
+ * it is gold when the current segment carries the one gold, bright ivory otherwise. A recommended next
+ * segment that carries the gold gets its own gold outline and gold words. Forward segments are the
+ * buttons that change phase; it never hides or renames.
  */
 class Track {
   readonly el: HTMLDivElement;
@@ -131,6 +157,7 @@ class Track {
   private segs = new Map<TrackSegId, HTMLButtonElement>();
   private order: TrackSegId[] = [];
   private vm: TrackVM | null = null;
+  private gold: TrackSegId | null = null;
   private turnKey = '';
   private placed: TrackSegId | null = null;
 
@@ -147,17 +174,21 @@ class Track {
 
   private build(ids: TrackSegId[]): void {
     for (const b of this.segs.values()) b.remove();
+    this.el.querySelectorAll('.tr-sep').forEach((x) => x.remove());
     this.segs.clear();
     this.order = ids;
-    for (const id of ids) {
+    ids.forEach((id, i) => {
+      if (i) {
+        const sep = h('i', 'tr-sep');
+        sep.setAttribute('aria-hidden', 'true');
+        this.el.append(sep);
+      }
       const b = h('button', `tr-seg nofocus seg-${id}`);
       b.type = 'button';
       b.dataset.testid = `seg-${id}`;
+      b.dataset.slop = '8'; // touch: the hit area reaches into the pill's padding (mobile.css)
       b.dataset.seg = id;
-      const icon = h('span', 'tr-icon');
-      icon.setAttribute('aria-hidden', 'true');
-      icon.innerHTML = `<svg viewBox="0 0 24 24"><path d="${SEG_ICON[id]}"/></svg>`;
-      b.append(h('span', 'tr-check', '✓'), icon, h('span', 'tr-label'), h('span', 'tr-short'));
+      b.append(h('span', 'tr-label'), h('span', 'tr-short'));
       b.addEventListener('click', () => {
         const vm = this.vm;
         const seg = vm?.segments.find((x) => x.id === id);
@@ -166,11 +197,11 @@ class Track {
       });
       this.segs.set(id, b);
       this.el.append(b);
-    }
+    });
     this.placed = null;
   }
 
-  /** Put the marker under the current segment: a slide (180 ms), or a cut when the turn changed hands. */
+  /** Put the marker round the current segment: a slide (180 ms), or a cut when the turn changed hands. */
   private placeFill(slide: boolean): void {
     const vm = this.vm;
     const cur = vm?.segments.find((x) => x.state === 'current');
@@ -195,20 +226,22 @@ class Track {
     this.placed = cur!.id;
   }
 
-  update(vm: TrackVM): void {
-    if (this.vm === vm) return;
+  update(vm: TrackVM, gold: TrackSegId | null): void {
+    if (this.vm === vm && this.gold === gold) return;
     const prev = this.vm;
     this.vm = vm;
+    this.gold = gold;
     const ids = vm.segments.map((x) => x.id);
     if (ids.join() !== this.order.join()) this.build(ids);
     const pal = PLAYER_COLORS[vm.seat.color];
     setStyle(this.el, '--seat', pal.base);
-    setStyle(this.el, '--seat-ink', pal.ink);
     setStyle(this.el, '--seat-light', pal.light);
     toggle(this.el, 'is-live', vm.live);
     toggle(this.el, 'is-disabled', vm.disabled);
     toggle(this.el, 'is-watch', !vm.live);
     this.el.dataset.kind = vm.kind;
+    const cur = vm.segments.find((x) => x.state === 'current')?.id ?? null;
+    toggle(this.fill, 'gold', !!cur && gold === cur);
     for (const seg of vm.segments) {
       const b = this.segs.get(seg.id)!;
       setText(b.querySelector('.tr-label')!, seg.label);
@@ -217,20 +250,22 @@ class Track {
       for (const st of ['done', 'current', 'eligible', 'locked'] as const) toggle(b, `is-${st}`, seg.state === st);
       const rec = vm.recommended === seg.id;
       toggle(b, 'is-rec', rec);
-      toggle(b, 'is-primary', rec && vm.primary);
+      // The one gold: this segment (the marker's outline when it is the current one).
+      const isGold = gold === seg.id;
+      toggle(b, 'gold', isGold);
+      toggle(b, 'is-primary', isGold);
       // A locked segment still answers a click (its reason goes in the line); done / current don't.
       const answers = vm.live && !vm.disabled && (seg.state === 'eligible' || seg.state === 'locked');
       setAttr(b, 'aria-disabled', answers ? null : 'true');
       b.tabIndex = vm.live && !vm.disabled && seg.state === 'eligible' ? 0 : -1;
       setAttr(b, 'aria-current', seg.state === 'current' ? 'step' : null);
     }
-    const cur = vm.segments.find((x) => x.state === 'current')?.id ?? null;
     const handsChanged = vm.turnKey !== this.turnKey;
     this.turnKey = vm.turnKey;
     if (cur !== this.placed || handsChanged || prev?.seat.color !== vm.seat.color) {
       const slide = !!prev && !handsChanged && prev.kind === vm.kind;
       this.placeFill(slide);
-      if (handsChanged && prev && !motion.reduced) this.fill.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: 'ease-out' });
+      if (handsChanged && prev && !motion.reduced) this.fill.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 240, easing: EASE_BRUSH });
     }
   }
 }
@@ -405,7 +440,7 @@ class Buttons {
   constructor(private press: (b: ButtonVM) => void) {
     this.el = h('div', 'st-buttons');
   }
-  update(list: ButtonVM[]): void {
+  update(list: ButtonVM[], gold: GoldVM | undefined): void {
     const seen = new Set<string>();
     list.forEach((b, i) => {
       let ab = this.pool.get(b.id);
@@ -413,7 +448,7 @@ class Buttons {
         ab = new ActionButton(this.press);
         this.pool.set(b.id, ab);
       }
-      ab.update(b);
+      ab.update(b, gold === undefined ? b.primary : gold?.kind === 'button' && gold.id === b.id);
       seen.add(b.id);
       if (this.el.children[i] !== ab.el) this.el.insertBefore(ab.el, this.el.children[i] ?? null);
     });
@@ -421,17 +456,47 @@ class Buttons {
   }
 }
 
+/** The gold hairline rule with the game's ensō at its centre (INK A1: a glint every ~14 s, the ensō breathes). */
+class GoldRule {
+  readonly el: HTMLDivElement;
+  private mark: SVGSVGElement;
+  private l: HTMLElement;
+  private r: HTMLElement;
+  constructor() {
+    this.el = h('div', 'st-rule');
+    this.el.setAttribute('aria-hidden', 'true');
+    this.l = h('i', 'sr-half sr-l');
+    this.r = h('i', 'sr-half sr-r');
+    const glint = h('i', 'sr-glint');
+    const c = h('span', 'sr-enso');
+    this.mark = ensoEl(1, 'enso', { small: true });
+    c.append(this.mark);
+    this.el.append(this.l, this.r, glint, c);
+  }
+  setSeed(seed: number): void {
+    setEnso(this.mark, seed, { small: true });
+  }
+  /** Turn start: the rule redraws from the ensō outward (400 ms). */
+  redraw(): void {
+    if (motion.reduced || typeof this.l.animate !== 'function') return;
+    for (const el of [this.l, this.r]) el.animate([{ transform: 'scaleX(0)' }, { transform: 'scaleX(1)' }], { duration: 400, easing: EASE_BRUSH });
+  }
+}
+
 export class BottomStrip {
   readonly el: HTMLElement;
   private track: Track;
   private line = new Line();
+  private say: HTMLDivElement;
+  private rule = new GoldRule();
   private count: HTMLDivElement;
   private stepper: Stepper;
   private slider: CountSlider;
   private buttons: Buttons;
-  private sweep: HTMLSpanElement;
   private zone: HTMLDivElement;
   private vm: StripVM | null = null;
+  private gold: GoldVM | undefined = undefined;
+  private turnKey = '';
 
   constructor(send: (i: UiIntent) => void) {
     this.el = h('section', 'strip');
@@ -447,9 +512,9 @@ export class BottomStrip {
     const zone = (this.zone = h('div', 'st-zone'));
     zone.dataset.testid = 'action-zone';
     zone.append(this.count, this.buttons.el);
-    this.sweep = h('span', 'st-sweep');
-    this.sweep.setAttribute('aria-hidden', 'true');
-    this.el.append(this.sweep, this.track.el, h('i', 'st-rule'), this.line.el, zone);
+    this.say = h('div', 'st-say');
+    this.say.append(this.line.el);
+    this.el.append(this.say, this.rule.el, this.track.el, zone);
     // The mouse wheel over the strip adjusts the count.
     this.el.addEventListener(
       'wheel',
@@ -464,20 +529,36 @@ export class BottomStrip {
     );
   }
 
-  update(vm: StripVM): void {
-    if (this.vm === vm) return;
+  /** The game's ensō on the rule. */
+  setSeed(seed: number): void {
+    this.rule.setSeed(seed);
+  }
+
+  /** Another line owns the slot (a breath line, the rotate hint): the strip's line steps aside. */
+  setLineAside(on: boolean): void {
+    this.line.setAside(on);
+  }
+
+  update(vm: StripVM, gold?: GoldVM): void {
+    if (this.vm === vm && this.gold === gold) return;
     const prev = this.vm;
     this.vm = vm;
-    const pal = PLAYER_COLORS[vm.accent];
-    // The turn passes: the accent sweeps left → right in the new colour (280 ms).
-    if (prev && prev.accent !== vm.accent && !motion.reduced) {
-      setStyle(this.sweep, '--to', pal.base);
-      this.sweep.getAnimations().forEach((a) => a.cancel());
-      const a = this.sweep.animate([{ transform: 'scaleX(0)' }, { transform: 'scaleX(1)' }], { duration: 280, easing: 'cubic-bezier(0.25, 1, 0.5, 1)' });
-      a.onfinish = () => setStyle(this.el, '--accent', pal.base);
-    } else setStyle(this.el, '--accent', pal.base);
+    this.gold = gold;
+    // Legacy fallback (no GameVM.gold): the primary button, else the track's recommended segment.
+    const g: GoldVM | undefined =
+      gold !== undefined
+        ? gold
+        : vm.buttons.find((b) => b.primary)
+          ? { kind: 'button', id: vm.buttons.find((b) => b.primary)!.id }
+          : vm.track.primary && vm.track.recommended
+            ? { kind: 'segment', seg: vm.track.recommended }
+            : null;
     this.el.dataset.mode = vm.mode;
-    this.track.update(vm.track);
+    if (vm.track.turnKey !== this.turnKey) {
+      if (prev) this.rule.redraw();
+      this.turnKey = vm.track.turnKey;
+    }
+    this.track.update(vm.track, g?.kind === 'segment' ? g.seg : null);
     this.line.update(vm.line, vm.lineKind, vm.lineKey, vm.lineKind === 'narration' ? PLAYER_COLORS[vm.track.seat.color].light : null);
     const c = vm.count;
     toggle(this.count, 'hidden', !c);
@@ -486,8 +567,8 @@ export class BottomStrip {
     if (c?.control === 'stepper') this.stepper.update(c);
     else this.stepper.reset();
     if (c?.control === 'slider') this.slider.update(c);
-    this.buttons.update(vm.buttons);
-    // Phones (portrait): the action row folds away when there is nothing to press.
+    this.buttons.update(vm.buttons, g ?? null);
+    // The action row folds away when there is nothing to press (portrait docks).
     toggle(this.zone, 'is-empty', !c && vm.buttons.length === 0);
     this.el.dataset.buttons = String(vm.buttons.length + (c ? 1 : 0));
   }

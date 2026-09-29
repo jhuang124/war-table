@@ -87,14 +87,20 @@ export const DEFAULT_SETTINGS: Settings = {
   hideCardsBetweenTurns: false,
   sfxVolume: 0.8,
   muted: false,
-  music: false,
+  music: true,
+  musicVolume: 0.7,
+  ambient: true,
   reduceMotion: false,
   showWinChance: true,
   autoCamera: true,
 };
 
-/** Settings file version (v3: the hand-off cover defaults on for touch devices, docs/MOBILE.md §5). */
-export const SETTINGS_VERSION = 3;
+/**
+ * Settings file version. v3: the hand-off cover defaults on for touch devices (docs/MOBILE.md §5).
+ * v4 (ink overhaul, docs/INK.md A1/A4): the soft ambient score defaults on, plus the living-board
+ * `ambient` switch and a music volume.
+ */
+export const SETTINGS_VERSION = 4;
 
 /**
  * Defaults for this device. A phone or tablet is physically passed around, so the hand-off cover (which
@@ -112,9 +118,12 @@ export function sanitizeSettings(x: unknown, touch = false): Settings {
   if (o.animationSpeed === 0 || o.animationSpeed === 1 || o.animationSpeed === 2) s.animationSpeed = o.animationSpeed;
   if (o.aiSpeed === 'watch' || o.aiSpeed === 'fast' || o.aiSpeed === 'instant') s.aiSpeed = o.aiSpeed;
   if (o.textSize === 'laptop' || o.textSize === 'couch' || o.textSize === 'tv') s.textSize = o.textSize;
-  for (const k of ['hideCardsBetweenTurns', 'muted', 'music', 'reduceMotion', 'showWinChance', 'autoCamera'] as const) {
+  for (const k of ['hideCardsBetweenTurns', 'muted', 'music', 'ambient', 'reduceMotion', 'showWinChance', 'autoCamera'] as const) {
     if (typeof o[k] === 'boolean') s[k] = o[k] as boolean;
   }
+  // Before v4 the music bed defaulted off, so a saved `false` was the old default, not a choice: the
+  // ambient score comes on (docs/INK.md A4). A v4 file's value counts.
+  if (v < 4) s.music = true;
   // Before v3 the cover defaulted off everywhere, so a saved `false` on a touch device was the old
   // default, not a choice: only an explicit `true` (or a v3 file) counts there.
   if (touch && v < 3 && o.hideCardsBetweenTurns === false) s.hideCardsBetweenTurns = true;
@@ -122,6 +131,7 @@ export function sanitizeSettings(x: unknown, touch = false): Settings {
   // old default, not a choice, so only a v2 file's value counts.
   if (v >= 2 && typeof o.showLabels === 'boolean') s.showLabels = o.showLabels;
   if (typeof o.sfxVolume === 'number' && Number.isFinite(o.sfxVolume)) s.sfxVolume = Math.min(1, Math.max(0, o.sfxVolume));
+  if (typeof o.musicVolume === 'number' && Number.isFinite(o.musicVolume)) s.musicVolume = Math.min(1, Math.max(0, o.musicVolume));
   return s;
 }
 

@@ -29,8 +29,9 @@ await idle(page);
 u = await ui(page);
 check((await state(page))!.phase.kind === 'attack' && u.step === 'Attack', `Enter = the recommended segment → ${u.step}`, results);
 
-// --- Attack with targets and nothing armed: nothing is brass, Enter does nothing -------------------
-check(u.brass.length === 0 && u.recommended === null && u.line === 'Click an enemy territory to attack', `nothing picked: brass [${u.brass.join(', ')}] · "${u.line}"`, results);
+// --- Attack with targets and nothing armed: the one gold is the current segment (INK B2.1; no commit
+// pending), nothing is recommended, Enter does nothing ----------------------------------------------
+check(u.brass.join() === 'Attack' && u.recommended === null && u.line === 'Click an enemy territory to attack', `nothing picked: brass [${u.brass.join(', ')}] · "${u.line}"`, results);
 await page.keyboard.press('Enter');
 await settle(150);
 s = await state(page);
@@ -40,7 +41,7 @@ check(s!.phase.kind === 'attack' && s!.currentPlayer === 0 && (await ui(page)).l
 await clickT(page, 'siberia');
 await settle();
 u = await ui(page);
-check(u.buttons.join(' / ') === 'Roll / Blitz' && /^Ural → Siberia · \d+%$/.test(u.line) && u.brass.join() === 'Blitz', `armed: ${u.buttons.join(' / ')} · "${u.line}" · brass [${u.brass.join(', ')}]`, results);
+check(u.buttons.join(' / ') === 'Roll / Blitz' && /^Ural → Siberia · \d+%( · .+)?$/.test(u.line) && u.brass.join() === 'Blitz', `armed: ${u.buttons.join(' / ')} · "${u.line}" · brass [${u.brass.join(', ')}]`, results);
 await page.keyboard.press('Escape');
 await settle(40);
 u = await ui(page);

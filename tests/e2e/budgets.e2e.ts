@@ -37,7 +37,7 @@ const reinforce = (remaining: number): Phase => ({ kind: 'reinforce', remaining,
   await idle(page);
   await clickT(page, 'siberia');
   u = await ui(page);
-  check(u.primary === 'Blitz' && u.battle?.header.startsWith('URAL 11 vs') === true && /^Ural → Siberia · \d+%$/.test(u.line), `armed from nothing: "${u.line}" · tray ${u.battle?.header}`, results);
+  check(u.primary === 'Blitz' && u.battle?.header.startsWith('URAL 11 vs') === true && /^Ural → Siberia · \d+%( · .+)?$/.test(u.line), `armed from nothing: "${u.line}" · tray ${u.battle?.header}`, results);
   await clickBtn(page, 'btn-blitz');
   await idle(page);
   s = await state(page);

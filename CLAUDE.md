@@ -1,5 +1,7 @@
 # risk3d — Risk: War Table
 
+Read SOUL.md first, and run its "Before you plan" checklist before you plan, delegate, or call a build done. On intent and feel it outranks every spec and the code: when they disagree, change the build or raise it with John, never the soul.
+
 3D pass-and-play Risk (Vite + TypeScript + Three.js). Read `docs/SPEC.md` first; the contracts are
 `src/engine/types.ts`, `src/engine/mapData.ts`, `src/map/types.ts`, `src/render/BoardView.ts`,
 `src/shared/palette.ts`.

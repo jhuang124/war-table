@@ -483,11 +483,13 @@ describe('banners', () => {
     let empty = 0;
     let samples = 0;
     const kinds = new Set<string>();
+    const epitaphs = new Set<string>();
     for (let t = 0; t < 1_800_000 && c.getViewModel().screen === 'game'; t += 100) {
       const u = c.hooks.ui();
       maxBanners = Math.max(maxBanners, u.banners.length);
       const b = c.getViewModel().game?.banner;
       if (b) kinds.add(b.kind);
+      if (b?.kind === 'elimination') epitaphs.add(b.line ?? '');
       if (!u.line) empty++;
       samples++;
       await vi.advanceTimersByTimeAsync(100);
@@ -499,7 +501,12 @@ describe('banners', () => {
     expect([...kinds].every((k) => k === 'elimination')).toBe(true);
     expect(empty).toBe(0);
     const v = c.getViewModel().victory!;
-    expect(v.title).toMatch(/RULES THE WORLD$/);
+    expect(v.title).toMatch(/ holds the world$/);
+    expect(v.subline).toMatch(/^Round \d+( of 12)? · \d+ territories$/);
+    // The epitaph names who did it: 'AI2 · taken by AI1 · round 9'.
+    for (const e of epitaphs) expect(e).toMatch(/^\S+ · taken by \S+ · round \d+$/);
+    const out = c.getViewModel().game?.seats.filter((x) => x.eliminated) ?? [];
+    for (const x of out) expect(x.out?.round).toBeGreaterThan(0);
     expect(v.standings[0].seat.id).toBe(v.winner.id);
     c.dispose();
   }, 60_000);
@@ -517,7 +524,7 @@ describe('end game now', () => {
     c.intent({ type: 'confirm', yes: true });
     const vm = c.getViewModel();
     expect(vm.screen).toBe('victory');
-    expect(vm.victory!.subline).toMatch(/^Called in round \d+$/);
+    expect(vm.victory!.subline).toMatch(/^Called in round \d+ · \d+ territories$/);
     expect(kv.get(SAVE_KEY)).toBeNull();
     c.dispose();
   });

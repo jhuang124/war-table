@@ -2,8 +2,8 @@
 import * as THREE from 'three';
 import type { BoardGeometry, Vec2 } from '../map/types';
 
-export const FONT_SERIF_CAPS = "'Cinzel', 'Cormorant Garamond Variable', Georgia, serif";
-export const FONT_SANS = "'Inter Variable', 'Inter', system-ui, -apple-system, sans-serif";
+export const FONT_SERIF_CAPS = "'Cormorant Garamond Variable', 'Cormorant Garamond', Georgia, serif";
+export const FONT_SANS = FONT_SERIF_CAPS; // one family (INK B3): Cinzel and Inter are gone
 
 // ---------------------------------------------------------------------------
 // Noise
@@ -92,24 +92,6 @@ export function walnutTexture(size = 1024): THREE.CanvasTexture {
       d[o] = k(0);
       d[o + 1] = k(1);
       d[o + 2] = k(2);
-      d[o + 3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return tex(c, true, true);
-}
-
-export function feltTexture(size = 256): THREE.CanvasTexture {
-  const [c, ctx] = canvas(size, size);
-  const img = ctx.createImageData(size, size);
-  const d = img.data;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const n = hash(x, y, 5) * 0.5 + fbm(x / 24, y / 24, 9, 3, size / 24, size / 24) * 0.5;
-      const o = (y * size + x) * 4;
-      d[o] = 30 + n * 18;
-      d[o + 1] = 62 + n * 22;
-      d[o + 2] = 64 + n * 22;
       d[o + 3] = 255;
     }
   }
@@ -500,33 +482,53 @@ const PIPS: Record<number, [number, number][]> = {
   ],
 };
 
-/** One face texture: owner color with ink pips (slightly recessed look). */
-export function diceFaceTexture(value: number, base: string, ink: string, size = 128): THREE.CanvasTexture {
+// ---------------------------------------------------------------------------
+// Ink & lacquer (docs/INK.md B §3–4: the lacquer tray, pigment dice, the verdict's ink splash)
+// ---------------------------------------------------------------------------
+
+/**
+ * A die face in pigment: the seat's wash colour, matte, with a faint paper grain and ivory pips laid
+ * like ink dots (each a touch irregular, a little heavier at its centre).
+ */
+export function inkDiceFaceTexture(value: number, base: string, ink: string, size = 128): THREE.CanvasTexture {
   const [c, ctx] = canvas(size, size);
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, size, size);
-  // faint edge darkening so the rounded corners read
-  const g = ctx.createRadialGradient(size / 2, size / 2, size * 0.3, size / 2, size / 2, size * 0.75);
-  g.addColorStop(0, 'rgba(255,255,255,0.05)');
-  g.addColorStop(1, 'rgba(0,0,0,0.18)');
+  const img = ctx.getImageData(0, 0, size, size);
+  const d = img.data;
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      const n = fbm(x / 18, y / 18, 71 + value, 3) - 0.5;
+      const g = hash(x, y, 5) - 0.5;
+      const k = 1 + n * 0.1 + g * 0.05;
+      const o = (y * size + x) * 4;
+      d[o] = Math.min(255, d[o] * k);
+      d[o + 1] = Math.min(255, d[o + 1] * k);
+      d[o + 2] = Math.min(255, d[o + 2] * k);
+    }
+  ctx.putImageData(img, 0, 0);
+  // the rounded edge reads a little deeper
+  const g = ctx.createRadialGradient(size / 2, size / 2, size * 0.34, size / 2, size / 2, size * 0.74);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.22)');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
-  const r = size * (value === 1 ? 0.12 : 0.092);
+  const r = size * (value === 1 ? 0.12 : 0.088);
   for (const [px, py] of PIPS[value]) {
     const x = px * size;
     const y = py * size;
     ctx.beginPath();
-    ctx.arc(x, y + r * 0.12, r * 1.08, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255,255,255,0.22)';
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
+    const n = 14;
+    for (let i = 0; i <= n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const rr = r * (1 + (hash(i, Math.round(x * 7 + y), value) - 0.5) * 0.14);
+      const X = x + Math.cos(a) * rr;
+      const Y = y + Math.sin(a) * rr;
+      if (i) ctx.lineTo(X, Y);
+      else ctx.moveTo(X, Y);
+    }
+    ctx.closePath();
     ctx.fillStyle = ink;
-    ctx.fill();
-    const pg = ctx.createRadialGradient(x - r * 0.3, y - r * 0.35, r * 0.1, x, y, r);
-    pg.addColorStop(0, 'rgba(0,0,0,0.35)');
-    pg.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = pg;
     ctx.fill();
   }
   const t = tex(c, true, false);
@@ -534,42 +536,59 @@ export function diceFaceTexture(value: number, base: string, ink: string, size =
   return t;
 }
 
-/** A jagged crack decal (dark line with a light chipped edge), transparent. */
-export function crackTexture(size = 128): THREE.CanvasTexture {
+/** An ink splash decal (dark, transparent): a spattered blot with a few flung drops. */
+export function inkSplashTexture(size = 128): THREE.CanvasTexture {
   const [c, ctx] = canvas(size, size);
-  const pts: [number, number][] = [
-    [0.08, 0.2],
-    [0.3, 0.36],
-    [0.42, 0.33],
-    [0.55, 0.52],
-    [0.68, 0.55],
-    [0.8, 0.74],
-    [0.95, 0.82],
-  ];
-  const stroke = (w: number, style: string, dy: number) => {
-    ctx.beginPath();
-    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * size, y * size + dy) : ctx.moveTo(x * size, y * size + dy)));
-    ctx.moveTo(0.55 * size, 0.52 * size + dy);
-    ctx.lineTo(0.5 * size, 0.78 * size + dy);
-    ctx.lineTo(0.42 * size, 0.9 * size + dy);
-    ctx.strokeStyle = style;
-    ctx.lineWidth = w;
-    ctx.lineJoin = 'miter';
-    ctx.stroke();
-  };
-  stroke(size * 0.05, 'rgba(255,255,255,0.35)', size * 0.02);
-  stroke(size * 0.035, 'rgba(10,8,6,0.9)', 0);
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  // flung drops, thrown one way (the blow's), smaller the farther they fly
+  const drops: [number, number, number][] = [];
+  for (let i = 0; i < 16; i++) {
+    const a = -0.6 + (hash(i, 1, 9) - 0.5) * 3.4;
+    const r = 0.14 + Math.pow(hash(i, 2, 9), 0.8) * 0.3;
+    drops.push([0.5 + Math.cos(a) * r, 0.5 + Math.sin(a) * r, 0.012 + (1 - r / 0.44) * 0.03 * hash(i, 3, 9) + 0.006]);
+  }
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      const u = x / size - 0.5;
+      const v = y / size - 0.5;
+      const ang = Math.atan2(v, u);
+      const rr = Math.hypot(u, v);
+      const edge = 0.12 + 0.06 * (fbm(Math.cos(ang) * 2.4 + 3, Math.sin(ang) * 2.4 + 3, 12, 3) - 0.5) * 2.6;
+      let a = (1 - smooth(edge - 0.025, edge + 0.008, rr)) * 0.9;
+      for (const [dx, dy, dr] of drops) a = Math.max(a, 1 - smooth(dr * 0.6, dr, Math.hypot(x / size - dx, y / size - dy)));
+      a *= 0.7 + 0.3 * fbm(x / 8, y / 8, 4, 2);
+      const o = (y * size + x) * 4;
+      d[o] = 10;
+      d[o + 1] = 12;
+      d[o + 2] = 20;
+      d[o + 3] = Math.round(255 * Math.max(0, Math.min(1, a)));
+    }
+  ctx.putImageData(img, 0, 0);
   return tex(c, true, false);
 }
 
-/** Soft round sprite for dust. */
-export function softDotTexture(size = 64): THREE.CanvasTexture {
+/** Black lacquer with a little wear: faint warm-brown scuffs where hands have worn the rim. */
+export function lacquerTexture(size = 256): THREE.CanvasTexture {
   const [c, ctx] = canvas(size, size);
-  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  g.addColorStop(0, 'rgba(255,255,255,1)');
-  g.addColorStop(0.4, 'rgba(255,255,255,0.45)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, size, size);
-  return tex(c, true, false);
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      const n = fbm(x / 22, y / 60, 31, 4, size / 22, size / 60);
+      const wear = Math.max(0, fbm(x / 9, y / 40, 57, 3, size / 9, size / 40) - 0.62) * 2.2;
+      const o = (y * size + x) * 4;
+      const k = 0.9 + n * 0.2;
+      d[o] = Math.round((16 + 70 * wear) * k);
+      d[o + 1] = Math.round((16 + 30 * wear) * k);
+      d[o + 2] = Math.round((20 + 18 * wear) * k);
+      d[o + 3] = 255;
+    }
+  ctx.putImageData(img, 0, 0);
+  return tex(c, true, true);
+}
+
+function smooth(a: number, b: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
 }

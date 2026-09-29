@@ -1,0 +1,26 @@
+{
+  "prompt": "A single game unit figure for a minimalist ink-painting strategy board game, drawn in Japanese sumi-e brush style: confident, economical dry-brush strokes in pale silver-ivory ink (#e6dfcc), slight dry-brush breaks at stroke ends, no color fill other than the ivory ink, no ground, no shadow, no text, isolated on a fully transparent background, centered, full figure visible, facing right in a three-quarter side view. Match the ink figure style of the reference image (the pale ivory brush soldiers). Clean silhouette that reads clearly at 40 pixels tall. The figure: a cavalry rider on a horse standing calmly, rider holding a lance or spear upright.",
+  "aspect": "1:1",
+  "transparent": true,
+  "refs": [
+    {
+      "path": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/moodboard/units-place.png",
+      "sha256": "2e81ec361e49f1dc7d148446f163e34a85089f8162edd174d873f8cbf03ad187"
+    }
+  ],
+  "session": null,
+  "variant": 2,
+  "backend": "direct",
+  "model": "gpt-image-2 (service-selected)",
+  "reportedQuality": "medium",
+  "reportedSize": "1254x1254",
+  "generationId": "218d599d-989e-4b02-8d91-72d2089e4928",
+  "requestId": "56cfc0a8-d79a-4749-a543-358bc1edefe7",
+  "codexVersion": "codex-cli 0.153.4",
+  "width": 1254,
+  "height": 1254,
+  "bytes": 786668,
+  "attempts": 1,
+  "durationMs": 50860,
+  "createdAt": "2026-09-28T17:02:15.622Z"
+}

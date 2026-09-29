@@ -1,0 +1,43 @@
+{
+  "ok": true,
+  "backend": "direct",
+  "images": [
+    {
+      "path": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/sprites/rider-1.png",
+      "bytes": 785776,
+      "width": 1254,
+      "height": 1254,
+      "revisedPrompt": null,
+      "sidecar": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/sprites/rider-1.json",
+      "attempts": 1,
+      "durationMs": 42174,
+      "backend": "direct",
+      "reportedQuality": "medium"
+    },
+    {
+      "path": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/sprites/rider-2.png",
+      "bytes": 786668,
+      "width": 1254,
+      "height": 1254,
+      "revisedPrompt": null,
+      "sidecar": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/sprites/rider-2.json",
+      "attempts": 1,
+      "durationMs": 50860,
+      "backend": "direct",
+      "reportedQuality": "medium"
+    }
+  ],
+  "failures": [],
+  "session": null,
+  "quota": {
+    "planType": "pro",
+    "usedPercent": 5,
+    "windowMinutes": 10080,
+    "resetsAt": "2026-10-03T17:03:43.000Z",
+    "fiveHour": null,
+    "activeLimit": "premium",
+    "asOf": "2026-09-28T17:02:15.619Z",
+    "source": "direct-headers"
+  },
+  "model": "gpt-image-2 (service-selected)"
+}

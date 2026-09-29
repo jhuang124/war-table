@@ -62,7 +62,9 @@ async function run(dev: DeviceName): Promise<void> {
   // Layout: inside the safe area.
   const geo = await page.evaluate(() => {
     const r = (q: string) => document.querySelector(q)!.getBoundingClientRect();
-    const s = r('.strip');
+    // The dock's controls and line (the gold rule is a hairline that runs edge to edge by design).
+    const parts = [...document.querySelectorAll('.strip .track, .strip .st-zone:not(.is-empty), .strip .st-say')].map((e) => e.getBoundingClientRect()).filter((b) => b.width > 0);
+    const s = { left: Math.min(...parts.map((b) => b.left)), right: Math.max(...parts.map((b) => b.right)), top: Math.min(...parts.map((b) => b.top)), bottom: Math.max(...parts.map((b) => b.bottom)) };
     const t = r('.ts-seats');
     const m = r('[data-testid="menu"]');
     return { s: { l: s.left, r: s.right, t: s.top, b: s.bottom }, t: { l: t.left, t: t.top }, m: { r: m.right, t: m.top, w: m.width, h: m.height }, form: document.documentElement.className };
@@ -110,7 +112,7 @@ async function run(dev: DeviceName): Promise<void> {
   await tapT(page, 'siberia');
   await page.waitForTimeout(250);
   u = await ui(page);
-  check(/^Ural → Siberia · \d+%$/.test(u.line) && u.buttons.join(' / ') === 'Roll / Blitz', `${tag} tap Siberia arms: "${u.line}" · ${u.buttons.join(' / ')}`, results);
+  check(/^Ural → Siberia · \d+%( · .+)?$/.test(u.line) && u.buttons.join(' / ') === 'Roll / Blitz', `${tag} tap Siberia arms: "${u.line}" · ${u.buttons.join(' / ')}`, results);
   await targets();
   const before = (await state(page))!;
   await tapId(page, 'btn-roll');

@@ -1,5 +1,5 @@
 // Screenshot every gallery fixture. Usage:
-//   node src/ui/gallery/shoot.mjs [--port 5282] [--size 1440x900] [--text tv] [--only id,id] [--out artifacts/ui/r1]
+//   node src/ui/gallery/shoot.mjs [--port 5282] [--size 1440x900] [--text tv] [--only id,id] [--bg mood] [--out artifacts/ui/r1]
 // Also reports console errors and a few layout checks (strip rect, min font size, clipped lines, words).
 import { chromium } from 'playwright';
 import fs from 'node:fs';
@@ -31,7 +31,7 @@ if (args.only) ids = String(args.only).split(',');
 
 const report = [];
 for (const id of ids) {
-  const url = `${base}?state=${id}${text ? `&text=${text}` : ''}`;
+  const url = `${base}?state=${id}${text ? `&text=${text}` : ''}${args.bg ? `&bg=${args.bg}` : ''}`;
   await page.goto(url);
   await page.waitForFunction(() => window.__gallery?.ready);
   await page.evaluate(() => document.fonts.ready);

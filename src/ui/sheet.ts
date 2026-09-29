@@ -1,14 +1,14 @@
-// Bottom sheets on phones (docs/MOBILE.md §5): a grab handle, drag-down (or a tap on the scrim) to
-// dismiss, spring motion (~300 ms), reduced motion = fades. Desktop never calls these (its overlays stay
-// as they are); every entry point checks `isPhone()`.
+// Bottom sheets on phones (docs/MOBILE.md §5, INK.md B4): a grab handle, drag-down (or a tap on the scrim)
+// to dismiss, a spring of at most 2 % overshoot (280 ms in), reduced motion = fades. Desktop never calls
+// these (its paper sheets are drawn in instead); every entry point checks `isPhone()`.
 
 import { h, motion } from './dom';
 import { isPhone } from './layout';
 
-/** The iOS sheet curve: fast out of the gate, long soft settle. */
-export const SHEET_EASE = 'cubic-bezier(0.32, 0.72, 0, 1)';
-/** One small overshoot when a dragged sheet springs back. */
-export const SHEET_SPRING = 'cubic-bezier(0.34, 1.26, 0.64, 1)';
+/** The sheet's spring: fast out of the gate, one small overshoot (1.55 %, under the 2 % cap), a soft settle. */
+export const SHEET_SPRING = 'cubic-bezier(0.3, 1.22, 0.6, 1)';
+/** Kept for older call sites: the same spring. */
+export const SHEET_EASE = SHEET_SPRING;
 
 /** The grab handle: a 36×5 pill, centred at the top of the sheet (hidden off phones by CSS). */
 export function grabHandle(testid?: string): HTMLDivElement {
@@ -28,7 +28,7 @@ export function sheetIn(sheet: HTMLElement, scrim?: HTMLElement | null): void {
   if (motion.reduced) {
     sheet.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 180, easing: 'ease-out' });
   } else {
-    sheet.animate([{ transform: 'translateY(100%)' }, { transform: 'translateY(0)' }], { duration: 340, easing: SHEET_EASE });
+    sheet.animate([{ transform: 'translateY(100%)' }, { transform: 'translateY(0)' }], { duration: 280, easing: SHEET_SPRING });
   }
   scrim?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 240, easing: 'ease-out' });
 }

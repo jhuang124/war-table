@@ -1,27 +1,220 @@
-// Ambient bed: a quiet, slowly evolving pad in D dorian over a low drone, with an occasional distant
-// war drum and a rare high glint. Default off. One scheduler serves both live playback (lookahead
-// timer) and offline rendering (schedule the whole window up front), so it can be measured.
+// The ambient score (INK A4): on by default, warm, slow and sparse. A gentle bowed drone on D, low
+// bowed pads that drift through a small harmonic field (never a fixed progression), and a few events
+// a minute: a soft felt-piano note or dyad, or a distant bowl. Long tails, no melody you could hum,
+// no loop: the harmony is a seeded random walk with voice-leading, the events land on random gaps at
+// random chord tones, and nothing repeats on a cycle.
+//
+// Two halves:
+//  - `Composer` (pure, seeded): yields the score as timed items. Offline checks read it directly.
+//  - `startMusic` (the performer): turns items into cheap node graphs (oscillators + envelopes, no
+//    JS synthesis on the main thread), scheduled a few seconds ahead. Live and offline share it.
 
-import { between, cents, envelope, midiHz, mulberry32, roomImpulse } from './dsp';
-import { frameDrumTape } from './sounds/brass';
+import { between, cents, midiHz, mulberry32, noiseBuffer, roomImpulse } from './dsp';
+import { scoreBowl } from './sounds/bowl';
 import type { Rand } from './types';
 
-/** Overall bed level (linear). Calibrated so the bed sits ~12 dB under board SFX. */
-export const MUSIC_LEVEL = 0.33;
-const SEG = 14; // seconds per chord
-const FADE_IN = 5;
+/** Overall score level (linear). Calibrated so the score sits ~9 dB (≈ 35%) under board-level SFX. */
+export const MUSIC_LEVEL = 1.18;
+const FADE_IN = 6;
 
-// D dorian: Dm(add9) · Bbmaj7 · C(add9) · Am7/C — voiced low and close.
-const PROGRESSION: number[][] = [
-  [50, 57, 64, 65], // D3 A3 E4 F4
-  [46, 53, 57, 62], // Bb2 F3 A3 D4
-  [48, 55, 62, 64], // C3 G3 D4 E4
-  [45, 52, 55, 60], // A2 E3 G3 C4
+// ---------------------------------------------------------------------------
+// Composer
+// ---------------------------------------------------------------------------
+
+/** Harmonic field in D (aeolian with a warm major-seventh colour). Pitch classes, root first. */
+export const CHORDS: { name: string; pcs: number[] }[] = [
+  { name: 'Dm9', pcs: [2, 5, 9, 4] },
+  { name: 'Fmaj7', pcs: [5, 9, 0, 4] },
+  { name: 'Bbmaj7', pcs: [10, 2, 5, 9] },
+  { name: 'Csus2', pcs: [0, 2, 7] },
+  { name: 'Gm9', pcs: [7, 10, 2, 9] },
+  { name: 'Am7', pcs: [9, 0, 4, 7] },
+  { name: 'Dsus4', pcs: [2, 7, 9] },
 ];
-const GLINTS = [74, 76, 81, 69]; // D5 E5 A5 A4
+/** Where each chord may drift next (weights), so the walk has direction but no cycle. */
+const NEXT: number[][] = [
+  // Dm9 Fmaj7 Bb  Csus Gm9  Am7  Dsus4
+  [0, 3, 3, 2, 2, 1, 2], // Dm9
+  [3, 0, 3, 2, 1, 2, 0], // Fmaj7
+  [3, 3, 0, 2, 1, 0, 1], // Bbmaj7
+  [3, 2, 2, 0, 1, 2, 1], // Csus2
+  [3, 1, 3, 1, 0, 0, 2], // Gm9
+  [2, 3, 1, 2, 1, 0, 1], // Am7
+  [4, 1, 2, 1, 1, 1, 0], // Dsus4
+];
+
+export interface PadItem {
+  kind: 'pad';
+  t: number;
+  /** attack + hold (the release runs after). */
+  dur: number;
+  attack: number;
+  release: number;
+  chord: number;
+  midis: number[];
+  cutoff: number;
+}
+export interface NoteItem {
+  kind: 'piano' | 'bowl';
+  t: number;
+  midis: number[];
+  vel: number;
+  /** Seconds between the notes of a dyad (a rolled hand). */
+  spread: number;
+}
+export type ScoreItem = PadItem | NoteItem;
+
+const PAD_LO = 45; // A2
+const PAD_HI = 65; // F4
+
+function pick<T>(r: Rand, xs: T[], w: number[]): T {
+  let s = 0;
+  for (const x of w) s += x;
+  let u = r() * s;
+  for (let i = 0; i < xs.length; i++) {
+    u -= w[i];
+    if (u <= 0) return xs[i];
+  }
+  return xs[xs.length - 1];
+}
+
+/** Three-note voicing of `pcs` in the pad register, closest to `prev` (voice-leading), spacing 3–12. */
+export function voice(pcs: number[], prev: number[] | null, r: Rand): number[] {
+  const notes: number[] = [];
+  for (let m = PAD_LO; m <= PAD_HI; m++) if (pcs.includes(((m % 12) + 12) % 12)) notes.push(m);
+  let best: number[] = [notes[0], notes[1], notes[2]];
+  let bestCost = Infinity;
+  for (let a = 0; a < notes.length; a++)
+    for (let b = a + 1; b < notes.length; b++)
+      for (let c = b + 1; c < notes.length; c++) {
+        const v = [notes[a], notes[b], notes[c]];
+        const g1 = v[1] - v[0];
+        const g2 = v[2] - v[1];
+        if (g1 < 3 || g2 < 3 || g1 > 12 || g2 > 12) continue;
+        // prefer the root (or fifth) in the bass, open low voicings, and small motion
+        const bassPc = ((v[0] % 12) + 12) % 12;
+        let cost = bassPc === pcs[0] ? 0 : bassPc === (pcs[0] + 7) % 12 ? 2 : 5;
+        cost += g1 < 5 ? 2 : 0;
+        if (prev) cost += Math.abs(v[0] - prev[0]) + Math.abs(v[1] - prev[1]) + Math.abs(v[2] - prev[2]);
+        else cost += Math.abs(v[0] - 50) * 0.5;
+        cost += r() * 2.5;
+        if (cost < bestCost) {
+          bestCost = cost;
+          best = v;
+        }
+      }
+  return best;
+}
+
+/**
+ * The score as an endless, seeded stream of items in start-time order.
+ * Pads every 18–30 s (overlapping crossfades); notes on gaps of 7–26 s (≈ 4 a minute).
+ */
+export class Composer {
+  private readonly r: Rand;
+  private pads: PadItem[] = [];
+  private padNext = 0;
+  private chord = 0;
+  private voicing: number[] | null = null;
+  private noteNext: number;
+  private lastNote = -100;
+  private lastKind: NoteItem['kind'] = 'bowl';
+
+  constructor(seed: number) {
+    this.r = mulberry32((seed ^ 0x5eed) >>> 0);
+    // start somewhere in the field (seeded), usually home
+    this.chord = this.r() < 0.6 ? 0 : Math.floor(this.r() * CHORDS.length);
+    this.noteNext = between(this.r, 8, 14);
+  }
+
+  private makePad(): PadItem {
+    const r = this.r;
+    if (this.pads.length) this.chord = pick(r, CHORDS.map((_, i) => i), NEXT[this.chord]);
+    const pcs = CHORDS[this.chord].pcs;
+    this.voicing = voice(pcs, this.voicing, r);
+    const gap = between(r, 18, 30);
+    const attack = between(r, 6, 9.5);
+    const item: PadItem = {
+      kind: 'pad',
+      t: this.padNext,
+      attack,
+      dur: gap + between(r, 1, 3),
+      release: between(r, 8, 11),
+      chord: this.chord,
+      midis: this.voicing,
+      cutoff: between(r, 580, 900),
+    };
+    this.padNext += gap;
+    this.pads.push(item);
+    if (this.pads.length > 8) this.pads.shift();
+    return item;
+  }
+
+  /** The chord sounding at time t (the latest pad that has started). */
+  private chordAt(t: number): number {
+    let c = this.pads.length ? this.pads[0].chord : this.chord;
+    for (const p of this.pads) if (p.t <= t) c = p.chord;
+    return c;
+  }
+
+  private makeNote(): NoteItem {
+    const r = this.r;
+    const t = this.noteNext;
+    // gaps: mostly 8–18 s, sometimes a longer rest; never regular
+    const g = -Math.log(1 - r() * 0.95) * 9;
+    this.noteNext = t + Math.min(26, 7 + g);
+    const pcs = CHORDS[this.chordAt(t)].pcs;
+    const kind: NoteItem['kind'] = this.lastKind === 'bowl' ? (r() < 0.8 ? 'piano' : 'bowl') : r() < 0.6 ? 'piano' : 'bowl';
+    this.lastKind = kind;
+    if (kind === 'bowl') {
+      // two small distant bowls tuned to the key: A4 and D5
+      const m = r() < 0.5 ? 69 : 74;
+      return { kind, t, midis: [m], vel: between(r, 0.5, 0.8), spread: 0 };
+    }
+    const cands: number[] = [];
+    for (let m = 57; m <= 77; m++) {
+      if (!pcs.includes(m % 12)) continue;
+      // no stepwise contour: nothing within a whole tone of the last note
+      if (Math.abs(m - this.lastNote) <= 2) continue;
+      cands.push(m);
+    }
+    const m = cands[Math.floor(r() * cands.length)] ?? 62;
+    this.lastNote = m;
+    const midis = [m];
+    if (r() < 0.32) {
+      const above = [];
+      for (let k = 3; k <= 9; k++) if (pcs.includes((m + k) % 12) && m + k <= 81) above.push(m + k);
+      if (above.length) midis.push(above[Math.floor(r() * above.length)]);
+    }
+    return { kind, t, midis, vel: between(r, 0.35, 0.65), spread: between(r, 0.07, 0.2) };
+  }
+
+  /** Next item in time order. */
+  next(): ScoreItem {
+    if (this.padNext <= this.noteNext) return this.makePad();
+    return this.makeNote();
+  }
+}
+
+/** The plan for [0, seconds): what offline checks measure (density, variety, loop-freeness). */
+export function planScore(seed: number, seconds: number): ScoreItem[] {
+  const c = new Composer(seed);
+  const out: ScoreItem[] = [];
+  for (;;) {
+    const it = c.next();
+    if (it.t >= seconds) break;
+    out.push(it);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Performer
+// ---------------------------------------------------------------------------
 
 export interface MusicHandle {
-  stop(at: number): void;
+  stop(at: number, fade?: number): void;
+  readonly seed: number;
 }
 
 export interface MusicOptions {
@@ -29,23 +222,76 @@ export interface MusicOptions {
   /** Live: keep scheduling with a timer. Offline: schedule [at, renderUntil] immediately. */
   live: boolean;
   renderUntil?: number;
+  /** Fade-in seconds (default 6). */
+  fadeIn?: number;
+  /**
+   * A hall built ahead with `createMusicHall` (live: the mixer builds it once, off the critical path,
+   * and every restart reuses it). Absent = build one now.
+   */
+  hall?: MusicHall;
+}
+
+const LOOKAHEAD = 5;
+
+/** The score's shared hall: a long, dark room and the warm high cut on its return. */
+export interface MusicHall {
+  input: AudioNode;
+}
+
+/** Hall impulse (cached per context). Split from `createMusicHall` so live callers can spread the cost. */
+export function musicHallImpulse(ctx: BaseAudioContext): AudioBuffer {
+  return roomImpulse(ctx, 3.6, 4.2);
+}
+
+export function createMusicHall(ctx: BaseAudioContext, dest: AudioNode): MusicHall {
+  const tone = ctx.createBiquadFilter();
+  tone.type = 'lowpass';
+  tone.frequency.value = 3200;
+  tone.Q.value = 0.5;
+  tone.connect(dest);
+  const hall = ctx.createConvolver();
+  hall.normalize = false;
+  hall.buffer = musicHallImpulse(ctx);
+  hall.connect(tone);
+  return { input: hall };
 }
 
 export function startMusic(ctx: BaseAudioContext, dest: AudioNode, at: number, o: MusicOptions): MusicHandle {
-  const out = ctx.createGain();
-  out.gain.value = 0;
-  out.gain.setValueAtTime(0, at);
-  out.gain.linearRampToValueAtTime(MUSIC_LEVEL, at + FADE_IN);
+  const hall = o.hall ?? createMusicHall(ctx, dest);
+  // One fade envelope on the dry path and one on the send into the hall, so a stop fades the
+  // piece while the hall lets its last tail ring out naturally.
+  const fades: GainNode[] = [];
+  const fade = () => {
+    const g = ctx.createGain();
+    g.gain.value = 0;
+    g.gain.setValueAtTime(0, at);
+    g.gain.linearRampToValueAtTime(MUSIC_LEVEL, at + (o.fadeIn ?? FADE_IN));
+    fades.push(g);
+    return g;
+  };
+  const out = fade();
   out.connect(dest);
+  const wet = fade();
+  wet.connect(hall.input);
 
+  // gentle high cut on the whole score: warm, never airy (the hall return has its own)
+  const tone = ctx.createBiquadFilter();
+  tone.type = 'lowpass';
+  tone.frequency.value = 3200;
+  tone.Q.value = 0.5;
+  tone.connect(out);
   const bus = ctx.createGain();
-  const hall = ctx.createConvolver();
-  hall.normalize = false;
-  hall.buffer = roomImpulse(ctx, 2.6, 3.2);
   const hallSend = ctx.createGain();
-  hallSend.gain.value = 0.55;
-  bus.connect(out);
-  bus.connect(hallSend).connect(hall).connect(out);
+  hallSend.gain.value = 0.5;
+  bus.connect(tone);
+  bus.connect(hallSend).connect(wet);
+  // distant things: mostly hall
+  const far = ctx.createGain();
+  far.gain.value = 0.35;
+  far.connect(tone);
+  const farSend = ctx.createGain();
+  farSend.gain.value = 1.1;
+  far.connect(farSend).connect(wet);
 
   const sources = new Set<AudioScheduledSourceNode>();
   const track = (s: AudioScheduledSourceNode) => {
@@ -53,35 +299,43 @@ export function startMusic(ctx: BaseAudioContext, dest: AudioNode, at: number, o
     s.onended = () => sources.delete(s);
     return s;
   };
+  const hasPan = typeof ctx.createStereoPanner === 'function';
+  const panned = (node: AudioNode, pan: number, to: AudioNode) => {
+    if (hasPan) {
+      const p = ctx.createStereoPanner();
+      p.pan.value = pan;
+      node.connect(p).connect(to);
+    } else node.connect(to);
+  };
 
-  // --- drone: D2 + A2, breathing slowly -----------------------------------
+  // --- drone: a bowed D, breathing on two slow, unrelated cycles ----------------
   const droneLp = ctx.createBiquadFilter();
   droneLp.type = 'lowpass';
-  droneLp.frequency.value = 380;
-  droneLp.Q.value = 0.7;
+  droneLp.frequency.value = 340;
+  droneLp.Q.value = 0.6;
   const droneGain = ctx.createGain();
-  droneGain.gain.value = 0.025;
+  droneGain.gain.value = 0.032;
   droneLp.connect(droneGain).connect(bus);
-  const cutLfo = track(ctx.createOscillator());
-  (cutLfo as OscillatorNode).frequency.value = 0.031;
-  const cutDepth = ctx.createGain();
-  cutDepth.gain.value = 140;
-  (cutLfo as OscillatorNode).connect(cutDepth).connect(droneLp.frequency);
-  const ampLfo = track(ctx.createOscillator());
-  (ampLfo as OscillatorNode).frequency.value = 0.07;
-  const ampDepth = ctx.createGain();
-  ampDepth.gain.value = 0.008;
-  (ampLfo as OscillatorNode).connect(ampDepth).connect(droneGain.gain);
-  for (const [m, type, g] of [
-    [38, 'triangle', 1],
-    [45, 'triangle', 0.7],
-    [38, 'sawtooth', 0.18],
-    [50, 'sine', 0.25],
-  ] as [number, OscillatorType, number][]) {
+  const lfoA = track(ctx.createOscillator()) as OscillatorNode;
+  lfoA.frequency.value = 0.043;
+  const lfoAd = ctx.createGain();
+  lfoAd.gain.value = 110;
+  lfoA.connect(lfoAd).connect(droneLp.frequency);
+  const lfoB = track(ctx.createOscillator()) as OscillatorNode;
+  lfoB.frequency.value = 0.0171;
+  const lfoBd = ctx.createGain();
+  lfoBd.gain.value = 0.011;
+  lfoB.connect(lfoBd).connect(droneGain.gain);
+  for (const [m, type, g, dc] of [
+    [38, 'sawtooth', 0.55, -4],
+    [38, 'sawtooth', 0.55, 5],
+    [45, 'triangle', 0.6, 0],
+    [50, 'triangle', 0.35, 2],
+  ] as [number, OscillatorType, number, number][]) {
     const osc = ctx.createOscillator();
     osc.type = type;
     osc.frequency.value = midiHz(m);
-    osc.detune.value = type === 'sawtooth' ? 5 : 0;
+    osc.detune.value = dc;
     const og = ctx.createGain();
     og.gain.value = g;
     osc.connect(og).connect(droneLp);
@@ -89,119 +343,140 @@ export function startMusic(ctx: BaseAudioContext, dest: AudioNode, at: number, o
   }
   for (const s of sources) s.start(at);
 
-  // --- segments ----------------------------------------------------------
-  let next = 0;
-  const scheduleSegment = (k: number) => {
-    const r = mulberry32((o.seed ^ (k * 2654435761)) >>> 0);
-    const s = at + k * SEG;
-    const chord = PROGRESSION[k % PROGRESSION.length];
-    pad(s, chord, r);
-    // occasional low drum, far away
-    if (k > 0 && r() < 0.6) {
-      const dt = s + SEG * between(r, 0.25, 0.7);
-      drum(dt, 0.9, r);
-      if (r() < 0.5) drum(dt + 0.62, 0.55, r);
-    }
-    if (r() < 0.35) glint(s + SEG * between(r, 0.2, 0.6), GLINTS[Math.floor(r() * GLINTS.length)], r);
-  };
-
-  const pad = (s: number, chord: number[], r: Rand) => {
-    const attack = 5,
-      hold = SEG - attack,
-      release = 6;
+  // --- items -------------------------------------------------------------------
+  const pad = (s: number, p: PadItem, r: Rand) => {
     const lp = ctx.createBiquadFilter();
     lp.type = 'lowpass';
-    lp.Q.value = 0.6;
-    const cut = 720 + r() * 300;
-    lp.frequency.setValueAtTime(cut * 0.7, s);
-    lp.frequency.linearRampToValueAtTime(cut, s + attack + 2);
-    lp.frequency.linearRampToValueAtTime(cut * 0.8, s + SEG + release);
+    lp.Q.value = 0.5;
+    const total = p.dur + p.release;
+    lp.frequency.setValueAtTime(p.cutoff * 0.6, s);
+    lp.frequency.linearRampToValueAtTime(p.cutoff, s + p.attack + 2);
+    lp.frequency.linearRampToValueAtTime(p.cutoff * 0.75, s + total);
     lp.connect(bus);
-    chord.forEach((m, i) => {
+    const pans = [-0.3, 0.25, -0.05];
+    p.midis.forEach((m, i) => {
+      // bows enter one after another
+      const T = s + i * between(r, 0.6, 1.8);
       const g = ctx.createGain();
-      const total = envelope(g.gain, s + i * 0.35, { peak: 0.034, attack, hold, release });
-      let head: AudioNode = g;
-      if (typeof ctx.createStereoPanner === 'function') {
-        const p = ctx.createStereoPanner();
-        p.pan.value = [-0.35, 0.25, -0.15, 0.35][i % 4];
-        g.connect(p);
-        head = p;
-      }
-      head.connect(lp);
+      const peak = 0.03 * (i === 0 ? 1.1 : 0.85);
+      g.gain.value = 0;
+      g.gain.setValueAtTime(0, T);
+      // raised-cosine-ish swell: linear to a third, then a slow exponential approach
+      g.gain.linearRampToValueAtTime(peak * 0.35, T + p.attack * 0.35);
+      g.gain.setTargetAtTime(peak, T + p.attack * 0.35, p.attack * 0.3);
+      g.gain.setTargetAtTime(0, T + p.dur, p.release / 5);
+      panned(g, pans[i % 3], lp);
       const f = midiHz(m);
-      for (const [type, dc, lvl] of [
-        ['sawtooth', -9, 0.5],
-        ['sawtooth', 8, 0.5],
-        ['triangle', 0, 0.9],
-      ] as [OscillatorType, number, number][]) {
+      for (const dc of [-6, 5]) {
         const osc = ctx.createOscillator();
-        osc.type = type;
+        osc.type = 'sawtooth';
         osc.frequency.value = f * cents(between(r, -2, 2));
         osc.detune.value = dc;
-        const og = ctx.createGain();
-        og.gain.value = lvl;
-        osc.connect(og).connect(g);
+        osc.connect(g);
         track(osc);
-        osc.start(s + i * 0.35);
-        osc.stop(s + i * 0.35 + total + 0.05);
+        osc.start(T);
+        osc.stop(T + p.dur + p.release + 0.1);
       }
     });
   };
 
-  const drum = (t: number, vel: number, r: Rand) => {
-    const tape = frameDrumTape(ctx.sampleRate, vel, r, true);
-    const src = ctx.createBufferSource();
-    src.buffer = tape.toBuffer(ctx);
-    const g = ctx.createGain();
-    g.gain.value = 0.3;
-    src.connect(g).connect(bus);
-    track(src);
-    src.start(t);
+  const piano = (s: number, n: NoteItem, r: Rand) => {
+    n.midis.forEach((m, j) => {
+      const T = s + j * n.spread;
+      const f = midiHz(m);
+      const vel = n.vel * (j ? 0.8 : 1);
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 900 + 900 * vel;
+      lp.Q.value = 0.4;
+      panned(lp, between(r, -0.35, 0.35), bus);
+      const tau1 = 2.4 * Math.pow(220 / f, 0.35);
+      const B = 0.00032;
+      for (let k = 1; k <= 6; k++) {
+        const fk = k * f * Math.sqrt(1 + B * k * k);
+        if (fk > 5000) break;
+        const a = (0.06 * vel) / Math.pow(k, 1.25) * (k >= 4 ? 0.55 : 1);
+        const tau = tau1 / Math.pow(k, 0.75);
+        const osc = ctx.createOscillator();
+        osc.frequency.value = fk * cents(between(r, -1.5, 1.5));
+        const g = ctx.createGain();
+        g.gain.value = 0;
+        g.gain.setValueAtTime(0, T);
+        g.gain.linearRampToValueAtTime(a, T + 0.009);
+        g.gain.setTargetAtTime(a * 0.55, T + 0.009, 0.25);
+        g.gain.setTargetAtTime(0, T + 0.5, tau);
+        osc.connect(g).connect(lp);
+        track(osc);
+        osc.start(T);
+        osc.stop(T + 0.5 + tau * 7);
+      }
+      // the felt hammer: a soft, dark thump
+      const hs = ctx.createBufferSource();
+      hs.buffer = noiseBuffer(ctx, 'pink');
+      const hf = ctx.createBiquadFilter();
+      hf.type = 'lowpass';
+      hf.frequency.value = 700;
+      const hg = ctx.createGain();
+      hg.gain.value = 0;
+      hg.gain.setValueAtTime(0, T);
+      hg.gain.linearRampToValueAtTime(0.02 * vel, T + 0.003);
+      hg.gain.setTargetAtTime(0, T + 0.003, 0.01);
+      hs.connect(hf).connect(hg).connect(lp);
+      track(hs);
+      hs.start(T, r() * 2);
+      hs.stop(T + 0.1);
+    });
   };
 
-  const glint = (t: number, m: number, r: Rand) => {
+  const bowl = (s: number, n: NoteItem, r: Rand) => {
     const g = ctx.createGain();
-    const total = envelope(g.gain, t, { peak: 0.012, attack: 2.5, hold: 1.5, release: 4 });
-    g.connect(bus);
-    const osc = ctx.createOscillator();
-    osc.frequency.value = midiHz(m) * cents(between(r, -3, 3));
-    const trem = ctx.createOscillator();
-    trem.frequency.value = 0.4 + r() * 0.3;
-    const tg = ctx.createGain();
-    tg.gain.value = 0.004;
-    trem.connect(tg).connect(g.gain);
-    osc.connect(g);
-    for (const x of [osc, trem]) {
-      track(x);
-      x.start(t);
-      x.stop(t + total + 0.05);
-    }
+    g.gain.value = 0.045;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 2400;
+    g.connect(lp);
+    panned(lp, between(r, -0.5, 0.5), far);
+    scoreBowl(ctx, g, s, n.midis[0], n.vel, r, track);
   };
 
+  const composer = new Composer(o.seed);
+  const perf = mulberry32((o.seed * 2654435761) >>> 0);
+  let pending: ScoreItem | null = null;
   const scheduleUntil = (tEnd: number) => {
-    while (at + next * SEG < tEnd) {
-      scheduleSegment(next);
-      next++;
+    for (;;) {
+      const it = pending ?? composer.next();
+      pending = null;
+      const s = at + it.t;
+      if (s >= tEnd) {
+        pending = it;
+        return;
+      }
+      if (it.kind === 'pad') pad(s, it, perf);
+      else if (it.kind === 'piano') piano(s, it, perf);
+      else bowl(s, it, perf);
     }
   };
 
   let timer: ReturnType<typeof setInterval> | null = null;
   if (o.live) {
-    scheduleUntil(ctx.currentTime + 4);
-    timer = setInterval(() => scheduleUntil(ctx.currentTime + 4), 500);
+    scheduleUntil(ctx.currentTime + LOOKAHEAD);
+    timer = setInterval(() => scheduleUntil(ctx.currentTime + LOOKAHEAD), 1000);
   } else scheduleUntil(o.renderUntil ?? at + 60);
 
   let stopped = false;
   return {
-    stop(t: number) {
+    seed: o.seed,
+    stop(t: number, fade = 1.5) {
       if (stopped) return;
       stopped = true;
       if (timer) clearInterval(timer);
-      const g = out.gain;
-      g.cancelScheduledValues(t);
-      g.setValueAtTime(g.value, t);
-      g.linearRampToValueAtTime(0, t + 1.5);
-      const end = t + 1.6;
+      for (const f of fades) {
+        const g = f.gain;
+        g.cancelScheduledValues(t);
+        g.setValueAtTime(g.value, t);
+        g.linearRampToValueAtTime(0, t + fade);
+      }
+      const end = t + fade + 0.1;
       for (const s of sources) {
         try {
           s.stop(end);
@@ -209,7 +484,12 @@ export function startMusic(ctx: BaseAudioContext, dest: AudioNode, at: number, o
           /* not started yet or already stopped */
         }
       }
-      if (o.live) setTimeout(() => out.disconnect(), (end - ctx.currentTime) * 1000 + 3500);
+      if (o.live) {
+        setTimeout(() => {
+          out.disconnect();
+          wet.disconnect();
+        }, (end - ctx.currentTime) * 1000 + 4500);
+      }
     },
   };
 }

@@ -1,7 +1,6 @@
-// createBoardView: the Three.js war table. Implements the BoardView contract (./BoardView.ts).
+// createBoardView: the painted war table (docs/INK.md). Implements the BoardView contract (./BoardView.ts).
 import * as THREE from 'three';
-import '@fontsource/cinzel/600.css';
-import '@fontsource-variable/inter/wght.css';
+import '@fontsource-variable/cormorant-garamond/wght.css';
 import '@fontsource-variable/cormorant-garamond/wght-italic.css';
 import type {
   BoardHighlights,
@@ -15,22 +14,23 @@ import type {
 } from './BoardView';
 import type { GameEvent, GameState, PlayerId, TerritoryId } from '../engine/types';
 import { ADJACENCY, TERRITORIES, TERRITORY_IDS } from '../engine/mapData';
-import type { AudioEngine, PlayOptions, SfxName } from '../audio/types';
+import type { AudioEngine, PlayOptions, SfxName, StrokeHandle } from '../audio/types';
 import { PLAYER_COLORS, type PlayerPalette } from '../shared/palette';
 import { Animator, ease, clamp, type Run } from './anim';
 import { buildScene } from './scene';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { TileSet, type Tile, type RimMode } from './tiles';
+import { TileSet, deepOf, type Tile, type RimMode } from './tiles';
 import { TokenSystem } from './tokens';
 import { Overlay } from './overlay';
 import { Continents } from './continents';
-import { AttackArrow, FortifyRoute, Particles, Ripples, SeaLanes } from './fx';
+import { AttackArrow, FortifyRoute, LiveStroke } from './fx';
+import { buildInk } from './ink';
+import { makeSharedUniforms } from './inkGlsl';
 import { DiceTray, boardTrayGeometry } from './dice';
 import { CameraRig, HOME_CLEAR_PX, HOME_PITCH } from './camera';
-import { paintGrainTexture } from './textures';
 import {
   IVORY,
-  TILE_DEPTH,
+  LIFT_UNIT,
   TILE_TOP,
   convexHull,
   distToRing,
@@ -41,10 +41,16 @@ import {
   tileRgb,
   toBoard,
   toWorld,
+  mixRgb,
   type RGB,
 } from './util';
 
-const BLITZ_CAP = 3000;
+// 3.0 s budget (INK A6), less the measured overhead: the ends' own frames, and per middle roll the
+// dispatch plus a frame or two (MID_OVERHEAD_MS), so a 20-roll blitz holds the cap as well as a 5-roll one.
+const BLITZ_CAP = 2800;
+const MID_OVERHEAD_MS = 15;
+/** The live clamp's target for a whole blitz (the metric's budget is 3.0 s; 150 ms of room for the tail). */
+const BLITZ_BUDGET_MS = 2850;
 /** Battle tray: fade length, and how long a decided fight's result stays up (docs/ROUND2.md §E). */
 const TRAY_FADE_MS = 300;
 const TRAY_DECIDED_MS = 1000;
@@ -53,27 +59,34 @@ const IVORY_RGB = hexToRgb(IVORY);
 async function loadFonts(): Promise<void> {
   if (!('fonts' in document)) return;
   const want = [
-    "600 64px 'Cinzel'",
-    "500 64px 'Inter Variable'",
-    "700 64px 'Inter Variable'",
+    "600 64px 'Cormorant Garamond Variable'",
     "italic 500 64px 'Cormorant Garamond Variable'",
   ];
   const t = new Promise<void>((r) => setTimeout(r, 1500));
   await Promise.race([Promise.all(want.map((f) => document.fonts.load(f, 'AB·+7'))).then(() => undefined), t]).catch(() => undefined);
 }
 
-/** Middle-roll duration for blitz roll `index` of `count` (UX.md §8.2), capped to ≤ 3.0 s total. */
+/**
+ * Blitz roll durations (UX.md §8.2, docs/INK.md B §4 "Blitz"): the first roll full (660 ms, no held
+ * silence), the last full with the 250 ms silence (850 ms), the middle ones snapping, compressed so the
+ * whole blitz stays ≤ 3.0 s.
+ */
+const BLITZ_FIRST_MS = 660;
+const BLITZ_FINAL_MS = 850;
 export function blitzRollMs(index: number, count: number): number {
-  if (count <= 1) return 1200;
-  if (index === 0 || index === count - 1) return 700;
-  let total = 1400;
+  if (count <= 1) return 1110;
+  if (index === 0) return BLITZ_FIRST_MS;
+  if (index === count - 1) return BLITZ_FINAL_MS;
+  const ends = BLITZ_FIRST_MS + BLITZ_FINAL_MS;
+  let total = ends;
   for (let k = 1; k < count - 1; k++) total += Math.max(180, 600 * Math.pow(0.75, k - 1));
   const mid = Math.max(180, 600 * Math.pow(0.75, index - 1));
-  if (total <= BLITZ_CAP) return mid;
   const midCount = count - 2;
-  const scale = (BLITZ_CAP - 1400) / (total - 1400);
+  const room = Math.max(0, BLITZ_CAP - ends - midCount * MID_OVERHEAD_MS);
+  if (total - ends <= room) return mid;
+  const scale = room / (total - ends);
   // floor 120 ms unless the cap can't hold it (very long blitzes): the cap wins.
-  const floor = Math.min(120, (BLITZ_CAP - 1400) / midCount);
+  const floor = Math.min(120, room / midCount);
   return Math.max(floor, mid * scale);
 }
 
@@ -115,8 +128,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       transition: 'opacity 400ms ease-out',
       touchAction: 'none',
       outline: 'none',
-      // A lost context (or the first frames) shows the far ocean, never a white page.
-      background: '#0a1a1d',
+      // A lost context (or the first frames) shows the indigo paper, never a white page.
+      background: '#0b1224',
       webkitUserSelect: 'none',
       userSelect: 'none',
       webkitTouchCallout: 'none',
@@ -130,28 +143,32 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   container.appendChild(canvas);
 
   const anim = new Animator();
-  const parts = buildScene(renderer, G);
+  // The ink layer: built once, before the first frame (the canvas stays hidden until it has drawn).
+  const ink = await buildInk(G, { small: phoneGpu, maxTextureSize: renderer.capabilities.maxTextureSize });
+  const shared = makeSharedUniforms(ink, G.width, G.height);
+  const terrData = shared.uTerr.value.image.data as Uint8Array;
+  const parts = buildScene(renderer, G, ink, shared);
   const scene = parts.scene;
-  // Cheaper lamp shadows on touch GPUs (the board's shadows only re-render when something moves).
-  if (coarse) parts.key.shadow.mapSize.set(phoneGpu ? 1024 : 2048, phoneGpu ? 1024 : 2048);
-  const grain = paintGrainTexture();
-  const tiles = new TileSet(G, grain);
+  const tiles = new TileSet(G, ink, shared);
   scene.add(tiles.group);
-  const tokens = new TokenSystem(anim, tiles);
+  const tokens = new TokenSystem(anim, tiles, ink.noise);
   scene.add(tokens.group);
+  // The figures' sprite atlas (~40 KB): the canvas stays hidden until it has drawn with them.
+  await tokens.ready;
   tokens.reduced = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)').matches : false;
-  const continents = new Continents(G, anim);
+  const continents = new Continents(G, anim, shared, ink);
   scene.add(continents.group);
-  const lanes = new SeaLanes(G);
-  scene.add(lanes.group);
-  const arrow = new AttackArrow(tiles, anim);
+  const arrow = new AttackArrow(tiles, anim, ink.noise);
   scene.add(arrow.group);
-  const route = new FortifyRoute(tiles);
+  const route = new FortifyRoute(tiles, anim, ink.noise);
   scene.add(route.group);
-  const particles = new Particles();
-  scene.add(particles.points);
-  const ripples = new Ripples(anim);
-  scene.add(ripples.group);
+  const live = new LiveStroke(anim, ink.noise);
+  scene.add(live.group);
+  // The gold stroke and the fortify route run figure to figure (the figures stand beside their rings).
+  const feetOf = (id: TerritoryId) => tokens.feet(id);
+  arrow.anchorOf = feetOf;
+  route.anchorOf = feetOf;
+  arrow.reduced = route.reduced = tokens.reduced;
   const overlay = new Overlay(container, G, tiles, tokens, anim);
   const tray = new DiceTray(anim, parts.envTexture, parts.walnut);
   const rig = new CameraRig(G.width, G.height);
@@ -160,7 +177,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   // Piece extents (figure tops, base sides, plaque depth): the home view keeps every piece inside the free
   // region and clear of the dice tray's footprint.
   const setPieceExtents = () => {
-    // The plaque hangs ~0.55 of its height below the base front; ~0.8 board units at the home scale.
+    // The blot and the ring's foot reach ~0.8 board units below the feet at the home scale.
     rig.pieceExtents = tokens.extentPoints(HOME_PITCH, 0.8 * (1 + (uiScale - 1) * 0.8));
   };
   const camera = rig.camera;
@@ -192,6 +209,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   /** playEvent promises still running: their handlers may change the board between tweens. */
   let inflight = 0;
   let lastConquered: TerritoryId | null = null;
+  let lastConquestFrom: TerritoryId | null = null;
   let lastConquestAt = -1e9;
   let lastPairKey = '';
   let lastRollEnd = -1e9;
@@ -227,36 +245,20 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     tray.hide(ms);
     emitTray(false);
   };
-  // Title / attract view: the wooden frame on its table; play: open ocean past every edge.
-  let tableV = 0;
-  let tableVer = 0;
-  const tableView = (on: boolean) => {
-    const to = on ? 1 : 0;
-    if (Math.abs(tableV - to) < 1e-3) return;
-    const ver = ++tableVer;
-    const from = tableV;
-    if (reduced) {
-      tableV = to;
-      parts.setTableView(to);
-      needShadow = true;
-      return;
-    }
-    void anim.tween({
-      ms: 560,
-      unscaled: true,
-      ease: ease.inOutCubic,
-      update: (v) => {
-        if (ver !== tableVer) return;
-        tableV = from + (to - from) * v;
-        parts.setTableView(tableV);
-        needShadow = true;
-      },
-    });
-  };
-
   const pal = (p: PlayerId): PlayerPalette | null => paletteOf(lastState, p);
   const isHuman = (p: PlayerId) => !!lastState?.players[p] && lastState.players[p].kind === 'human';
   const isAi = (p: PlayerId) => !!lastState?.players[p] && lastState.players[p].kind === 'ai';
+
+  // A blitz's middle rolls share what's left of the 3.0 s budget against the real clock (frames and
+  // dispatch cost more on a busy machine), never more than their planned length (blitzRollMs).
+  let blitzT0 = 0;
+  const blitzMidMs = (idx: number, count: number): number => {
+    const planned = blitzRollMs(idx, count);
+    if (anim.speed !== 1) return planned;
+    const midsLeft = Math.max(1, count - 1 - idx);
+    const left = BLITZ_BUDGET_MS - (performance.now() - blitzT0) - BLITZ_FINAL_MS;
+    return Math.max(0, Math.min(planned, left / midsLeft - MID_OVERHEAD_MS));
+  };
 
   // --- sound helpers ------------------------------------------------------------
   const sfx = (name: SfxName, o: PlayOptions = {}) => {
@@ -354,7 +356,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         if (wasNone && mode !== 'none') tw(t, 'rimAlpha', 0, 1, mode === 'selected' ? 120 : 100, ease.outQuad);
         else t.rimAlpha = 1;
       }
-      const lift = t.id === sel ? 0.35 * TILE_DEPTH : 0;
+      const lift = t.id === sel ? 0.35 * LIFT_UNIT : 0;
       if (Math.abs(lift - t.selectLift) > 1e-4) {
         const up = lift > t.selectLift;
         tw(t, 'selectLift', t.selectLift, lift, up ? 160 : 120, up ? (reduced ? ease.outCubic : ease.outBack(1.4)) : ease.inQuad);
@@ -383,10 +385,19 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       arrowSource = 'hl';
       const sameArrow = prev.arrow?.kind === 'attack' && prev.arrow.from === a.from && prev.arrow.to === a.to;
       const off = !sameArrow && rig.autoProgress >= 1 && isAi(owners[a.from]) ? needsFraming(a.from, a.to) : false;
+      // An attack armed by a drawn stroke: the arrow picks up where the stroke left off (it settles).
+      const settle = strokeSettle && strokeSettle.key === `${a.from}|${a.to}` && performance.now() - strokeSettle.at < 600;
+      if (settle) strokeSettle = null;
+      // At rest the armed arrow is ivory (the moodboard's): Blitz holds the one gold. A drawn stroke's
+      // gold settles into it and dries to ivory as the commit button takes the gold.
+      if (!sameArrow && rolling === 0) arrow.ink(!!settle, 0);
       if (off) {
         void frameEngagement(a.from, a.to, null).then(() => {
           if (lastHl.arrow?.from === a.from && lastHl.arrow?.to === a.to) void arrow.show(a.from, a.to, color);
         });
+      } else if (settle) {
+        void arrow.show(a.from, a.to, color, null, 150, 0.55);
+        arrow.ink(false, 140);
       } else void arrow.show(a.from, a.to, color);
     } else if (a && a.kind === 'fortify') {
       if (arrowSource === 'hl') arrow.hide();
@@ -415,14 +426,14 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     phaseDimmed.clear();
     for (const t of tiles.list) {
       if (t.phaseLift > 1e-4) tw(t, 'phaseLift', t.phaseLift, 0, 160, ease.inQuad);
-      if (t.glow > 1e-4) tw(t, 'glow', t.glow, 0, 160, ease.outQuad);
+      if (t.glow > 1e-4) tw(t, 'glow', t.glow, 0, 240, ease.outQuad);
     }
     if (had) applyHighlights(lastHl, lastHl);
   };
   /**
-   * The board answers a phase change (docs/ROUND2.md §A): → attack, the tiles that can attack lift and their
-   * rims sweep west → east; → fortify, other players' tiles dim (until the turn ends); → end, it all clears.
-   * Any change also ends the battle tray.
+   * The board answers a phase change (docs/ROUND2.md §A, in the ink language — docs/INK.md B §4): → attack,
+   * the coastlines of the territories that can attack brighten, west → east, and settle; → fortify, other
+   * players' washes recede (until the turn ends); → end, it all clears. Any change also ends the battle tray.
    */
   const pulsePhase = (phase: 'attack' | 'fortify' | 'end', o?: { player?: PlayerId; territories?: TerritoryId[] }) => {
     if (disposed) return;
@@ -446,28 +457,49 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       const t = tiles.get(id);
       const go = () => {
         if (ver !== phaseVer) return;
-        // rim: 0 → 0.85 → 0 (the tile's own highlight rim, if any, carries on underneath)
-        void tw(t, 'glow', 0, 1, 150, ease.outQuad).then(() => {
-          if (ver === phaseVer) void tw(t, 'glow', t.glow, 0, 620, ease.inOutQuad);
-        });
-        if (reduced) return;
-        void tw(t, 'phaseLift', t.phaseLift, 0.15, 170, ease.outBack(1.5)).then(() => {
-          if (ver !== phaseVer) return;
-          void anim.wait(260, null, true).then(() => {
-            if (ver === phaseVer) void tw(t, 'phaseLift', t.phaseLift, 0, 380, ease.inOutQuad);
-          });
+        // the ink brightens (quick, sure) and dries back slowly
+        void tw(t, 'glow', t.glow, 1, reduced ? 120 : 160, ease.outQuad).then(() => {
+          if (ver === phaseVer) void tw(t, 'glow', t.glow, 0, reduced ? 300 : 700, ease.inOutSine);
         });
       };
-      const delay = reduced ? 0 : (260 * (xs[i] - x0)) / span;
+      const delay = reduced ? 0 : (300 * (xs[i] - x0)) / span;
       if (delay <= 1) go();
       else void anim.wait(delay, null, true).then(go);
     });
   };
 
+  /** Turn start: the washes dim 8 % and come back (a breath; never waited on). */
+  let breathVer = 0;
+  const turnBreath = () => {
+    if (anim.instant || reduced) return;
+    const ver = ++breathVer;
+    const from = shared.uBreath.value;
+    void anim
+      .tween({
+        ms: 300,
+        unscaled: true,
+        ease: ease.outCubic,
+        update: (v) => {
+          if (ver === breathVer) shared.uBreath.value = from + (1 - from) * v;
+        },
+      })
+      .then(() => {
+        if (ver !== breathVer) return;
+        void anim.tween({
+          ms: 520,
+          unscaled: true,
+          ease: ease.inOutSine,
+          update: (v) => {
+            if (ver === breathVer) shared.uBreath.value = 1 - v;
+          },
+        });
+      });
+  };
+
   // --- hover / picking -----------------------------------------------------------------
   const setHoverLook = (id: TerritoryId, on: boolean) => {
     const t = tiles.get(id);
-    const lift = on ? 0.15 * TILE_DEPTH : 0;
+    const lift = on ? 0.15 * LIFT_UNIT : 0;
     if (Math.abs(t.hoverLift - lift) > 1e-4) tw(t, 'hoverLift', t.hoverLift, lift, on ? 90 : 140);
     const light = on ? 1 : 0;
     if (Math.abs(t.light - light) > 1e-4) tw(t, 'light', t.light, light, on ? 90 : 140);
@@ -512,7 +544,10 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     if (!b) return false;
     const hw = (b[2] - b[0]) * 0.5 * 0.8 + pad;
     const mx = (b[0] + b[2]) / 2;
-    return x >= mx - hw && x <= mx + hw && y >= b[1] + 2 - pad && y <= b[3] + pad;
+    // The top third of a brush figure's box is mostly spear, pennant and air: it never takes a tap
+    // from the tile or figure behind it (at phone scale Afghanistan's spear stands over Ural's anchor).
+    const top = b[1] + (b[3] - b[1]) * 0.3;
+    return x >= mx - hw && x <= mx + hw && y >= top - pad && y <= b[3] + pad;
   };
   const pieceAt = (x: number, y: number): TerritoryId | null => {
     let best: TerritoryId | null = null;
@@ -578,20 +613,142 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     if (!e) for (const cb of hoverCbs) cb(null);
   };
 
+  // --- draw-to-attack (docs/INK.md A2) ---------------------------------------------------------------
+  // A drag that starts on an eligible source (setStrokeSources) draws a live gold stroke that follows the
+  // pointer, instead of panning. Releasing over one of that source's targets reports it (onStroke done, `to`
+  // set: the controller arms it like a target-first tap, and the stroke settles into the arrow); anywhere
+  // else cancels and the stroke dries out. Taps are unaffected; a stroke never commits anything.
+  let strokeSources = new Set<TerritoryId>();
+  let strokeTargetsOf: ((s: TerritoryId) => TerritoryId[]) | null = null;
+  const strokeCbs: ((s: { from: TerritoryId; to: TerritoryId | null; done: boolean }) => void)[] = [];
+  let stroke: { from: TerritoryId; to: TerritoryId | null; targets: Set<TerritoryId>; live: boolean } | null = null;
+  /** The last stroke that armed an attack: its arrow grows from where the stroke left off. */
+  let strokeSettle: { key: string; at: number } | null = null;
+  const emitStroke = (from: TerritoryId, to: TerritoryId | null, done: boolean) => {
+    for (const cb of strokeCbs) {
+      try {
+        cb({ from, to, done });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+  const strokeCandidate = (id: TerritoryId | null) => {
+    if (!id || !strokeSources.has(id) || !strokeTargetsOf) return null;
+    const targets = new Set(strokeTargetsOf(id));
+    return targets.size ? { from: id, to: null, targets, live: false } : null;
+  };
+  /**
+   * The stroke source a pointer-down means: the number plaque under it (the most natural thing to grab), else
+   * the tile or piece under it; on touch, else the nearest eligible source within 12 px (a fingertip is wide
+   * and figures overlap their neighbours at phone scale). Null = this drag pans.
+   */
+  const strokeSourceAt = (cx: number, cy: number, touch: boolean): TerritoryId | null => {
+    if (!strokeSources.size) return null;
+    const r = rectOf();
+    const x = cx - r.left;
+    const y = cy - r.top;
+    const onPlaque = overlay.plaqueAt(x, y);
+    if (onPlaque) return strokeSources.has(onPlaque) ? onPlaque : null;
+    const exact = pick(cx, cy, false);
+    if (exact && strokeSources.has(exact)) return exact;
+    if (!touch) return null;
+    const bp = boardPoint(cx, cy);
+    const upp = bp ? unitsPerPx(bp[0], bp[1]) : 0;
+    let best: TerritoryId | null = null;
+    let bd = 12;
+    for (const id of strokeSources) {
+      const d = pxDistTo(id, x, y, bp, upp, bd);
+      if (d <= bd) {
+        bd = d;
+        best = id;
+      }
+    }
+    return best;
+  };
+  const strokeWorld = (cx: number, cy: number): THREE.Vector3 | null => {
+    const bp = boardPoint(cx, cy);
+    return bp ? toWorld(bp[0], bp[1], 0) : null;
+  };
+  // The live brush sound follows the stroke (INK B6 "brush"): speed 1 ≈ one board width per second.
+  let strokeSnd: StrokeHandle | null = null;
+  let strokeLast: { x: number; y: number; t: number } | null = null;
+  const panAt = (cx: number) => clamp(((cx / Math.max(1, window.innerWidth)) * 2 - 1) * 0.6, -1, 1);
+  const strokeStart = (cx: number, cy: number) => {
+    if (!stroke) return;
+    stroke.live = true;
+    try {
+      strokeSnd?.end(false);
+      strokeSnd = audio?.stroke?.({ pan: panAt(cx) }) ?? null;
+    } catch {
+      strokeSnd = null;
+    }
+    strokeLast = { x: cx, y: cy, t: performance.now() };
+    live.begin(tokens.feet(stroke.from));
+    const w = strokeWorld(cx, cy);
+    if (w) live.move(w);
+    emitStroke(stroke.from, null, false);
+  };
+  const strokeMove = (cx: number, cy: number, touch: boolean) => {
+    if (!stroke || !stroke.live) return;
+    const w = strokeWorld(cx, cy);
+    if (w) live.move(w);
+    const r = rectOf();
+    const now = performance.now();
+    if (strokeSnd && strokeLast && now > strokeLast.t) {
+      const px = Math.hypot(cx - strokeLast.x, cy - strokeLast.y);
+      const speed = px / Math.max(1, r.width) / ((now - strokeLast.t) / 1000);
+      try {
+        strokeSnd.move(Math.min(4, speed), panAt(cx));
+      } catch {
+        /* sound never breaks the gesture */
+      }
+    }
+    strokeLast = { x: cx, y: cy, t: now };
+    const under = touch ? touchPick(cx, cy, stroke.targets) : (overlay.plaqueAt(cx - r.left, cy - r.top) ?? pick(cx, cy, false));
+    const to = under && stroke.targets.has(under) ? under : null;
+    if (to !== stroke.to) {
+      if (stroke.to && stroke.to !== hovered) setHoverLook(stroke.to, false);
+      stroke.to = to;
+      if (to) setHoverLook(to, true);
+      emitStroke(stroke.from, to, false);
+    }
+  };
+  const strokeEnd = (cancelled: boolean) => {
+    if (!stroke) return;
+    const s0 = stroke;
+    stroke = null;
+    if (!s0.live) return;
+    const to = cancelled ? null : s0.to;
+    try {
+      strokeSnd?.end(!!to);
+    } catch {
+      /* ignore */
+    }
+    strokeSnd = null;
+    strokeLast = null;
+    if (s0.to && s0.to !== hovered) setHoverLook(s0.to, false);
+    if (to) strokeSettle = { key: `${s0.from}|${to}`, at: performance.now() };
+    live.end(!!to);
+    emitStroke(s0.from, to, true);
+  };
+
   const onPointerDown = (e: PointerEvent) => {
     if (disposed) return;
     audio?.unlock?.();
     invalidate();
+    noteInput();
     if (isTouch(e)) return onTouchDown(e);
     canvas.setPointerCapture?.(e.pointerId);
     const id = pick(e.clientX, e.clientY, true);
     down = { x: e.clientX, y: e.clientY, t: e.timeStamp, button: e.button, tile: id, id: e.pointerId };
     lastMove = { x: e.clientX, y: e.clientY };
     dragging = false;
+    stroke = e.button === 0 ? strokeCandidate(strokeSourceAt(e.clientX, e.clientY, false)) : null;
     if (id && clickable.has(id) && (e.button === 0 || e.button === 2)) {
       pressed = id;
       const t = tiles.get(id);
-      tw(t, 'press', t.press, -0.05 * TILE_DEPTH, 60, ease.outQuad);
+      tw(t, 'press', t.press, -0.05 * LIFT_UNIT, 60, ease.outQuad);
     }
   };
   const releasePress = () => {
@@ -611,14 +768,19 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         dragging = true;
         releasePress();
         if (hovered) setHovered(null, null);
+        if (stroke) strokeStart(e.clientX, e.clientY);
         updateCursor();
       }
       if (dragging) {
+        if (stroke) {
+          strokeMove(e.clientX, e.clientY, false);
+          return;
+        }
         const dx = e.clientX - lastMove.x;
         const dy = e.clientY - lastMove.y;
-        if (down.button === 0) rig.orbit(dx, dy);
-        else if (down.button === 2 || down.button === 1)
-          rig.pan([lastMove.x - r.left, lastMove.y - r.top], [e.clientX - r.left, e.clientY - r.top]);
+        // Left / middle drag pans the flat board; right drag tilts and turns it a little (70–85°, ±10°).
+        if (down.button === 2) rig.orbit(dx, dy);
+        else rig.pan([lastMove.x - r.left, lastMove.y - r.top], [e.clientX - r.left, e.clientY - r.top]);
         lastMove = { x: e.clientX, y: e.clientY };
         return;
       }
@@ -641,6 +803,11 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     dragging = false;
     releasePress();
     updateCursor();
+    if (stroke) {
+      const live0 = stroke.live;
+      strokeEnd(false);
+      if (live0) return;
+    }
     if (wasDrag) {
       const id = pick(e.clientX, e.clientY, false);
       setHovered(id, e);
@@ -663,6 +830,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   const onPointerCancel = (e: PointerEvent) => {
     invalidate();
     if (isTouch(e)) return onTouchUp(e, true);
+    strokeEnd(true);
     down = null;
     dragging = false;
     releasePress();
@@ -675,6 +843,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
     invalidate();
+    noteInput();
     const r = rectOf();
     const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
     rig.zoomAt(e.clientX - r.left, e.clientY - r.top, clamp(dy, -240, 240));
@@ -691,7 +860,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   const LONG_PRESS_MS = 400;
   const isTouch = (e: PointerEvent) => e.pointerType === 'touch' || e.pointerType === 'pen';
   const touches = new Map<number, { x: number; y: number; x0: number; y0: number; t0: number }>();
-  let tMode: 'none' | 'maybe' | 'pan' | 'pinch' | 'long' | 'done' = 'none';
+  let tMode: 'none' | 'maybe' | 'pan' | 'pinch' | 'long' | 'stroke' | 'done' = 'none';
   let tPressed: TerritoryId | null = null;
   let tNamed: TerritoryId | null = null;
   let tLong: TerritoryId | null = null;
@@ -777,7 +946,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     if (id) {
       const t = tiles.get(id);
       // Same-frame feedback: the tile dips and brightens under the finger.
-      tw(t, 'press', t.press, -0.05 * TILE_DEPTH, 60, ease.outQuad);
+      tw(t, 'press', t.press, -0.05 * LIFT_UNIT, 60, ease.outQuad);
       const light = 1;
       if (Math.abs(t.light - light) > 1e-4) tw(t, 'light', t.light, light, 70);
     }
@@ -823,6 +992,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       const id = touchPick(e.clientX, e.clientY, clickable);
       touchPress(id && clickable.has(id) ? id : null);
       touchName(id);
+      // A drag that starts on an eligible source draws (not pans); only a tile exactly under the finger.
+      stroke = strokeCandidate(strokeSourceAt(e.clientX, e.clientY, true));
       clearTimer();
       tTimer = setTimeout(() => {
         tTimer = null;
@@ -831,13 +1002,15 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         const lid = touchPick(p.x, p.y, TERRITORY_IDS);
         if (!lid) return;
         tMode = 'long';
+        stroke = null;
         touchPress(null);
         showLong(lid, p.x, p.y);
         invalidate();
       }, LONG_PRESS_MS);
       return;
     }
-    // A second finger: pinch (never a tap, never a long-press).
+    // A second finger: pinch (never a tap, never a long-press, never a stroke).
+    strokeEnd(true);
     clearTimer();
     touchPress(null);
     touchName(null);
@@ -861,6 +1034,11 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       clearTimer();
       touchPress(null);
       touchName(null);
+      if (stroke) {
+        tMode = 'stroke';
+        strokeStart(p.x, p.y);
+        return;
+      }
       tMode = 'pan';
       rig.touchBegin();
       rig.touchPan([p.x0 - r.left, p.y0 - r.top], [p.x - r.left, p.y - r.top]);
@@ -868,6 +1046,10 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     }
     if (tMode === 'pan') {
       rig.touchPan([px - r.left, py - r.top], [p.x - r.left, p.y - r.top]);
+      return;
+    }
+    if (tMode === 'stroke') {
+      strokeMove(p.x, p.y, true);
       return;
     }
     if (tMode === 'long') {
@@ -911,6 +1093,11 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     clearTimer();
     touchPress(null);
     touchName(null);
+    if (mode === 'stroke') {
+      strokeEnd(cancelled);
+      return;
+    }
+    stroke = null;
     if (mode === 'long') endLong();
     if (mode === 'pan' || mode === 'pinch') {
       if (cancelled) rig.touchCancel();
@@ -1035,155 +1222,190 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   };
   tokens.onContact = (id) => {
     tokens.pop(id, 0.1);
-    const pv = new THREE.Vector3();
-    tokens.dustPoint(id, pv);
-    if (!reduced && !anim.instant) particles.burst(pv, 5);
-    playPlace(id, (isHuman(owners[id]) ? 1 : 0.6) * (anim.instant ? 0.8 : 1));
+    playPlace(id, (isHuman(owners[id]) ? 1 : 0.5) * (anim.instant ? 0.8 : 1));
   };
 
-  // --- flips (deal / claim) -------------------------------------------------------------
-  const flip = (id: TerritoryId, owner: PlayerId, delay: number, run: Run | null, vol: number): Promise<void> => {
-    const t = tiles.get(id);
-    const to = tileRgb(lastState, owner);
-    const swap = () => {
-      owners[id] = owner;
-      setOwnerLook(id, owner);
-      if (armies[id] < 1) armies[id] = 1;
-      tokens.setArmies(id, armies[id], 'snap');
-      refreshBadge(id, true);
-      if (vol > 0) sfx('place', { volume: 0.35 * vol, pan: panOf(id) });
-    };
-    if (anim.instant || (run && run.skipped)) {
-      swap();
-      return Promise.resolve();
-    }
-    if (reduced) {
-      const from = t.rgb;
-      return anim.wait(delay, run).then(() =>
-        anim
-          .tween({
-            ms: 250,
-            ease: ease.inOutQuad,
-            run,
-            update: (v) => {
-              t.rgb = [from[0] + (to[0] - from[0]) * v, from[1] + (to[1] - from[1]) * v, from[2] + (to[2] - from[2]) * v];
-              t.dirty = true;
-            },
-          })
-          .then(swap),
-      );
-    }
-    return anim.wait(delay, run).then(async () => {
-      await anim.tween({
-        ms: 200,
-        ease: ease.inQuad,
-        run,
-        update: (v) => {
-          t.flipX = 1 - v;
-          t.fxLift = Math.sin(v * Math.PI * 0.5) * 0.7;
-          t.dirty = true;
-        },
-      });
-      swap();
-      await anim.tween({
-        ms: 220,
-        ease: ease.outCubic,
-        run,
-        update: (v) => {
-          t.flipX = v;
-          t.fxLift = Math.cos(v * Math.PI * 0.5) * 0.7;
-          t.dirty = true;
-        },
-      });
-      t.flipX = 1;
-      t.fxLift = 0;
-    });
-  };
-
-  // --- conquest flood ------------------------------------------------------------------
-  const flood = (from: TerritoryId, to: TerritoryId, owner: PlayerId, ms: number, run: Run | null): Promise<void> => {
+  // --- ink floods (conquest, the deal, elimination) ---------------------------------------------------
+  /**
+   * A new wash soaks into `to` from `origin` (board coords) behind an fbm-perturbed front with a dark, wet
+   * leading rim; no ghost of the old wash is left (docs/INK.md A3). `torn`: a human's territory falling —
+   * the rim is rough and darker, like torn paper (A5). `dir`: a straight front travelling along `dir`
+   * (the elimination sweep) instead of a radial one. Resolves when the tile shows the new owner.
+   */
+  const floodInk = (
+    to: TerritoryId,
+    origin: [number, number],
+    owner: PlayerId,
+    ms: number,
+    run: Run | null,
+    o: { torn?: boolean; dir?: [number, number]; color?: RGB; ease?: (t: number) => number } = {},
+  ): Promise<void> => {
     const t = tiles.get(to);
     const toRgb = tileRgb(lastState, owner);
+    const u = t.uniforms;
+    // A flood still soaking (the conquest's, when the elimination sweep follows it): land it first, so the
+    // new one runs over the colour that was arriving, never back over the old owner's.
+    if (u.uFloodOn.value > 0.5) {
+      const c = u.uFloodColor.value;
+      t.rgb = [c.x, c.y, c.z];
+      u.uFloodOn.value = 0;
+      t.dirty = true;
+    }
+    const ver = (t.ver.flood = (t.ver.flood ?? 0) + 1);
     const done = () => {
-      t.uniforms.uFloodOn.value = 0;
+      if (t.ver.flood !== ver) return;
+      u.uFloodOn.value = 0;
       // A drift-correcting syncState may have moved on; always land on the displayed owner.
-      t.rgb = owners[to] === owner ? toRgb : tileRgb(lastState, owners[to]);
+      t.rgb = owners[to] === owner ? (o.color ?? toRgb) : tileRgb(lastState, owners[to]);
       t.dirty = true;
     };
     if (anim.instant || (run && run.skipped)) {
       done();
       return Promise.resolve();
     }
+    const fc = o.color ?? toRgb;
     if (reduced) {
+      // Reduced motion: a 250 ms crossfade.
+      u.uFloodOn.value = 0;
       const fromRgb = t.rgb;
       return anim.tween({
         ms: 250,
         ease: ease.inOutQuad,
         run,
         update: (v) => {
-          t.rgb = [fromRgb[0] + (toRgb[0] - fromRgb[0]) * v, fromRgb[1] + (toRgb[1] - fromRgb[1]) * v, fromRgb[2] + (toRgb[2] - fromRgb[2]) * v];
+          if (t.ver.flood !== ver) return;
+          t.rgb = [fromRgb[0] + (fc[0] - fromRgb[0]) * v, fromRgb[1] + (fc[1] - fromRgb[1]) * v, fromRgb[2] + (fc[2] - fromRgb[2]) * v];
           t.dirty = true;
         },
         done,
       });
     }
-    const ep = tiles.entryPoint(from, to);
-    const w = toWorld(ep[0], ep[1], 0);
-    t.uniforms.uFloodOrigin.value.set(w.x, w.z);
-    t.uniforms.uFloodColor.value.setRGB(toRgb[0], toRgb[1], toRgb[2], THREE.SRGBColorSpace);
+    u.uFloodOrigin.value.set(origin[0], origin[1]);
+    u.uFloodColor.value.set(fc[0], fc[1], fc[2]);
+    const dp = deepOf(fc);
+    const torn = !!o.torn;
+    u.uFloodDeep.value.set(dp[0] * (torn ? 0.8 : 1), dp[1] * (torn ? 0.8 : 1), dp[2] * (torn ? 0.8 : 1));
+    u.uFloodTorn.value = torn ? 1 : 0;
+    u.uFloodMode.value = o.dir ? 1 : 0;
+    if (o.dir) u.uFloodDir.value.set(o.dir[0], o.dir[1]).normalize();
+    u.uFloodSeed.value = Math.random() * 10;
     let maxD = 0;
-    for (const ring of t.rings) for (const [x, y] of ring) maxD = Math.max(maxD, Math.hypot(x - ep[0], y - ep[1]));
-    t.uniforms.uFloodR.value = 0;
-    t.uniforms.uFloodOn.value = 1;
+    const dx = o.dir ? u.uFloodDir.value.x : 0;
+    const dy = o.dir ? u.uFloodDir.value.y : 0;
+    for (const ring of t.rings)
+      for (const [x, y] of ring) maxD = Math.max(maxD, o.dir ? (x - origin[0]) * dx + (y - origin[1]) * dy : Math.hypot(x - origin[0], y - origin[1]));
+    // the perturbed front runs ±15 % and ragged: overshoot so the last corner soaks too
+    const reach = maxD * 1.22 + 1.1;
+    u.uFloodR.value = 0;
+    u.uFloodOn.value = 1;
     return anim.tween({
       ms,
-      ease: ease.inOutCubic,
+      ease: o.ease ?? ease.inOutCubic,
       run,
       update: (v) => {
-        t.uniforms.uFloodR.value = v * (maxD + 1.2);
+        if (t.ver.flood !== ver) return;
+        u.uFloodR.value = v * reach;
       },
       done,
     });
   };
+  const flood = (from: TerritoryId, to: TerritoryId, owner: PlayerId, ms: number, run: Run | null, torn = false): Promise<void> => {
+    const ep = tiles.entryPoint(from, to);
+    return floodInk(to, [ep[0], ep[1]], owner, ms, run, { torn });
+  };
 
-  // --- waves (elimination / victory) --------------------------------------------------------
-  const wave = (originId: TerritoryId | null, color: RGB, ms: number, lift: number, run: Run | null): Promise<void> => {
-    const o = originId ? tiles.get(originId).anchor : ([G.width / 2, G.height / 2] as [number, number]);
-    let maxD = 0;
-    const dist = tiles.list.map((t) => {
-      const d = Math.hypot(t.anchor[0] - o[0], t.anchor[1] - o[1]);
+  /**
+   * The deal and the draft's claims: the owner's wash blooms out from the territory's centre (≈ 320 ms),
+   * the number arriving as it starts.
+   */
+  const bloom = (id: TerritoryId, owner: PlayerId, delay: number, run: Run | null, vol: number): Promise<void> => {
+    const t = tiles.get(id);
+    const start = () => {
+      owners[id] = owner;
+      tokens.setColor(id, tileRgb(lastState, owner));
+      if (armies[id] < 1) armies[id] = 1;
+      tokens.setArmies(id, armies[id], 'snap');
+      refreshBadge(id, true);
+      if (vol > 0) sfx('place', { volume: 0.35 * vol, pan: panOf(id) });
+    };
+    if (anim.instant || (run && run.skipped)) {
+      start();
+      setOwnerLook(id, owner);
+      return Promise.resolve();
+    }
+    return anim.wait(delay, run).then(() => {
+      start();
+      return floodInk(id, [t.anchor[0], t.anchor[1]], owner, 320, run, { ease: ease.outCubic });
+    });
+  };
+
+  /**
+   * Elimination (docs/INK.md A5): the eliminator's ink sweeps over the victim's last territory — a straight,
+   * torn front from the attacker's side, deeper than the wash, that then settles to the wash. ≈ 1.3 s.
+   */
+  const elimSweep = async (id: TerritoryId | null, from: TerritoryId | null, by: PlayerId, run: Run | null, torn = true): Promise<void> => {
+    if (!id || by < 0 || !lastState?.players[by]) {
+      await anim.wait(700, run);
+      return;
+    }
+    const t = tiles.get(id);
+    const a = from ? tiles.get(from).anchor : ([t.anchor[0] - 1, t.anchor[1]] as [number, number]);
+    let dx = t.anchor[0] - a[0];
+    let dy = t.anchor[1] - a[1];
+    const dl = Math.hypot(dx, dy) || 1;
+    dx /= dl;
+    dy /= dl;
+    // start behind the tile's back edge (as seen along the sweep)
+    let back = Infinity;
+    for (const ring of t.rings) for (const [x, y] of ring) back = Math.min(back, (x - t.anchor[0]) * dx + (y - t.anchor[1]) * dy);
+    const origin: [number, number] = [t.anchor[0] + dx * (back - 0.3), t.anchor[1] + dy * (back - 0.3)];
+    const wash = tileRgb(lastState, by);
+    const deep = mixRgb(wash, deepOf(wash), 0.7);
+    await floodInk(id, origin, by, 900, run, { torn, dir: [dx, dy], color: deep, ease: ease.inOutSine });
+    if (anim.instant || (run && run.skipped)) {
+      t.rgb = owners[id] === by ? wash : tileRgb(lastState, owners[id]);
+      t.dirty = true;
+      return;
+    }
+    // the deep ink settles into the ordinary wash (not blocking the queue past the beat)
+    void tw(t, 'settle', 0, 1, 520, ease.inOutSine, (v) => {
+      t.rgb = owners[id] === by ? mixRgb(deep, wash, v) : tileRgb(lastState, owners[id]);
+    });
+    await anim.wait(380, run);
+  };
+
+  /**
+   * Victory: every other wash dries back to paper, staggered by distance from the winner's heart (their
+   * territories' centre); the winner's ink stays. ≈ 1.2 s.
+   */
+  const victoryDry = (winner: PlayerId, run: Run | null): Promise<void> => {
+    const mine = TERRITORY_IDS.filter((id) => owners[id] === winner);
+    let cx = G.width / 2;
+    let cy = G.height / 2;
+    if (mine.length) {
+      cx = mine.reduce((acc, id) => acc + tiles.get(id).anchor[0], 0) / mine.length;
+      cy = mine.reduce((acc, id) => acc + tiles.get(id).anchor[1], 0) / mine.length;
+    }
+    const others = tiles.list.filter((t) => owners[t.id] !== winner);
+    if (anim.instant || (run && run.skipped)) {
+      for (const t of others) {
+        t.dry = 1;
+        t.dirty = true;
+      }
+      return Promise.resolve();
+    }
+    let maxD = 1;
+    const dist = others.map((t) => {
+      const d = Math.hypot(t.anchor[0] - cx, t.anchor[1] - cy);
       maxD = Math.max(maxD, d);
       return d;
     });
-    const width = maxD * 0.22;
-    for (const t of tiles.list) t.tintColor = color;
-    const reset = () => {
-      for (const t of tiles.list) {
-        t.tint = 0;
-        t.fxLift = 0;
-        t.dirty = true;
-      }
-    };
-    if (anim.instant || (run && run.skipped)) {
-      reset();
-      return Promise.resolve();
-    }
-    return anim.tween({
-      ms,
-      ease: ease.linear,
-      run,
-      update: (v) => {
-        const front = ease.outQuad(v) * (maxD + width * 2) - width;
-        tiles.list.forEach((t, i) => {
-          const k = Math.max(0, 1 - Math.abs(dist[i] - front) / width);
-          const s = k * k * (3 - 2 * k);
-          t.tint = s * 0.9;
-          t.fxLift = reduced ? 0 : s * lift;
-          t.dirty = true;
-        });
-      },
-      done: reset,
-    });
+    return Promise.all(
+      others.map((t, i) => {
+        const delay = reduced ? 0 : 600 * (dist[i] / maxD);
+        return anim.wait(delay, run).then(() => tw(t, 'dry', t.dry, 0.85, reduced ? 250 : 600, ease.inOutSine, undefined, run));
+      }),
+    ).then(() => undefined);
   };
 
   // --- losses at a verdict ---------------------------------------------------------------------
@@ -1258,13 +1480,13 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         const ids = TERRITORY_IDS.filter((t) => e.owners[t] !== undefined);
         ids.sort((a, b) => tiles.get(a).anchor[0] - tiles.get(b).anchor[0]);
         const stagger = ids.length > 1 ? Math.min(35, 1200 / (ids.length - 1)) : 0;
-        await Promise.all(ids.map((id, i) => flip(id, e.owners[id], i * stagger, run, i % 3 === 0 ? 1 : 0)));
+        await Promise.all(ids.map((id, i) => bloom(id, e.owners[id], i * stagger, run, i % 3 === 0 ? 1 : 0)));
         continents.refresh(owners, lastState, false);
         return;
       }
 
       case 'territoryClaimed': {
-        void flip(e.territory, e.player, 0, null, 1).then(() => continents.refresh(owners, lastState, false));
+        void bloom(e.territory, e.player, 0, null, 1).then(() => continents.refresh(owners, lastState, false));
         return;
       }
 
@@ -1276,12 +1498,13 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         }
         armies[id] = Math.max(0, armies[id] + e.count);
         refreshBadge(id, false);
-        placeQueue.push({ id, count: e.count, source: e.source, vol: isHuman(e.player) ? 1 : 0.6, run });
+        placeQueue.push({ id, count: e.count, source: e.source, vol: isHuman(e.player) ? 1 : 0.5, run });
         return;
       }
 
       case 'turnStarted': {
         clearPhase();
+        turnBreath();
         if (arrowSource === 'event') {
           arrow.hide();
           arrowSource = null;
@@ -1314,9 +1537,10 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       case 'diceRolled': {
         const idx = o.seq?.index ?? 0;
         const count = o.seq?.count ?? 1;
+        if (idx === 0) blitzT0 = performance.now();
         const fromN = Math.max(1, armies[e.from] - e.attackerLosses);
         const toN = Math.max(0, armies[e.to] - e.defenderLosses);
-        const vol = isHuman(e.player) || isHuman(e.defender) ? 1 : 0.6;
+        const vol = isHuman(e.player) || isHuman(e.defender) ? 1 : 0.5;
         const aPal = pal(e.player) ?? PLAYER_COLORS.crimson;
         const dPal = pal(e.defender) ?? PLAYER_COLORS.cobalt;
         const key = `${e.from}>${e.to}`;
@@ -1327,24 +1551,31 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         const hlMatches = lastHl.arrow?.kind === 'attack' && lastHl.arrow.from === e.from && lastHl.arrow.to === e.to;
         if (!hlMatches && (arrow.key !== key || !arrow.group.visible)) {
           arrowSource = 'event';
+          arrow.ink(true, 0);
           const p = arrow.show(e.from, e.to, tileRgb(lastState, owners[e.from]), run, style === 'brief' ? 150 : 240);
           if (idx === 0) await p;
-        }
+        } else if (idx === 0) arrow.ink(true, 120); // the dice decide: the arrow inks gold (the HUD steps down)
         const last = idx >= count - 1;
         if (style === 'brief') {
           tray.hide(120);
+          if (idx === 0) {
+            tokens.face(e.from, e.to);
+            tokens.face(e.to, e.from);
+          }
           // arrow 150 + hit ticks ≤ 350 + flip/march 300 ≤ 0.8 s per engagement
           const tick = 350 / Math.max(1, count);
           if (idx === 0 && (e.defenderLosses > 0 || e.attackerLosses > 0)) sfx('hit', { volume: 0.45 * vol, pan: panOf(e.to) });
           applyLosses(e, fromN, toN, gen, false);
           await anim.wait(tick, run);
+          if (last) arrow.ink(false, 200);
           if (last && toN > 0 && arrowSource === 'event') {
             arrow.hide();
             arrowSource = null;
           }
           return;
         }
-        // full: the battle tray
+        // full: the battle tray. The two figures face each other; the attacker leans in while the dice roll.
+        tokens.lean(e.from, e.to, true);
         rolling++;
         try {
           let mode: 'single' | 'repeat' | 'first' | 'middle' | 'final';
@@ -1358,7 +1589,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
             attacker: aPal,
             defender: dPal,
             mode,
-            durMs: mode === 'middle' ? blitzRollMs(idx, count) : undefined,
+            durMs: mode === 'middle' ? blitzMidMs(idx, count) : undefined,
             reduced,
             run,
             onShake: (ms) => sfx('diceShake', { duration: Math.max(0.06, ms / 1000), volume: vol }),
@@ -1367,6 +1598,9 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
                 sfx('diceLand', { volume: vol, rate: Math.min(1.4, 1 + 0.08 * idx) });
               } else sfx('diceLand', { volume: vol, pan: side * 0.3, rate: count > 1 ? Math.min(1.4, 1 + 0.08 * idx) : 1 });
             },
+            // The verdict beat (A6/B4): nothing new sounds while the dice sit still, and the score dips.
+            // A hair shorter than the beat so the verdict's own 'hit' is never the thing it swallows.
+            onSilence: (ms) => audio?.hush?.(Math.max(0, ms - 30)),
             onVerdict: () => {
               if (!hitPlayed) {
                 hitPlayed = true;
@@ -1378,9 +1612,12 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
           });
         } finally {
           rolling--;
+          if (last || count <= 1) tokens.lean(e.from, e.to, false);
         }
         lastPairKey = key;
         lastRollEnd = performance.now();
+        // Decided: the gold leaves the board (Roll / Move / the track takes it back).
+        if (last) arrow.ink(false, 240);
         if (last) {
           // A decided fight (captured, or the attacker can't go on) fades ~1 s after the verdict; an
           // undecided single roll keeps the tray for the next roll.
@@ -1397,6 +1634,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       case 'territoryConquered': {
         const to = e.to;
         lastConquered = to;
+        lastConquestFrom = e.from;
         lastConquestAt = performance.now();
         const prevOwner = e.previousOwner;
         owners[to] = e.player;
@@ -1404,16 +1642,15 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         overlay.hideBadge(to);
         tokens.setArmies(to, 0, 'out', null, e.from);
         tokens.setColor(to, tileRgb(lastState, e.player));
-        const somber = isHuman(prevOwner) && isAi(e.player);
-        sfx('conquer', { volume: isHuman(e.player) || isHuman(prevOwner) ? 1 : 0.6, pan: panOf(to), variant: somber ? 'somber' : undefined });
+        // A5: a human's territory falling is the sting (the dry brush snap), whoever took it.
+        const somber = o.sting ?? isHuman(prevOwner);
+        sfx('conquer', { volume: isHuman(e.player) || isHuman(prevOwner) ? 1 : 0.5, pan: panOf(to), variant: somber ? 'somber' : undefined });
         const ms = style === 'brief' ? 250 : 600;
-        const f = flood(e.from, to, e.player, ms, null).then(() => {
+        // A human's territory falling: the rim tears (docs/INK.md A5).
+        const torn = (o.sting ?? isHuman(prevOwner)) && style !== 'brief';
+        const f = flood(e.from, to, e.player, ms, null, torn).then(() => {
           if (gen === syncGen) continents.refresh(owners, lastState, false);
         });
-        if (!reduced && style !== 'brief') {
-          const t = tiles.get(to);
-          ripples.ring(new THREE.Vector3(t.anchorW.x, TILE_TOP + 0.03, t.anchorW.z), Math.min(3.2, t.clearance * 1.6 + 0.8), IVORY_RGB, 500);
-        }
         // The march starts +150 ms into the flood (full) / +100 ms into the flip (brief); the rest of
         // the color change keeps running while the token moves.
         void f;
@@ -1424,7 +1661,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       case 'armiesMoved': {
         const { from, to, count } = e;
         const color = tileRgb(lastState, e.player);
-        const vol = isHuman(e.player) ? 1 : 0.6;
+        const vol = isHuman(e.player) ? 1 : 0.5;
         const fromN = Math.max(0, armies[from] - count);
         const toN = armies[to] + count;
         let ms: number;
@@ -1450,16 +1687,21 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
           owners[to] = e.player;
           setOwnerLook(to, e.player);
         }
-        // A token carrying the count glides along the arc; the destination's number updates on landing.
+        // A figure carrying the count walks there — the conquest walks the arrow (whose tail dries behind it),
+        // a fortify its dotted route (drawn just ahead, drying behind); the number updates on arrival.
         const ink = pal(e.player)?.ink ?? IVORY;
+        const walkEase = via.length ? ease.inOutSine : ease.inOutQuad;
+        if (e.reason === 'fortify') {
+          const path = e.path && e.path.length >= 2 ? e.path : [from, to];
+          void route.walk(path, ms, run, walkEase);
+        } else if (arrow.key === `${from}|${to}` && arrow.group.visible) {
+          void anim.tween({ ms, ease: walkEase, run, update: (v) => arrow.trail(Math.max(0, v * 1.05 - 0.12)) });
+        }
         await tokens.march(from, to, count, color, ink, ms, run, via, e.reason === 'fortify' ? 0.7 : 1.3, pal(e.player)?.id ?? '');
         if (gen === syncGen) {
           armies[to] = toN;
           tokens.setArmies(to, toN, 'land', run);
           refreshBadge(to, false);
-          const pv = new THREE.Vector3();
-          tokens.dustPoint(to, pv);
-          if (!reduced && !anim.instant) particles.burst(pv, 6);
         }
         if (e.reason === 'occupy' && arrowSource === 'event') {
           arrow.hide();
@@ -1470,8 +1712,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
 
       case 'continentGained': {
         continents.refresh(owners, lastState, false);
-        const p = pal(e.player);
-        if (p) await continents.flare(e.continent, p.base, run);
+        await continents.sweep(e.continent, lastState, e.player, run);
         return;
       }
 
@@ -1482,25 +1723,19 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       }
 
       case 'playerEliminated': {
-        const p = pal(e.by);
-        await wave(lastConquered, p ? hexToRgb(p.base) : IVORY_RGB, 1600, 0.22, run);
+        // The sweep is the knockout's sting: torn and dark for a human seat, a plain deep sweep for an AI.
+        await elimSweep(lastConquered, lastConquestFrom, e.by, run, o.sting ?? isHuman(e.player));
         return;
       }
 
       case 'gameOver': {
-        const p = pal(e.winner);
         if (arrowSource) {
           arrow.hide();
           arrowSource = null;
         }
         hideTray(200);
-        await wave(null, p ? hexToRgb(p.light) : IVORY_RGB, 2400, 0.45, run);
-        // Only if the finale played out: a skipped run means the table has moved on (a Rematch or a new
-        // game pressed during the wave), and an orbit switched on now would sway the next game's board.
-        if (!reduced && !run.skipped) {
-          rig.setAttract(true);
-          tableView(true);
-        }
+        // The winner's ink stays; every other wash dries back to paper. No wave, no orbit, no table.
+        await victoryDry(e.winner, run);
         return;
       }
     }
@@ -1579,6 +1814,22 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     lastState = s;
     ensureColors(s);
     let changed = false;
+    // A snap (load, resume, after a skip) leaves no fight on the board: an event-drawn arrow with nothing
+    // playing is stale.
+    if (arrowSource === 'event' && inflight === 0) {
+      arrow.hide(true);
+      arrowSource = null;
+    }
+    if (s.id !== focusGame) {
+      // A new game (or a load): the paper is fresh — no dried washes — and its wave strokes are its own.
+      parts.waves.place(s.config?.seed ?? 7);
+      for (const t of tiles.list)
+        if (t.dry > 0) {
+          t.ver.dry = (t.ver.dry ?? 0) + 1;
+          t.dry = 0;
+          t.dirty = true;
+        }
+    }
     for (const id of TERRITORY_IDS) {
       const ts = s.territories[id];
       if (owners[id] !== ts.owner) {
@@ -1614,6 +1865,58 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         }
       }
     }
+  };
+
+  // --- the living calm (docs/INK.md A1) -------------------------------------------------------------
+  // Mist over the sea, the coastlines' wet-ink breath, each wash's slow lightness breath and the wave
+  // strokes' sway all run off one ambient clock in the shaders (no tweens). It is always the slowest thing
+  // on screen and yields — dims to half — while anything gameplay-related moves; it draws at ≤ 30 fps
+  // (≤ 24 on phones) when it is the only thing moving, runs at half speed after 3 minutes without input,
+  // stops while the tab is hidden, and is off under reduced motion (the board is still).
+  let ambientWanted = true;
+  let ambT = 0;
+  let ambAmp = 0;
+  let mistAmp = 1;
+  let lastInputAt = performance.now();
+  let lastAmbientDraw = 0;
+  const IDLE_SLOW_MS = 180000;
+  const ambientOn = () => ambientWanted && !reduced;
+  const noteInput = () => {
+    lastInputAt = performance.now();
+  };
+  const onWindowInput = () => noteInput();
+  window.addEventListener('keydown', onWindowInput, { passive: true });
+  window.addEventListener('pointerdown', onWindowInput, { passive: true });
+  const setRes = () => shared.uRes.value.set(W * renderer.getPixelRatio(), H * renderer.getPixelRatio());
+  /** Per-territory data (the ground's half of each coast): the glow of the phase response. */
+  const syncTerr = () => {
+    let changed = false;
+    for (const t of tiles.list) {
+      const v = Math.round(Math.min(1, Math.max(0, t.glow)) * 255);
+      const o = t.index * 4;
+      if (terrData[o] !== v) {
+        terrData[o] = v;
+        changed = true;
+      }
+    }
+    if (changed) shared.uTerr.value.needsUpdate = true;
+    return changed;
+  };
+  /** Contact shadows: the two most lifted tiles cast theirs. */
+  const syncLifts = () => {
+    let a: Tile | null = null;
+    let b: Tile | null = null;
+    const lift = (t: Tile) => Math.max(0, t.hoverLift + t.selectLift + t.fxLift);
+    for (const t of tiles.list) {
+      const l = lift(t);
+      if (l <= 1e-3) continue;
+      if (!a || l > lift(a)) {
+        b = a;
+        a = t;
+      } else if (!b || l > lift(b)) b = t;
+    }
+    shared.uLiftA.value.set(a ? a.index : 0, a ? lift(a) : 0);
+    shared.uLiftB.value.set(b ? b.index : 0, b ? lift(b) : 0);
   };
 
   // --- frame loop ------------------------------------------------------------------------------
@@ -1678,14 +1981,15 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     readSafeArea();
     overlay.minPlaque = compact ? 20 : 22;
     overlay.relax = compact;
+    // Phones: figures a touch larger than their share of the map so they read at arm's length.
+    tokens.figBoost = phoneLand ? 1.25 : compact ? 1.1 : 1;
+    tokens.markDirty();
     renderer.setSize(W, H, false);
     rig.setSize(W, H);
     overlay.width = W;
     overlay.height = H;
     tiles.setResolution(W, H);
-    for (const m of lanes.mats) m.resolution.set(W, H);
-    for (const m of route.mats) m.resolution.set(W, H);
-    particles.setViewportHeight(H * renderer.getPixelRatio(), camera.fov);
+    setRes();
     keepBand = insets.trayBand;
     layoutTray();
   };
@@ -1714,14 +2018,18 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       // reach below the base (in board units at this scale), and let the player zoom in further.
       for (let it = 0; it < 2; it++) {
         const ppu = homePxPerUnit();
-        const ph = overlay.plaqueH(2 * tokens.radius * ppu);
-        const reach = (0.7 * ph) / Math.max(0.5, ppu * Math.sin((HOME_PITCH * Math.PI) / 180));
-        rig.pieceExtents = tokens.extentPoints(HOME_PITCH, Math.max(0.8 * (1 + (uiScale - 1) * 0.8), reach));
+        const ph = overlay.plaqueH(tokens.figH[0] * tokens.sizeScale * tokens.figBoost * ppu);
+        // the ring (≥ 20 px) is wider than the figure at the home scale: fit its real reach
+        const reach = (0.2 * ph) / Math.max(0.5, ppu * Math.sin((HOME_PITCH * Math.PI) / 180));
+        rig.pieceExtents = tokens.extentPoints(HOME_PITCH, Math.max(0.8 * (1 + (uiScale - 1) * 0.8), reach), null, (1.1 * ph) / Math.max(0.5, ppu));
         rig.recomputeHome();
       }
       rig.zoomInMax = clamp(40 / Math.max(1, homePxPerUnit()), 3.5, 9);
     } else rig.zoomInMax = 3.5;
     continents.fitLabels(rig.homeCamera(), W);
+    // The coastline breath reaches 0.5 CSS px at the home zoom (A1): in ink texels at this scale.
+    const pxPerTexel = (homePxPerUnit() * G.width) / Math.max(1, shared.uInkSize.value.x);
+    shared.uWob.value = clamp(0.5 / Math.max(0.05, pxPerTexel), 0.25, 6);
     invalidate();
   };
   /** CSS px per board unit at the centre of the board, at the home view. */
@@ -1752,7 +2060,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   const applyPixelRatio = () => {
     renderer.setPixelRatio(pixelRatio());
     renderer.setSize(W, H, false);
-    particles.setViewportHeight(H * renderer.getPixelRatio(), camera.fov);
+    setRes();
     needShadow = true;
     invalidate();
   };
@@ -1805,32 +2113,41 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       hideTray(TRAY_FADE_MS);
       invalidate();
     }
-    // Anything to draw? (`pulsing` = an unarmed target outline breathes: ambient, 30 fps on phones.)
+    // Anything to draw? (`pulsing` = an unarmed target outline breathes: it draws at the ambient cadence.)
     let pulsing = false;
     let tileDirty = false;
     for (const t of tiles.list) {
       if (t.rimMode === 'target') pulsing = true;
       if (t.dirty) tileDirty = true;
     }
-    const busy =
-      hot > 0 ||
-      inflight > 0 ||
-      tweening ||
-      anim.active > 0 ||
-      camMoving ||
-      rig.moving ||
-      tokens.animating ||
-      tokens.needsUpdate ||
-      particles.alive > 0 ||
-      needShadow ||
-      tileDirty ||
-      overlay.dirty ||
-      overlay.chipCount > 0;
-    if (!busy && !pulsing) {
-      drewLast = false;
-      return;
+    // Gameplay motion: the ambient layer yields to it (and it draws at the full rate).
+    const gameplay = inflight > 0 || tweening || anim.active > 0 || camMoving || rig.moving || tokens.animating || tray.visible || !!stroke?.live;
+    const busy = hot > 0 || gameplay || tokens.needsUpdate || needShadow || tileDirty || overlay.dirty || overlay.chipCount > 0;
+    // The ambient clock and amplitude: yield quickly (~250 ms), come back slowly (~1.5 s).
+    const amb = ambientOn();
+    const dtS = Math.min(Math.max(rawDt, 0), 100) / 1000;
+    const idleSlow = now - lastInputAt > IDLE_SLOW_MS;
+    if (amb) ambT += dtS * (idleSlow ? 0.5 : 1);
+    const ampTo = amb ? (gameplay ? 0.5 : 1) : 0;
+    ambAmp += (ampTo - ambAmp) * (1 - Math.exp(-dtS / (ampTo < ambAmp ? 0.25 : 1.5)));
+    if (Math.abs(ampTo - ambAmp) < 0.003) ambAmp = ampTo;
+    const mistTo = gameplay ? 0.5 : 1;
+    mistAmp += (mistTo - mistAmp) * (1 - Math.exp(-dtS / (mistTo < mistAmp ? 0.25 : 1.5)));
+    if (Math.abs(mistTo - mistAmp) < 0.003) mistAmp = mistTo;
+    const calm = amb || ambAmp > 0 || mistAmp !== mistTo;
+    if (!busy) {
+      if (!calm && !pulsing) {
+        drewLast = false;
+        return;
+      }
+      // Only the calm is moving: ≤ 30 fps (≤ 24 on phones; two-thirds of that when idle for long).
+      const cap = (phoneGpu ? 24 : 30) * (idleSlow ? 0.67 : 1);
+      if (now - lastAmbientDraw < 1000 / cap - 4) return;
     }
-    if (!busy && pulsing && phoneGpu && frameNo % 2 === 1) return;
+    lastAmbientDraw = now;
+    shared.uTime.value = ambT;
+    shared.uAmb.value = ambAmp;
+    shared.uMist.value = mistAmp;
     if (hot > 0) hot--;
     // Adaptive pixel ratio on touch GPUs: over budget (< ~48 fps smoothed) for 2 s of continuous drawing
     // drops the cap from 2 to 1.5, once.
@@ -1846,7 +2163,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     drewLast = true;
     drawnN++;
     drawnTotal++;
-    const pulse = 0.45 + 0.5 * (0.5 + 0.5 * Math.sin((now / 1200) * Math.PI * 2));
+    // Eligible targets breathe 0.5 ↔ 0.8 on a slow 2.4 s sine: the board's only pulse (B §4 "Select").
+    const pulse = 0.5 + 0.3 * (0.5 + 0.5 * Math.sin((now / 2400) * Math.PI * 2));
     const rimScale = 1;
     let moved = false;
     tiles.list.forEach((t, i) => {
@@ -1857,13 +2175,13 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         moved = true;
       }
     });
+    syncTerr();
+    syncLifts();
     const tokensMoving = tokens.animating;
     tokens.setView(rig.cur.az, rig.cur.pitch);
     tokens.update();
-    particles.update(Math.min(rawDt, 50) / 1000);
     tray.tick(now);
     if (tray.showing !== trayShownEmitted) emitTray(tray.showing);
-    parts.oceanUniforms.uTime.value = now / 1000;
     overlay.zoomScale = clamp(Math.pow(rig.zoom, 0.3), 0.85, 1.3);
     // Numbers and names under the dice tray hide while it shows (the tray is drawn after the board).
     const oc = overlay.occluder;
@@ -1989,7 +2307,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         /* the old context is gone */
       }
       renderer.setSize(W, H, false);
-      particles.setViewportHeight(H * renderer.getPixelRatio(), camera.fov);
+      setRes();
       afterRestore();
     } catch (err) {
       console.error('[render] renderer rebuild', err);
@@ -2008,15 +2326,9 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     arrow.group.visible = true;
     void arrow.show('ural', 'siberia', [1, 0, 0], null, 0);
     route.show(['ural', 'siberia', 'yakutsk']);
-    const tmpR = ripples;
-    void tmpR;
-    particles.burst(new THREE.Vector3(0, 1, 0), 2);
+    live.group.visible = true;
     tokens.setArmies('ural', 1, 'snap');
     tokens.update();
-    // compile() only walks visible objects: expose one rim pair and the ripple rings for it.
-    t0.rimIvory.visible = t0.rimUnder.visible = true;
-    t0.rimIvoryMat.opacity = t0.rimUnderMat.opacity = 0.01;
-    for (const c of ripples.group.children) c.visible = true;
     try {
       renderer.compile(scene, camera);
       renderer.compile(tray.scene, tray.camera);
@@ -2026,9 +2338,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     frame();
     cancelAnimationFrame(raf);
     t0.uniforms.uFloodOn.value = 0;
-    t0.rimIvory.visible = t0.rimUnder.visible = false;
     t0.dirty = true;
-    for (const c of ripples.group.children) c.visible = false;
+    live.group.visible = false;
     tray.resetWarm();
     arrow.hide(true);
     route.hide();
@@ -2090,22 +2401,16 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       else void rig.moveTo(pose, o?.durationMs);
     },
     resetCamera() {
-      if (rig.attract) {
-        rig.setAttract(false, false);
-        tableView(false);
-      }
       rig.userMoved = false;
       if (reduced) cutTo({ ...rig.home });
       else void rig.goHome();
     },
     setAttractMode(on: boolean) {
-      if (on && reduced) {
-        tableView(true);
-        return;
+      // Title / victory: the flat painting, no table, no orbit (docs/INK.md B §7); the calm keeps drifting.
+      if (on && !rig.userMoved) {
+        if (reduced) cutTo({ ...rig.home });
+        else rig.setAttract(true);
       }
-      if (!on && reduced) tableView(false);
-      rig.setAttract(on);
-      if (rig.attract === on) tableView(on);
     },
     isViewDisplaced() {
       return rig.displaced;
@@ -2145,11 +2450,23 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     },
     setReducedMotion(on: boolean) {
       reduced = on;
-      if (on && rig.attract) tableView(true);
       tokens.reduced = on;
+      arrow.reduced = on;
+      route.reduced = on;
       continents.reducedMotion = on;
-      if (on && rig.attract) rig.setAttract(false, false);
       applyHighlights(lastHl, lastHl);
+    },
+    setAmbient(on: boolean) {
+      ambientWanted = on;
+    },
+    setStrokeSources(sources: TerritoryId[], targetsOf: (source: TerritoryId) => TerritoryId[]) {
+      strokeSources = new Set(sources ?? []);
+      strokeTargetsOf = strokeSources.size ? targetsOf : null;
+      // A stroke in flight whose source is no longer eligible is cancelled.
+      if (stroke && !strokeSources.has(stroke.from)) strokeEnd(true);
+    },
+    onStroke(cb: (s: { from: TerritoryId; to: TerritoryId | null; done: boolean }) => void) {
+      strokeCbs.push(cb);
     },
     setAudio(a: AudioEngine | null) {
       audio = a;
@@ -2175,9 +2492,12 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         frameMsP95: Math.round(p95 * 10) / 10,
         drawCalls: renderer.info.render.calls,
         triangles: renderer.info.render.triangles,
+        // Gameplay tweens only: the living calm runs off the ambient clock and reports separately.
         activeTweens: anim.active,
         cameraMoving: rig.moving,
-        particles: particles.alive,
+        particles: 0,
+        ambientOn: ambientOn(),
+        ambientLevel: Math.round(ambAmp * 100) / 100,
         maxCameraDegPerSec: Math.round(rig.maxAutoDegPerSec * 10) / 10,
         drawnFps: Math.round(drawnFps * 10) / 10,
         pixelRatio: renderer.getPixelRatio(),
@@ -2199,14 +2519,15 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       tiles.dispose();
       tokens.dispose();
       continents.dispose();
-      lanes.dispose();
       arrow.dispose();
       route.dispose();
-      particles.dispose();
-      ripples.dispose();
+      live.dispose();
       tray.dispose();
       overlay.dispose();
-      grain.dispose();
+      parts.waves.dispose();
+      for (const t of [ink.ink, ink.field, ink.noise, ink.waves, shared.uTerr.value]) t.dispose();
+      window.removeEventListener('keydown', onWindowInput);
+      window.removeEventListener('pointerdown', onWindowInput);
       scene.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh && m.geometry) m.geometry.dispose();
@@ -2271,7 +2592,6 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       tweens: anim.active,
       cam: rig.moving,
       tokens: tokens.animating || tokens.needsUpdate,
-      particles: particles.alive,
       needShadow,
       tileDirty: tiles.list.filter((t) => t.dirty).map((t) => t.id),
       pulsing: tiles.list.filter((t) => t.rimMode === 'target').length,
@@ -2284,6 +2604,17 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     },
     coarse,
     phoneGpu,
+    ink,
+    shared,
+    arrow,
+    live,
+    get ambient() {
+      return { on: ambientOn(), amp: ambAmp, mist: mistAmp, t: ambT, idleSlow: performance.now() - lastInputAt > IDLE_SLOW_MS };
+    },
+    /** Test hook: pretend the last input was `ms` ago (the 3-minute half-speed rule). */
+    set idleFor(ms: number) {
+      lastInputAt = performance.now() - ms;
+    },
     touchPick: (x: number, y: number) => touchPick(x, y, clickable),
     homePxPerUnit,
     tokens,

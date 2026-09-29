@@ -55,8 +55,10 @@ export interface PlayOptions {
    */
   duration?: number;
   /**
-   * extra: 'bright' = turnStart after one or more AI turns (UX §3.1).
-   * 'somber' = conquer / continent in a minor colour (your territory or continent was taken, "HELD!").
+   * extra: 'bright' = turnStart after one or more AI turns (the sheet lifts higher).
+   * 'somber' = a human lost it. conquer · somber is the A5 sting (a dry brush snap, then a rougher,
+   * darker flood): play it whenever the previous owner is human. continent · somber = the bowl is
+   * hand-damped (your continent was broken).
    */
   variant?: SfxVariant;
 }
@@ -74,6 +76,20 @@ export interface AudioStats {
   music: boolean;
   /** Keys held in the pre-rendered sound bank (warms up in the background after unlock). */
   banked: number;
+  /** extra: the score's seed (per game) and whether the player wants it on (it pauses while muted/hidden). */
+  musicSeed?: number;
+  musicWanted?: boolean;
+}
+
+/** extra: a live brush stroke the pointer drives (INK A2: draw your attack). */
+export interface StrokeHandle {
+  /**
+   * Pointer speed, normalised: 0 = resting on the paper, 1 = a quick sure stroke (about one board
+   * width per second). Call on pointermove; it is smoothed. Optional pan −1..1 follows the tip.
+   */
+  move(speed: number, pan?: number): void;
+  /** commit = the stroke armed an attack (it settles into the arrow); false = it dries out in 200 ms. */
+  end(commit: boolean): void;
 }
 
 export interface AudioEngine {
@@ -83,13 +99,28 @@ export interface AudioEngine {
   play(name: SfxName, opts?: PlayOptions): void;
   /** 0..1 master for SFX (perceptual curve). */
   setVolume(v: number): void;
-  /** Mutes SFX and music. */
+  /** Mutes SFX and music (the score stops scheduling while muted, and resumes on unmute). */
   setMuted(m: boolean): void;
-  /** Ambient bed on/off. Remembered if called before unlock. Default off. */
+  /** Ambient score on/off. Remembered if called before unlock. Default ON (INK A4). */
   setMusic(on: boolean): void;
 
-  /** extra: 0..1 music level (default 0.7). */
+  /** extra: 0..1 music level (default 0.7 ≈ the score sits at ~35% of the effects level). 0 stops it. */
   setMusicVolume(v: number): void;
+  /**
+   * extra (ink): seed the generative score for this game (e.g. from the game seed). A new seed while
+   * the score plays crossfades to the new piece over ~3 s. Same seed = no-op.
+   */
+  setMusicSeed?(seed: number): void;
+  /**
+   * extra (ink): the verdict beat. Nothing new sounds for `ms` (default 250) and the score dips, then
+   * recovers over 2–3 s. Call as the dice settle; the verdict cue ('hit') plays after it ends.
+   */
+  hush?(ms?: number): void;
+  /**
+   * extra (ink): start a live brush stroke that follows the pointer (drag-to-attack). One at a time;
+   * starting a new one dries out the old. Null before unlock. Silent when the stroke isn't moving.
+   */
+  stroke?(o?: { pan?: number }): StrokeHandle | null;
   /** extra: fade out every playing/scheduled SFX voice (use with skipAnimations). Music is untouched. */
   stopAll(): void;
   /** extra: true once the AudioContext exists and has been asked to run. */
@@ -103,8 +134,11 @@ export interface AudioEngine {
 export interface CreateAudioOptions {
   volume?: number;
   muted?: boolean;
+  /** Default true (INK A4: a soft score always underneath). */
   music?: boolean;
   musicVolume?: number;
+  /** Score seed (default random). */
+  musicSeed?: number;
   /** Install one-shot pointer/key listeners that call unlock(). Default true. */
   autoUnlock?: boolean;
 }
@@ -132,16 +166,17 @@ export interface VoiceOpts {
 export type SoundFn = (ctx: BaseAudioContext, dest: AudioNode, t: number, opts: VoiceOpts) => number;
 
 /**
- * Loudness tiers, following the stakes ladder (UX §5.2: routine stays quiet so swings feel big).
+ * Loudness tiers, following the stakes ladder (routine stays quiet so swings feel big).
  * Targets are short-term (200 ms window, K-weighted) peak loudness in LUFS at volume 1.
- *  micro  uiHover (−18 dB under uiClick, UX §5.4)
- *  ui     uiClick, uiError, whoosh
- *  die    one diceLand (a 5-die roll sums to about board level)
- *  board  place, unplace, march, diceShake, cardDraw
- *  cue    routine musical cues and the hit: conquer, turnStart, cardTrade, hit
- *  swing  continent
- *  drama  eliminated
- *  finale victory
+ * Ink bank, five materials (paper · brush · wood · bone · bowl):
+ *  micro  uiHover (silent: no hover sounds)
+ *  ui     uiClick, uiError (paper), whoosh (brush)
+ *  die    one diceLand (bone; a 5-die roll sums to about board level)
+ *  board  place, unplace, march, hit (brush), diceShake (wood), cardDraw, turnStart (paper)
+ *  cue    conquer (brush flood; somber = the snap), cardTrade (paper)
+ *  swing  continent (bowl A4)
+ *  drama  eliminated (bowl D3, hard onset)
+ *  finale victory (bowl D5)
  */
 export type LoudnessTier = 'micro' | 'ui' | 'die' | 'board' | 'cue' | 'swing' | 'drama' | 'finale';
 
@@ -183,4 +218,11 @@ export interface SfxMeta {
   duration?: [number, number, number];
   /** Pitched in D with the music bed: banked playback never adds pitch jitter. */
   musical?: boolean;
+  /** extra (ink): never sounds (uiHover: no hover sounds). play() is a silent no-op. */
+  silent?: boolean;
+  /**
+   * extra (ink): part of one texture (the dice landing), so exempt from the global "≤ 1 cue per 70 ms"
+   * spacing. Its own minGapMs and density still apply.
+   */
+  texture?: boolean;
 }

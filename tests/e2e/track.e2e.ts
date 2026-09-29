@@ -48,7 +48,8 @@ let d = await dom(page);
 check(d.shown && d.labels.join(',') === 'Place,Attack,Fortify,End turn', `the track: ${d.labels.join(' · ')}`, results);
 check(d.states.join(',') === 'current,locked,locked,locked', `Place with armies left: ${d.states.join(' ')}`, results);
 check(d.cursors.every((c) => c !== 'pointer'), `no pointer on locked / current segments (${d.cursors.join(', ')})`, results);
-check(d.brass.length === 0, 'nothing picked: nothing brass', results);
+// One gold (docs/INK.md B2.1): with nothing pending, the gold falls back to the current segment.
+await oneBrass('nothing picked: the current segment', 'Place');
 await seg(page, 'fortify');
 check((await ui(page)).line === 'Place your 9 armies first', `locked Fortify: "${(await ui(page)).line}"`, results);
 await page.waitForTimeout(2200);
@@ -72,12 +73,12 @@ await page.waitForTimeout(40);
 d = await dom(page);
 check(d.fill !== fill0 && d.fillMs.split(',').some((x) => Math.abs(parseFloat(x) - 0.18) < 0.001), `the marker slides to Attack (transition ${d.fillMs})`, results);
 check(d.states.join(',') === 'done,current,eligible,eligible' && d.labels[0] === 'Place', `Attack: ${d.states.join(' ')}`, results);
-check(d.brass.length === 0, 'Attack with targets left and nothing armed: nothing brass', results);
+await oneBrass('Attack with targets left and nothing armed: the current segment', 'Attack');
 await clickT(page, 'siberia');
 d = await dom(page);
 check(d.shown && d.labels.join(',') === 'Place,Attack,Fortify,End turn', 'armed: the track is still there, same words', results);
 await oneBrass('armed', 'Blitz');
-check(/^Ural → Siberia · \d+%$/.test((await ui(page)).line), `armed line: "${(await ui(page)).line}"`, results);
+check(/^Ural → Siberia · \d+%( · .+)?$/.test((await ui(page)).line), `armed line: "${(await ui(page)).line}"`, results);
 
 // The line never shows two sentences at once (sampled every frame while it changes).
 await page.evaluate(() => {
@@ -219,7 +220,7 @@ const ng = await page.evaluate(() => ({
   colors: window.__risk ? [0, 1, 2, 3].map((i) => document.querySelector(`[data-testid="seat-color-${i}"]`)?.getAttribute('aria-label') ?? '') : [],
   visibleSwatches: [...document.querySelectorAll<HTMLElement>('[data-testid^="seat-color-"][data-testid$="-rose"]')].filter((e) => e.offsetParent !== null).length,
 }));
-check(ng.colors.map((x) => x.split(': ')[1]).join(',') === 'Crimson,Cobalt,Amber,Emerald', `default seats: ${ng.colors.map((x) => x.split(': ')[1]).join(', ')}`, results);
+check(ng.colors.map((x) => x.split(': ')[1]).join(',') === 'Vermilion,Slate,Ochre,Sage', `default seats: ${ng.colors.map((x) => x.split(': ')[1]).join(', ')}`, results);
 check(ng.visibleSwatches === 0, 'swatches stay hidden until an emblem is clicked', results);
 await clickBtn(page, 'seat-color-3');
 const open3 = await page.locator('[data-testid^="seat-color-3-"]:visible').count();
@@ -230,7 +231,7 @@ const after = await page.evaluate(() => ({
   label: document.querySelector('[data-testid="seat-color-3"]')?.getAttribute('aria-label'),
   open: [...document.querySelectorAll<HTMLElement>('[data-testid^="seat-color-3-"]')].filter((e) => e.offsetParent !== null).length,
 }));
-check(after.label?.endsWith('Violet') === true && after.open === 0, `picking a swatch sets the colour and closes it (${after.label})`, results);
+check(after.label?.endsWith('Wisteria') === true && after.open === 0, `picking a swatch sets the colour and closes it (${after.label})`, results);
 await clickBtn(page, 'seat-color-1');
 await page.keyboard.press('Escape');
 await page.waitForTimeout(150);

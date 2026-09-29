@@ -199,6 +199,18 @@ export function createStubBoard(opts: StubBoardOptions): BoardView {
       ctx.fillStyle = IVORY;
       ctx.fill();
     }
+    // The live stroke: a gold line from the source to the pointer.
+    if (stroke?.drawing) {
+      const [x0, y0] = toScreen(geometry.territories[stroke.from].anchor);
+      ctx.strokeStyle = '#c9a961';
+      ctx.lineWidth = 4;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(stroke.x, stroke.y);
+      ctx.stroke();
+      ctx.lineCap = 'butt';
+    }
     // Badges
     const fs = Math.round(12 * uiScale);
     ctx.font = `700 ${fs}px Inter, system-ui, sans-serif`;
@@ -270,8 +282,16 @@ export function createStubBoard(opts: StubBoardOptions): BoardView {
     requestAnimationFrame(loop);
   };
 
-  // Pointer → click / hover
+  // Pointer → click / hover, and draw-to-attack (docs/INK.md A2): a drag from a stroke source
   let down: { x: number; y: number; t: number; tile: TerritoryId | null; button: number } | null = null;
+  let strokeSources = new Set<TerritoryId>();
+  let strokeTargets: (t: TerritoryId) => TerritoryId[] = () => [];
+  let strokeCb: ((s: { from: TerritoryId; to: TerritoryId | null; done: boolean }) => void) | null = null;
+  let stroke: { from: TerritoryId; x: number; y: number; to: TerritoryId | null; drawing: boolean } | null = null;
+  const strokeTo = (x: number, y: number, from: TerritoryId): TerritoryId | null => {
+    const t = hit(x, y);
+    return t && strokeTargets(from).includes(t) ? t : null;
+  };
   const info = (e: PointerEvent | MouseEvent, t: TerritoryId, button: number): TerritoryPointerInfo => ({
     territory: t,
     clientX: e.clientX,
@@ -283,10 +303,18 @@ export function createStubBoard(opts: StubBoardOptions): BoardView {
   });
   canvas.addEventListener('pointerdown', (e) => {
     down = { x: e.clientX, y: e.clientY, t: performance.now(), tile: hit(e.clientX, e.clientY), button: e.button };
+    stroke = down.tile && e.button === 0 && strokeSources.has(down.tile) ? { from: down.tile, x: e.clientX, y: e.clientY, to: null, drawing: false } : null;
   });
   canvas.addEventListener('pointerup', (e) => {
     const d = down;
     down = null;
+    const st = stroke;
+    stroke = null;
+    if (st?.drawing) {
+      dirty = true;
+      strokeCb?.({ from: st.from, to: strokeTo(e.clientX, e.clientY, st.from), done: true });
+      return;
+    }
     if (!d || d.button !== e.button) return;
     const moved = Math.hypot(e.clientX - d.x, e.clientY - d.y);
     if (moved > 6 || performance.now() - d.t > 350) return;
@@ -296,6 +324,15 @@ export function createStubBoard(opts: StubBoardOptions): BoardView {
   });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   canvas.addEventListener('pointermove', (e) => {
+    if (stroke && (stroke.drawing || Math.hypot(e.clientX - stroke.x, e.clientY - stroke.y) > 6)) {
+      stroke.drawing = true;
+      const r = canvas.getBoundingClientRect();
+      stroke.x = e.clientX - r.left;
+      stroke.y = e.clientY - r.top;
+      stroke.to = strokeTo(e.clientX, e.clientY, stroke.from);
+      dirty = true;
+      strokeCb?.({ from: stroke.from, to: stroke.to, done: false });
+    }
     const t = hit(e.clientX, e.clientY);
     if (t !== hovered) {
       hovered = t;
@@ -375,6 +412,17 @@ export function createStubBoard(opts: StubBoardOptions): BoardView {
     },
     onTerritoryHover(cb) {
       hoverCb = cb;
+    },
+    setStrokeSources(sources, targetsOf) {
+      strokeSources = new Set(sources);
+      strokeTargets = targetsOf;
+      if (stroke && !strokeSources.has(stroke.from)) {
+        stroke = null;
+        dirty = true;
+      }
+    },
+    onStroke(cb) {
+      strokeCb = cb;
     },
     focusTerritories() {
       /* flat board: nothing to move */

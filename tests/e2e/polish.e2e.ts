@@ -92,7 +92,8 @@ check(after.ural.armies === before.ural.armies, `still nothing placed (Ural ${af
 const audit = async (label: string) => {
   await page.waitForTimeout(80); // the HUD renders on the next animation frame
   const a = await page.evaluate(() => {
-    const vis = (el: Element) => (el as HTMLElement).offsetParent !== null && getComputedStyle(el).visibility !== 'hidden';
+    // (A screen drying out underneath has already stepped its gold down: styles.css `.screen.leaving`.)
+    const vis = (el: Element) => (el as HTMLElement).offsetParent !== null && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.leaving');
     const u = window.__risk.ui();
     const brass = [...document.querySelectorAll('#ui .btn.brass, #ui .tr-seg.is-primary')].filter(vis).length;
     const snapBrass = u.brass.length;

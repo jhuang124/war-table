@@ -4,13 +4,26 @@ import type { BoardGeometry, Vec2 } from '../map/types';
 import { PLAYER_COLORS, UNCLAIMED_COLOR } from '../shared/palette';
 import type { GameState, PlayerId } from '../engine/types';
 
-export const TILE_DEPTH = 0.42;
-export const BEVEL_T = 0.13;
-export const BEVEL_S = 0.16;
+/** Ink overhaul (docs/INK.md B §3): the world is flat — a painted sheet, no bevel. */
+export const TILE_DEPTH = 0.06;
+export const BEVEL_T = 0;
+export const BEVEL_S = 0;
 /** Height of the un-lifted tile top (picking plane). */
 export const TILE_TOP = TILE_DEPTH + BEVEL_T;
-export const IVORY = '#f3ead8';
+/**
+ * Lift unit (board units) for hover / select / press: the old bevelled tile depth. On the flat board a lift
+ * reads through the contact shadow it casts, not through the tile's own side.
+ */
+export const LIFT_UNIT = 0.42;
+export const IVORY = '#f0ebe0';
 export const INK_DARK = '#12151a';
+/** Paper and ink (docs/INK.md B §3 "Palette"): indigo washi, silver-ivory ink, one gold. */
+export const PAPER = '#101a30';
+export const PAPER_DEEP = '#0b1224';
+export const PAPER_FIBRE = '#1b2a48';
+export const INK_COAST = '#e2ddcf';
+export const INK_BORDER = '#c9c3b4';
+export const GOLD = '#c9a961';
 
 let BW = 100;
 let BH = 49.5;
@@ -98,11 +111,19 @@ export function rgbCss(c: RGB, a = 1): string {
   return `rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${a})`;
 }
 
-/** Tile top color for an owner: base, desaturated 14% (matte painted finish). */
+/**
+ * Unclaimed land: raw paper, a shade lighter than the sea and faintly warm (the palette's neutral, thinned
+ * into the indigo), so the linework carries the painting until someone's ink soaks in.
+ */
+export function unclaimedRgb(): RGB {
+  return mixRgb(hexToRgb('#18233c'), hexToRgb(UNCLAIMED_COLOR), 0.3);
+}
+
+/** Wash color for an owner: the seat's base, read from the palette at runtime (the muted ink palette). */
 export function tileRgb(state: GameState | null, owner: PlayerId): RGB {
-  if (owner < 0 || !state || !state.players[owner]) return adjust(hexToRgb(UNCLAIMED_COLOR), 0.9, 0.92);
+  if (owner < 0 || !state || !state.players[owner]) return unclaimedRgb();
   const p = PLAYER_COLORS[state.players[owner].color];
-  return adjust(hexToRgb(p.base), 0.86, 0.97);
+  return hexToRgb(p.base);
 }
 
 export function paletteOf(state: GameState | null, owner: PlayerId) {

@@ -1,11 +1,14 @@
-// Modal-ish layers: the hand-off cover, the confirm dialog, and the menu (≡ / Esc) with the sheets it
-// opens: rules, settings (AI speed and the seat hand-off live here now) and the read-only log.
+// Modal-ish layers: the hand-off cover, the confirm dialog, and the menu (the ensō / Esc) with the sheets
+// it opens: rules, settings (AI speed and the seat hand-off live here) and the read-only log. Every one
+// is a paper sheet (docs/INK.md B5): indigo at 96 %, a hairline ivory border, a serif title, items as
+// words with room between them; focus is a gold hairline underline. Phones: bottom sheets.
 
 import type { GameVM, LogLineVM, SeatRef, Settings, UiIntent, ViewModel } from '../game/viewModel';
 
 import { PLAYER_COLORS } from '../shared/palette';
 import { Segmented, Slider, Switch, uiButton } from './controls';
-import { animateIn, emblem, h, minus, motion, setAttr, setStyle, setText, titleText, toggle } from './dom';
+import { animateIn, drawEnso, drawIn, EASE_IN_QUAD, emblem, ensoEl, h, hashSeed, minus, motion, setAttr, setEnso, setStyle, setText, titleText, toggle } from './dom';
+import { unitSrc } from './hud/pictograms';
 import { isPhone } from './layout';
 import { dragToDismiss, grabHandle, resetSheet, sheetIn, sheetOut } from './sheet';
 
@@ -21,6 +24,7 @@ export class Handoff {
   private sub: HTMLParagraphElement;
   private btnLabel: HTMLSpanElement;
   private emb: HTMLDivElement;
+  private ring: SVGSVGElement;
   private seat: SeatRef | null = null;
   private vmRef: GameVM['handoff'] = null;
   private box: HTMLDivElement;
@@ -29,13 +33,14 @@ export class Handoff {
     this.el = h('div', 'handoff hidden');
     this.el.setAttribute('role', 'dialog');
     this.el.setAttribute('aria-modal', 'true');
-    this.el.append(h('div', 'ho-band'));
     // Phones: the cover's content is a bottom sheet; pulling it down is the same as the button.
     const box = h('div', 'ho-box');
     box.append(grabHandle('handoff-grab'));
     dragToDismiss(box, [box], { onDismiss: () => send({ type: 'handoffAccept' }) });
     this.box = box;
     this.emb = h('div', 'ho-emb');
+    this.ring = ensoEl(1, 'enso', { drawable: true });
+    this.emb.append(this.ring);
     this.title = h('h1', 'ho-title');
     this.sub = h('p', 'ho-sub num');
     const btn = uiButton('', 'brass role-primary big', () => send({ type: 'handoffAccept' }), undefined, 'handoff-accept');
@@ -51,7 +56,7 @@ export class Handoff {
     if (!vm) {
       if (this.seat) {
         this.seat = null;
-        const a = this.el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 240, easing: 'ease-in', fill: 'forwards' });
+        const a = this.el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 240, easing: EASE_IN_QUAD, fill: 'forwards' });
         a.onfinish = () => {
           if (!this.seat) this.el.classList.add('hidden');
           a.cancel();
@@ -60,6 +65,7 @@ export class Handoff {
       return;
     }
     const was = !!this.seat;
+    const prevId = this.seat?.id;
     this.seat = vm.seat;
     this.el.getAnimations().forEach((a) => a.cancel());
     this.el.classList.remove('hidden');
@@ -69,8 +75,8 @@ export class Handoff {
     const pal = PLAYER_COLORS[vm.seat.color];
     setStyle(this.el, '--seat', pal.base);
     setStyle(this.el, '--seat-light', pal.light);
-    this.emb.textContent = '';
-    this.emb.append(emblem(vm.seat.color));
+    setEnso(this.ring, hashSeed(`${vm.seat.id}:${vm.seat.color}`), { drawable: true });
+    if (!was || prevId !== vm.seat.id) drawEnso(this.ring, 700);
     this.title.textContent = '';
     this.title.append(titleText(`Pass to ${vm.seat.name}`));
     setText(this.sub, vm.subline);
@@ -120,7 +126,10 @@ export class Confirm {
     setText(this.yesLabel, vm.kind === 'endGame' ? 'End game' : 'Restart');
     if (!was) {
       if (isPhone()) sheetIn(this.box, this.el);
-      else animateIn(this.box, { dy: 8 });
+      else {
+        if (!motion.reduced) this.el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 240, easing: 'ease-out' });
+        drawIn(this.box.querySelector<HTMLElement>('.confirm-text')!, 240);
+      }
     }
   }
 }
@@ -129,14 +138,111 @@ export class Confirm {
 // The menu and its sheets: one scrim, four sheets.
 // ---------------------------------------------------------------------------
 
-const RULE_BLOCKS: [string, string, string][] = [
-  ['Turn', 'Place your new armies, attack as often as you like, then make one fortify move.', 'Take at least one territory in a turn to earn a card.'],
-  ['Armies', '1 army per 3 territories you hold (at least 3), plus a bonus for each whole continent.', 'Card sets add more on top.'],
-  ['Pieces', 'Pieces show army size: soldier 1–4, horse 5–9, cannon 10+.', 'The number on each piece is the exact count.'],
-  ['Attacking', 'Attack a neighbor from a territory with 2+ armies. You roll up to 3 dice, the defender up to 2.', 'Highest dice pair off. Ties go to the defender.'],
-  ['Cards', 'Three of a kind, one of each, or any two plus a wild trades for armies.', 'Sets grow every time anyone trades. At 5 cards you must trade.'],
-  ['Fortify', 'Move armies once, through your own connected territories. It ends your turn.', 'One army always stays behind to hold a territory.'],
+/** How to play: one scroll, five short blocks, each with a tiny ink picture (INK.md B5). */
+const RULE_BLOCKS: { title: string; text: string[]; art: () => HTMLElement }[] = [
+  {
+    title: 'A turn',
+    text: [
+      'Place your new armies, attack as often as you like, then make one fortify move. The track at the bottom shows where you are; click the next step to move on.',
+      'Take at least one territory in a turn to earn a card.',
+    ],
+    art: () => {
+      const t = h('div', 'ra-track');
+      ['Place', 'Attack', 'Fortify', 'End turn'].forEach((w, i) => {
+        if (i) t.append(h('i'));
+        t.append(h('span', i === 1 ? 'on' : '', w));
+      });
+      return t;
+    },
+  },
+  {
+    title: 'Armies and cards',
+    text: [
+      '1 army per 3 territories you hold (at least 3), plus a bonus for each whole continent.',
+      'Three of a kind, one of each, or any two plus a wild trades for more. Sets grow every time anyone trades. At 5 cards you must trade.',
+    ],
+    art: () => {
+      const r = h('div', 'ra-cards');
+      for (const n of ['soldier', 'rider', 'cannon'] as const) {
+        const c = h('span', 'ra-card');
+        const img = h('img');
+        img.alt = '';
+        img.src = unitSrc(n);
+        c.append(img);
+        r.append(c);
+      }
+      r.append(h('span', 'ra-plus num', '+ armies'));
+      return r;
+    },
+  },
+  {
+    title: 'Pieces',
+    text: ['Pieces show army size: soldier 1–4, horse 5–9, cannon 10+.', 'The number beside each piece is the exact count.'],
+    art: () => {
+      const r = h('div', 'ra-units');
+      for (const [n, label] of [
+        ['soldier', '1–4'],
+        ['rider', '5–9'],
+        ['cannon', '10+'],
+      ] as const) {
+        const u = h('figure', 'ra-unit');
+        const img = h('img');
+        img.alt = '';
+        img.src = unitSrc(n);
+        u.append(img, h('figcaption', 'num', label));
+        r.append(u);
+      }
+      return r;
+    },
+  },
+  {
+    title: 'Attacking',
+    text: [
+      'Attack a neighbor from a territory with 2+ armies: pick the enemy, or draw a stroke from yours to it. You roll up to 3 dice, the defender up to 2.',
+      'Highest dice pair off, one loss per pair. Ties go to the defender.',
+    ],
+    art: () => {
+      const r = h('div', 'ra-dice');
+      const row = (vals: number[], cls: string, lose: boolean[]) => {
+        const d = h('div', `ra-drow ${cls}`);
+        vals.forEach((v, i) => d.append(die(v, lose[i])));
+        return d;
+      };
+      r.append(row([6, 4, 2], 'att', [false, true, false]), row([5, 4], 'def', [true, false]));
+      return r;
+    },
+  },
+  {
+    title: 'Fortify',
+    text: ['Move armies once, through your own connected territories. It ends your turn.', 'One army always stays behind to hold a territory.'],
+    art: () => {
+      const r = h('div', 'ra-route');
+      r.innerHTML =
+        '<svg viewBox="0 0 220 60" aria-hidden="true"><path d="M34 34 C 80 8, 140 8, 186 30" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="1 7"/></svg>';
+      const a = ensoEl(21, 'enso ra-ring a', { small: true });
+      const b = ensoEl(34, 'enso ra-ring b', { small: true });
+      r.append(a, b, h('span', 'ra-n a num', '6'), h('span', 'ra-n b num', '2'));
+      return r;
+    },
+  },
 ];
+
+/** A bone die in ink: an ivory hairline square with pips; a loser is faded. */
+function die(v: number, lost: boolean): HTMLElement {
+  const P: Record<number, [number, number][]> = {
+    1: [[12, 12]],
+    2: [[7, 7], [17, 17]],
+    3: [[7, 7], [12, 12], [17, 17]],
+    4: [[7, 7], [17, 7], [7, 17], [17, 17]],
+    5: [[7, 7], [17, 7], [12, 12], [7, 17], [17, 17]],
+    6: [[7, 6.5], [17, 6.5], [7, 12], [17, 12], [7, 17.5], [17, 17.5]],
+  };
+  const s = h('span', `ra-die${lost ? ' lost' : ''}`);
+  s.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="1.5" y="1.5" width="21" height="21" rx="4.5" fill="none" stroke="currentColor" stroke-width="1.2"/>${P[v]
+    .map(([x, y]) => `<circle cx="${x}" cy="${y}" r="1.9" fill="currentColor"/>`)
+    .join('')}</svg>`;
+  return s;
+}
 
 class LogSheet {
   readonly el: HTMLDivElement;
@@ -166,7 +272,7 @@ class LogSheet {
       const row = h('div', `log-line kind-${l.kind}`);
       const emb = h('span', 'log-emb');
       if (l.seat) emb.append(emblem(l.seat.color));
-      row.append(emb, h('span', 'log-text', minus(l.text)), h('span', 'log-round num', l.round > 0 ? `R${l.round}` : ''));
+      row.append(emb, h('span', 'log-text', minus(l.text)), h('span', 'log-round num', l.round > 0 ? `round ${l.round}` : ''));
       this.list.append(row);
     }
     toggle(this.empty, 'hidden', lines.length > 0);
@@ -187,6 +293,7 @@ export class Overlays {
     ai: Segmented<Settings['aiSpeed']>;
     text: Segmented<Settings['textSize']>;
     vol: Slider;
+    mvol: Slider;
     sw: Record<string, Switch>;
   };
   private fitNote: HTMLSpanElement;
@@ -210,8 +317,8 @@ export class Overlays {
     this.pause.append(grabHandle(), ph);
     const list = h('div', 'menu-list');
     list.append(
-      uiButton('Resume', 'brass role-primary menu-item', () => send({ type: 'overlay', overlay: null }), undefined, 'pause-resume'),
-      uiButton('Rules', 'menu-item', () => send({ type: 'overlay', overlay: 'rules' }), undefined, 'pause-rules'),
+      uiButton('Resume', 'menu-item resume', () => send({ type: 'overlay', overlay: null }), undefined, 'pause-resume'),
+      uiButton('How to play', 'menu-item', () => send({ type: 'overlay', overlay: 'rules' }), undefined, 'pause-rules'),
       uiButton('Settings', 'menu-item', () => send({ type: 'overlay', overlay: 'settings' }), undefined, 'pause-settings'),
       uiButton('Log', 'menu-item', () => send({ type: 'overlay', overlay: 'log' }), undefined, 'pause-log'),
       uiButton('Save & quit', 'menu-item', () => send({ type: 'saveAndQuit' }), undefined, 'pause-quit'),
@@ -228,9 +335,14 @@ export class Overlays {
     rh.append(h('h1', 'sheet-title', 'How to play'));
     rh.append(uiButton('Close', 'role-exit', () => send({ type: 'overlay', overlay: this.backTarget() }), undefined, 'rules-close'));
     const blocks = h('div', 'rules-blocks');
-    for (const [t, a, b] of RULE_BLOCKS) {
+    for (const r of RULE_BLOCKS) {
       const blk = h('div', 'rule');
-      blk.append(h('h2', 'rule-title', t), h('p', '', a), h('p', 'dim', b));
+      const art = h('div', 'rule-art');
+      art.append(r.art());
+      const txt = h('div', 'rule-text');
+      txt.append(h('h2', 'rule-title', r.title));
+      r.text.forEach((t, i) => txt.append(h('p', i ? 'dim' : '', t)));
+      blk.append(art, txt);
       blocks.append(blk);
     }
     this.rulesHouse = h('div', 'rule house');
@@ -263,16 +375,18 @@ export class Overlays {
       { value: 'tv', label: 'TV' },
     ]);
     const vol = new Slider('Sound volume', (v) => set({ sfxVolume: v }));
+    const mvol = new Slider('Score volume', (v) => set({ musicVolume: v }));
     const sw: Record<string, Switch> = {
       showLabels: new Switch('Territory names', (v) => set({ showLabels: v }), 'On every tile, not just the one you point at', 'set-labels'),
       showWinChance: new Switch('Show win chance', (v) => set({ showWinChance: v }), 'Otherwise a word: likely, coin flip…'),
       hideCardsBetweenTurns: new Switch('Hide cards between turns', (v) => set({ hideCardsBetweenTurns: v }), 'A pass-the-laptop cover when 2+ humans play'),
+      music: new Switch('Ambient score', (v) => set({ music: v }), 'A soft score under the game', 'set-music'),
       muted: new Switch('Mute all sound', (v) => set({ muted: v })),
-      music: new Switch('Music', (v) => set({ music: v }), 'A quiet ambient bed'),
+      ambient: new Switch('Drifting board', (v) => set({ ambient: v }), 'Mist and ink move slowly while nobody plays', 'set-ambient'),
       autoCamera: new Switch('Return camera home each turn', (v) => set({ autoCamera: v }), 'Only if you moved it'),
       reduceMotion: new Switch('Reduce motion', (v) => set({ reduceMotion: v })),
     };
-    this.s = { anim, ai, text, vol, sw };
+    this.s = { anim, ai, text, vol, mvol, sw };
     const field = (label: string, ctl: HTMLElement, detail?: string | HTMLElement) => {
       const f = h('div', 'field');
       const l = h('div', 'field-label');
@@ -290,12 +404,13 @@ export class Overlays {
       field('Animation speed', anim.el, 'Your own turns'),
       field('Text size', text.el, this.fitNote),
       field('Sound volume', vol.el),
+      field('Score volume', mvol.el),
     );
     // Seats: hand a seat to the AI when a friend leaves (and back). Filled in update().
     this.seats = h('div', 'menu-seats hidden');
     c1.append(this.seats);
     const c2 = h('div', 'settings-col');
-    c2.append(sw.showLabels.el, sw.showWinChance.el, sw.hideCardsBetweenTurns.el, sw.muted.el, sw.music.el, sw.autoCamera.el, sw.reduceMotion.el);
+    c2.append(sw.music.el, sw.muted.el, sw.showLabels.el, sw.showWinChance.el, sw.hideCardsBetweenTurns.el, sw.autoCamera.el, sw.ambient.el, sw.reduceMotion.el);
     cols.append(c1, c2);
     this.settings.append(sh, cols);
 
@@ -381,11 +496,13 @@ export class Overlays {
           if (!prev) sheetIn(sheet, this.el);
           else {
             resetSheet(sheet);
-            animateIn(sheet, { dy: 10, ms: 200 });
+            animateIn(sheet, { ms: 200 });
           }
         } else {
-          if (!prev && !motion.reduced) this.el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: 'ease-out' });
-          animateIn(sheet, { dy: 12 });
+          if (!prev && !motion.reduced) this.el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 240, easing: 'ease-out' });
+          animateIn(sheet, { ms: 240 });
+          const t = sheet.querySelector<HTMLElement>('.sheet-title');
+          if (t) drawIn(t, 300);
         }
       }
     }
@@ -395,7 +512,8 @@ export class Overlays {
       this.s.ai.set(st.aiSpeed);
       this.s.text.set(st.textSize);
       this.s.vol.set(st.sfxVolume);
-      for (const k of Object.keys(this.s.sw)) this.s.sw[k].set(!!st[k as keyof Settings]);
+      this.s.mvol.set(st.musicVolume ?? 0.7);
+      for (const k of Object.keys(this.s.sw)) this.s.sw[k].set(k === 'ambient' ? st.ambient !== false : !!st[k as keyof Settings]);
       this.renderSeats(vm.game?.seatActions ?? []);
     }
     if (o === 'rules') this.renderHouse(vm.rulesNotes);

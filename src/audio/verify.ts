@@ -1,13 +1,16 @@
-// Audio verification (node + Playwright): `npx tsx src/audio/verify.ts`
+// Audio verification (node + Playwright): `npx tsx src/audio/verify.ts` (npm run verify:audio)
 //
 // Opens audio.html, then:
-//  1. live engine: play() before unlock is a no-op; a real click unlocks; every sound plays; spam is
-//     voice-limited; music toggles; no console errors.
+//  1. live engine: play() before unlock is a no-op; a real click unlocks; the score is on by default;
+//     every audible sound plays; hover is silent; spam is voice-limited; the silence rules hold
+//     (≤ 1 cue per 70 ms, nothing inside the verdict beat); mute / hidden stop the score; no console errors.
 //  2. offline: renders every sound (6 seeds) in an OfflineAudioContext inside the page and checks
 //     NaN / silence / peak ≤ −1 dBFS / loudness on target / DC / clicks / tails / spectrum.
-//  3. composites: a 5-die roll, a blitz storm through the limiter, limiter transparency, 60 s of music.
-//  4. writes artifacts/audio/{report.json, spectrograms.png, music.png, lab.png, wav/*.wav}.
-// Exit code 1 on any failure. Uses an existing server on :5283 or starts its own.
+//  3. composites: a 5-die roll, a blitz storm through the limiter, limiter transparency, the live
+//     brush stroke, and the score: 60 s render for level, density (events/min), loop-free variation,
+//     and the duck under a conquest.
+//  4. writes artifacts/audio/ink/{report.json, spectrograms.png, score.png, lab.png, *.wav} for John.
+// Exit code 1 on any failure. Uses an existing server on :5363 or starts its own (no HMR).
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -16,10 +19,10 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const PORT = Number(process.env.AUDIO_PORT ?? 5283);
+const PORT = Number(process.env.AUDIO_PORT ?? 5363);
 const URL = `http://127.0.0.1:${PORT}/audio.html`;
-const OUT = join(ROOT, 'artifacts/audio');
-const WAV = join(OUT, 'wav');
+const OUT = join(ROOT, 'artifacts/audio/ink');
+const WAV = join(OUT, 'sfx');
 const TMP = join(ROOT, 'artifacts/tmp/audio');
 
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -39,6 +42,7 @@ async function ensureServer(): Promise<ChildProcess | null> {
     cwd: ROOT,
     stdio: 'ignore',
     detached: true,
+    env: { ...process.env, RISK_E2E: '1' },
   });
   for (let i = 0; i < 80; i++) {
     await new Promise((r) => setTimeout(r, 250));
@@ -58,6 +62,8 @@ async function main() {
   const consoleProblems: string[] = [];
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    // tsx keeps function names with a __name() helper that doesn't exist inside the page
+    await page.addInitScript('window.__name = (f) => f;');
     page.on('console', (m) => {
       if (m.type() === 'error' || m.type() === 'warning') consoleProblems.push(`${m.type()}: ${m.text()}`);
     });
@@ -70,23 +76,30 @@ async function main() {
     const before = await page.evaluate(() => {
       const lab = (window as Any).__audioLab;
       let threw = false;
+      const wantedByDefault = lab.engine.stats().musicWanted;
       try {
         for (const n of lab.names) lab.engine.play(n);
         lab.engine.play('nope' as Any);
-        lab.engine.setMusic(false);
         lab.engine.setVolume(NaN);
+        lab.engine.hush?.(250);
+        lab.engine.stroke?.();
+        lab.engine.setMusicSeed?.(NaN);
       } catch {
         threw = true;
       }
-      return { threw, stats: lab.engine.stats() };
+      return { threw, stats: lab.engine.stats(), wantedByDefault };
     });
     if (before.threw) failures.push('live: play() before unlock threw');
+    if (!before.wantedByDefault) failures.push('live: the score is not on by default');
     if (before.stats.state !== 'locked') failures.push(`live: expected locked before gesture, got ${before.stats.state}`);
     if (before.stats.played !== 0) failures.push('live: sounds played before unlock');
 
     // Watch for long main-thread tasks while the bank warms up (they'd be dropped frames on the title).
     // The task containing the unlock click is excluded: Chrome spends ~120 ms opening the audio device
     // for the page's first AudioContext (measured on a blank page too); our own unlock() is ~14 ms.
+    // A long task only fails when our own script made it long: Long Animation Frame attribution
+    // names the scripts, so a long frame commit right after that stall (native, the lab's big page)
+    // is reported but does not count against the audio.
     // (a string, so the bundler's __name helpers never leak into the page)
     await page.evaluate(`(() => {
       const w = window;
@@ -95,6 +108,12 @@ async function main() {
       try {
         new PerformanceObserver((l) => { for (const e of l.getEntries()) w.__longTasks.push([e.startTime, e.duration]); }).observe({ entryTypes: ['longtask'] });
       } catch (e) {}
+      w.__longScripts = [];
+      try {
+        new PerformanceObserver((l) => {
+          for (const e of l.getEntries()) for (const s of e.scripts || []) if (s.duration >= 50) w.__longScripts.push([s.startTime, s.duration, (s.invoker || '') + ' ' + (s.sourceFunctionName || '')]);
+        }).observe({ type: 'long-animation-frame' });
+      } catch (e) {}
       // keep frames flowing like the real game (idle callbacks are scheduled between frames)
       w.__rafLoop = () => requestAnimationFrame(w.__rafLoop);
       w.__rafLoop();
@@ -102,52 +121,127 @@ async function main() {
     await page.mouse.click(20, 20); // a real, trusted gesture
     const unlockAt = Date.now();
     await page.waitForFunction(() => (window as Any).__audioLab.engine.stats().state === 'running', null, { timeout: 5000 }).catch(() => {});
-    await page.waitForFunction(() => (window as Any).__audioLab.engine.stats().banked >= 20, null, { timeout: 30000, polling: 50 }).catch(() => {});
+    await page.waitForFunction(() => (window as Any).__audioLab.engine.stats().banked >= (window as Any).__audioLab.warmKeys, null, { timeout: 30000, polling: 50 }).catch(() => {});
     const warm: Any = await page.evaluate(() => {
       const w = window as Any;
       const all: [number, number][] = w.__longTasks;
       const click = w.__clickAt ?? 0;
       const unlockTask = all.filter(([s, d]) => s <= click + 5 && s + d >= click - 5);
       const other = all.filter((t) => !unlockTask.includes(t));
-      return { unlockTaskMs: unlockTask.map(([, d]) => Math.round(d)), otherLongTasksMs: other.map(([, d]) => Math.round(d)) };
+      const scripts: [number, number, string][] = w.__longScripts;
+      // scripts that started inside the unlock task are the unlock itself
+      const inUnlock = (s: number) => unlockTask.some(([a, d]) => s >= a - 5 && s <= a + d);
+      const ours = scripts.filter(([s]) => !inUnlock(s));
+      return {
+        unlockTaskMs: unlockTask.map(([, d]) => Math.round(d)),
+        otherLongTasksMs: other.map(([, d]) => Math.round(d)),
+        longScripts: ours.map(([, d, who]) => `${Math.round(d)} ms ${who.trim()}`),
+      };
     });
     warm.ms = Date.now() - unlockAt;
-    if (warm.otherLongTasksMs.length) failures.push(`bank warm-up blocked the main thread: long tasks ${warm.otherLongTasksMs.join(', ')} ms`);
+    if (warm.longScripts.length) failures.push(`bank warm-up blocked the main thread: long scripts ${warm.longScripts.join(', ')}`);
 
     const live = await page.evaluate(async () => {
       const lab = (window as Any).__audioLab;
       const e = lab.engine;
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
       const state = e.stats().state;
-      for (const n of lab.names) e.play(n, { volume: 0.2 });
-      await new Promise((r) => setTimeout(r, 50));
+      const musicDefault = e.stats().music; // the score starts on its own after the unlocking tap
+      e.setMusic(false);
+      await sleep(60);
+      const p0 = e.stats().played;
+      for (const n of lab.audible) {
+        e.play(n, { volume: 0.2 });
+        await sleep(90); // one cue per 70 ms: space them (plus a context-clock quantum) so every one is heard
+      }
       const afterAll = e.stats();
-      const d0 = afterAll.dropped;
+      const playedAll = afterAll.played - p0;
+      const pHover = e.stats().played;
+      e.play('uiHover');
+      const hoverPlayed = e.stats().played - pHover;
+      e.stopAll();
+      // silence rule: two routine cues in the same frame → one; an important cue replaces a lesser one
+      const pa = e.stats().played;
+      e.play('place');
+      e.play('cardDraw');
+      const sameFrameRoutine = e.stats().played - pa;
+      e.stopAll();
+      await sleep(30);
+      e.play('uiClick');
+      e.play('diceShake', { duration: 0.15 });
+      const vb = e.stats().voicesByName;
+      const shakeWon = (vb.diceShake ?? 0) === 1 && (vb.uiClick ?? 0) === 0;
+      e.stopAll();
+      await sleep(30);
+      // the verdict beat: nothing new sounds inside it
+      e.hush(250);
+      const ph = e.stats().played;
+      e.play('place');
+      e.play('hit');
+      const inBeat = e.stats().played - ph;
+      await sleep(300);
+      const pv = e.stats().played;
+      e.play('hit');
+      const afterBeat = e.stats().played - pv;
+      e.stopAll();
+      await sleep(30);
+      const d0 = e.stats().dropped;
       for (let i = 0; i < 60; i++) e.play('diceLand');
       for (let i = 0; i < 30; i++) e.play('hit');
       const spam = e.stats();
       e.stopAll();
       e.setMusic(true);
-      await new Promise((r) => setTimeout(r, 400));
+      await sleep(400);
       const musicOn = e.stats().music;
+      // mute stops the score (no scheduling while muted) and unmute brings it back
+      e.setMuted(true);
+      await sleep(50);
+      const musicWhileMuted = e.stats().music;
+      e.setMuted(false);
+      await sleep(100);
+      const musicAfterUnmute = e.stats().music;
+      // a hidden tab stops the score and suspends the context; visible resumes both
+      const setVis = (v: string) => {
+        Object.defineProperty(document, 'visibilityState', { value: v, configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+      };
+      setVis('hidden');
+      await sleep(700);
+      const hidden = { state: e.stats().state, music: e.stats().music };
+      setVis('visible');
+      await sleep(400);
+      const shown = { state: e.stats().state, music: e.stats().music };
+      // a new game reseeds the score (crossfade), same seed is a no-op
+      e.setMusicSeed(1234);
+      await sleep(100);
+      const seeded = e.stats().musicSeed;
       e.setMusic(false);
-      await new Promise((r) => setTimeout(r, 100));
+      await sleep(100);
       const musicOff = e.stats().music;
       lab.runScenario('Blitz (6 rolls)');
-      await new Promise((r) => setTimeout(r, 300));
+      await sleep(300);
       const blitz = e.stats();
       e.stopAll();
       // skipAnimations path: scheduled (delayed) sounds are cancelled by stopAll
-      await new Promise((r) => setTimeout(r, 120));
+      await sleep(120);
       e.play('victory', { delay: 1.5 });
       e.play('hit', { delay: 0.8 });
       const scheduled = e.stats().voices;
       e.stopAll();
       const afterStop = e.stats().voices;
+      // the live stroke: starts, follows, ends; a second one replaces the first
+      const s1 = e.stroke({ pan: -0.2 });
+      s1?.move(0.8, 0.1);
+      const s2 = e.stroke();
+      s2?.move(1);
+      s2?.end(false);
+      s1?.end(true);
+      const strokeOk = !!s1 && !!s2;
       // rapid music toggling never leaves two beds or a stuck state
       for (let i = 0; i < 12; i++) e.setMusic(i % 2 === 0);
       const musicAfterToggle = e.stats().music; // last call was setMusic(false)
       e.setMusic(true);
-      await new Promise((r) => setTimeout(r, 200));
+      await sleep(200);
       const musicFinal = e.stats().music;
       e.setMusic(false);
       // volume / mute edge values
@@ -157,19 +251,31 @@ async function main() {
       e.setMuted(true);
       e.setMuted(false);
       e.play('uiClick', { volume: 99, pan: -99, rate: 0, delay: -3, duration: 1e9 });
-      return { state, afterAll, spam, droppedBySpam: spam.dropped - d0, musicOn, musicOff, blitz, scheduled, afterStop, musicAfterToggle, musicFinal };
+      return { state, musicDefault, afterAll, playedAll, hoverPlayed, sameFrameRoutine, shakeWon, inBeat, afterBeat, spam, droppedBySpam: spam.dropped - d0, musicOn, musicWhileMuted, musicAfterUnmute, hidden, shown, seeded, musicOff, blitz, scheduled, afterStop, strokeOk, musicAfterToggle, musicFinal };
     });
     if (live.state !== 'running') failures.push(`live: context not running after a click (${live.state})`);
-    if (live.afterAll.played < 17) failures.push(`live: only ${live.afterAll.played}/17 sounds played after unlock`);
+    if (!live.musicDefault) failures.push('live: the score did not start on its own after the first tap');
+    if (live.playedAll < (await page.evaluate(() => (window as Any).__audioLab.audible.length))) failures.push(`live: only ${live.playedAll} audible sounds played after unlock`);
+    if (live.hoverPlayed !== 0) failures.push('live: uiHover made a sound (no hover sounds)');
+    if (live.sameFrameRoutine !== 1) failures.push(`live: ${live.sameFrameRoutine} routine cues in one frame (≤ 1 per 70 ms)`);
+    if (!live.shakeWon) failures.push('live: diceShake did not replace the Roll click in the same frame');
+    if (live.inBeat !== 0) failures.push(`live: ${live.inBeat} sounds inside the verdict beat`);
+    if (live.afterBeat !== 1) failures.push('live: the verdict cue did not play after the beat');
     if ((live.spam.voicesByName.diceLand ?? 0) > 6) failures.push(`live: ${live.spam.voicesByName.diceLand} diceLand voices (cap 6)`);
-    if ((live.spam.voicesByName.hit ?? 0) > 3) failures.push(`live: ${live.spam.voicesByName.hit} hit voices (cap 3)`);
+    if ((live.spam.voicesByName.hit ?? 0) > 2) failures.push(`live: ${live.spam.voicesByName.hit} hit voices (cap 2)`);
     if (live.spam.voices > 20) failures.push(`live: ${live.spam.voices} voices (global cap 20)`);
     if (live.droppedBySpam < 80) failures.push(`live: spam of 90 same-frame plays only dropped ${live.droppedBySpam}`);
     if (live.scheduled < 2) failures.push(`live: delayed plays not scheduled (${live.scheduled} voices)`);
     if (live.afterStop !== 0) failures.push(`live: stopAll left ${live.afterStop} voices`);
+    if (!live.strokeOk) failures.push('live: stroke() returned null after unlock');
     if (live.musicAfterToggle) failures.push('live: music on after toggling ending in off');
     if (!live.musicFinal) failures.push('live: music did not restart after toggling');
     if (!live.musicOn) failures.push('live: music did not start');
+    if (live.musicWhileMuted) failures.push('live: the score kept playing while muted');
+    if (!live.musicAfterUnmute) failures.push('live: the score did not come back after unmute');
+    if (live.hidden.music || live.hidden.state !== 'suspended') failures.push(`live: hidden tab left ${JSON.stringify(live.hidden)}`);
+    if (!live.shown.music || live.shown.state !== 'running') failures.push(`live: visible again left ${JSON.stringify(live.shown)}`);
+    if (live.seeded !== 1234) failures.push(`live: setMusicSeed did not take (${live.seeded})`);
     if (live.musicOff) failures.push('live: music did not stop');
 
     // ------------------------------------------------------------- offline
@@ -187,12 +293,32 @@ async function main() {
     if (Math.abs(comp.limiter.quietGainDb) > 0.3) failures.push(`limiter not transparent at −20 dBFS: ${comp.limiter.quietGainDb.toFixed(2)} dB`);
     if (comp.limiter.loudOutPeak > 0.95) failures.push(`limiter ceiling: +6 dBFS sine came out at ${comp.limiter.loudOutPeak.toFixed(3)}`);
     const mu = comp.music;
-    if (mu.nan) failures.push('music: NaN');
-    if (mu.peakDb > -6) failures.push(`music: peak ${f1(mu.peakDb)} dBFS (bed should be quiet)`);
-    if (mu.lufsM < -40 || mu.lufsM > -28) failures.push(`music: momentary max ${f1(mu.lufsM)} LUFS outside −40…−28`);
-    if (mu.minWindowDb < -55) failures.push(`music: a 2 s gap at ${f1(mu.minWindowDb)} dBFS`);
-    if (mu.dc > 0.002) failures.push(`music: DC ${mu.dc}`);
-    if (mu.hfShare > 0.02) failures.push(`music: ${(mu.hfShare * 100).toFixed(1)}% above 8 kHz`);
+    if (mu.nan) failures.push('score: NaN');
+    if (mu.minWindowDb < -60) failures.push(`score: a 2 s hole at ${f1(mu.minWindowDb)} dBFS (it should always be underneath)`);
+    const sc: Any = await page.evaluate(() => (window as Any).__audioLab.musicAnalysis(60, 3));
+    if (sc.nan) failures.push('score: NaN');
+    if (sc.peakDb > -6) failures.push(`score: peak ${f1(sc.peakDb)} dBFS (it should be quiet)`);
+    if (sc.vsBoardDb < -12 || sc.vsBoardDb > -6.5) failures.push(`score: ${f1(sc.integrated)} LUFS-I is ${f1(sc.vsBoardDb)} dB vs board SFX (want about −9 dB, 35%)`);
+    if (sc.dc > 0.002) failures.push(`score: DC ${sc.dc}`);
+    if (sc.laptopDropDb > 6) failures.push(`score: loses ${f1(sc.laptopDropDb)} dB on laptop/phone speakers (too much of it is below 180 Hz)`);
+    if (sc.hfShare > 0.02) failures.push(`score: ${(sc.hfShare * 100).toFixed(1)}% above 8 kHz`);
+    if (sc.eventsPerMin < 2 || sc.eventsPerMin > 7) failures.push(`score: ${f1(sc.eventsPerMin)} events/min (want a few)`);
+    if (sc.long.perMin < 2.5 || sc.long.perMin > 6.5) failures.push(`score: ${f1(sc.long.perMin)} events/min over 30 min`);
+    if (sc.long.stepwise > 0) failures.push(`score: ${sc.long.stepwise} stepwise piano moves (a hummable line)`);
+    if (sc.long.gapSd < 2) failures.push(`score: event gaps too regular (sd ${f1(sc.long.gapSd)} s)`);
+    if (sc.long.repeated4 > 3) failures.push(`score: ${sc.long.repeated4} repeated 4-event passages in 30 min`);
+    if (sc.selfSimMax > 0.9) failures.push(`score: a 4 s passage repeats (similarity ${sc.selfSimMax.toFixed(2)} at ${sc.selfSimLagSec} s)`);
+    if (sc.otherSeedSimMax > 0.9) failures.push(`score: another seed sounds the same (${sc.otherSeedSimMax.toFixed(2)})`);
+    const duck: Any = await page.evaluate(() => (window as Any).__audioLab.duckTest('conquer'));
+    if (duck.depthDb > -3) failures.push(`score duck under conquer only ${f1(duck.depthDb)} dB`);
+    if (!(duck.recoveredWithin1dBAfterSec >= 1.5 && duck.recoveredWithin1dBAfterSec <= 4)) failures.push(`score duck recovers in ${f1(duck.recoveredWithin1dBAfterSec)} s (want 2–3 s)`);
+    const stroke: Any = await page.evaluate(() => (window as Any).__audioLab.strokeStats());
+    for (const [k, v] of Object.entries(stroke) as [string, Any][]) {
+      if (v.nan) failures.push(`stroke ${k}: NaN`);
+      if (v.peakDb > -1) failures.push(`stroke ${k}: peak ${f1(v.peakDb)}`);
+      if (v.lk200 < -34 || v.lk200 > -22) failures.push(`stroke ${k}: ${f1(v.lk200)} LUFS (want a whisper, ~ −27)`);
+      if (v.endDb > -70) failures.push(`stroke ${k}: does not dry out`);
+    }
 
     const vars: Any[] = await page.evaluate(() => (window as Any).__audioLab.variants());
     const meta: Any = await page.evaluate(() => (window as Any).__audioLab.meta);
@@ -218,42 +344,55 @@ async function main() {
     const bank: Any[] = await page.evaluate(() => (window as Any).__audioLab.bankCheck());
     for (const b of bank) if (!(Math.abs(b.dLk) < 0.15) || !(Math.abs(b.dPeak) < 0.15)) failures.push(`bank: ${b.name} banked differs from direct by ${b.dLk.toFixed(2)} dB loudness / ${b.dPeak.toFixed(2)} dB peak`);
     const cost: Any = await page.evaluate(() => (window as Any).__audioLab.liveCost());
-    if (cost.banked < 20) failures.push(`bank: only ${cost.banked}/20 keys warmed after ${Math.round(cost.warmMs)} ms`);
+    const warmKeys: number = await page.evaluate(() => (window as Any).__audioLab.warmKeys);
+    if (cost.banked < warmKeys) failures.push(`bank: only ${cost.banked}/${warmKeys} keys warmed after ${Math.round(cost.warmMs)} ms`);
     for (const [n, c] of Object.entries(cost.cost) as [string, Any][]) if (c.median > 1) failures.push(`cpu: play('${n}') costs ${c.median.toFixed(2)} ms median after warm-up`);
 
     // ----------------------------------------------------------- artifacts
     await page.evaluate(() => (window as Any).__audioLab.drawAll([
       { label: 'turnStart · bright', name: 'turnStart', o: { variant: 'bright' } },
-      { label: 'conquer · somber', name: 'conquer', o: { variant: 'somber' } },
-      { label: 'continent · somber', name: 'continent', o: { variant: 'somber' } },
+      { label: 'conquer · somber (the snap)', name: 'conquer', o: { variant: 'somber' } },
+      { label: 'continent · somber (damped)', name: 'continent', o: { variant: 'somber' } },
     ]));
     await page.locator('#all').screenshot({ path: join(OUT, 'spectrograms.png') });
     await page.evaluate(() => (window as Any).__audioLab.drawMusic(60));
-    await page.locator('#all').screenshot({ path: join(OUT, 'music.png') });
+    await page.locator('#all').screenshot({ path: join(OUT, 'score.png') });
     await page.click('#analyze');
     await page.waitForFunction(() => /pass|attention/.test(document.getElementById('status')!.textContent ?? ''), null, { timeout: 120000 });
     await page.screenshot({ path: join(OUT, 'lab.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: join(OUT, 'lab-phone.png') });
 
-    const names: string[] = await page.evaluate(() => (window as Any).__audioLab.names);
+    const names: string[] = await page.evaluate(() => (window as Any).__audioLab.audible);
+    const meta2: Any = await page.evaluate(() => (window as Any).__audioLab.meta);
     for (const n of names) {
       const b64: string = await page.evaluate((name) => (window as Any).__audioLab.wavBase64(name, { seed: 1 }), n);
-      writeFileSync(join(WAV, `${n}.wav`), Buffer.from(b64, 'base64'));
+      writeFileSync(join(WAV, `${meta2[n].material}-${n}.wav`), Buffer.from(b64, 'base64'));
     }
     for (const [n, o, file] of [
-      ['turnStart', { variant: 'bright', seed: 1 }, 'turnStart-bright'],
-      ['conquer', { variant: 'somber', seed: 1 }, 'conquer-somber'],
-      ['continent', { variant: 'somber', seed: 1 }, 'continent-somber'],
+      ['turnStart', { variant: 'bright', seed: 1 }, 'paper-turnStart-bright'],
+      ['conquer', { variant: 'somber', seed: 1 }, 'brush-conquer-somber-snap'],
+      ['continent', { variant: 'somber', seed: 1 }, 'bowl-continent-somber'],
     ] as [string, Any, string][]) {
       const b64: string = await page.evaluate(([name, opts]) => (window as Any).__audioLab.wavBase64(name, opts), [n, o] as const);
       writeFileSync(join(WAV, `${file}.wav`), Buffer.from(b64, 'base64'));
     }
-    writeFileSync(join(WAV, 'dice-roll-5.wav'), Buffer.from(await page.evaluate(() => (window as Any).__audioLab.rollWav()), 'base64'));
-    writeFileSync(join(TMP, 'music-30s.wav'), Buffer.from(await page.evaluate(() => (window as Any).__audioLab.musicWav(30)), 'base64'));
+    writeFileSync(join(WAV, 'bone-dice-roll-5.wav'), Buffer.from(await page.evaluate(() => (window as Any).__audioLab.rollWav()), 'base64'));
+    writeFileSync(join(WAV, 'brush-live-stroke.wav'), Buffer.from(await page.evaluate(() => (window as Any).__audioLab.strokeWav(true)), 'base64'));
+    writeFileSync(join(OUT, 'score-60s-seed3.wav'), Buffer.from(await page.evaluate(() => (window as Any).__audioLab.musicWav(60, 3)), 'base64'));
+    writeFileSync(join(OUT, 'score-60s-seed4.wav'), Buffer.from(await page.evaluate(() => (window as Any).__audioLab.musicWav(60, 4)), 'base64'));
+    const moment: Any = await page.evaluate(() => (window as Any).__audioLab.momentWav());
+    writeFileSync(join(OUT, 'the-moment.wav'), Buffer.from(moment.b64, 'base64'));
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.locator('#all').screenshot({ path: join(OUT, 'the-moment.png') });
+    if (moment.stats.peakDb > -0.3) failures.push(`the moment: peak ${f1(moment.stats.peakDb)} dBFS through the limiter`);
+    if (moment.stats.nan) failures.push('the moment: NaN');
+    delete moment.b64;
 
     const relevant = consoleProblems.filter((m) => !/Download the React DevTools|\[vite\]/.test(m));
     for (const m of relevant) failures.push(`console ${m}`);
 
-    writeFileSync(join(OUT, 'report.json'), JSON.stringify({ when: new Date().toISOString(), live, warm, reports, composites: comp, variants: vars, bank, cost, sweep, failures }, null, 2));
+    writeFileSync(join(OUT, 'report.json'), JSON.stringify({ when: new Date().toISOString(), live, warm, reports, composites: comp, score: sc, duck, stroke, moment, variants: vars, bank, cost, sweep, failures }, null, 2));
 
     // --------------------------------------------------------------- print
     const pad = (s: string, n: number) => s.padEnd(n);
@@ -270,14 +409,21 @@ async function main() {
     console.log(`\n5-die roll: ${f1(roll.lk200)} LUFS, peak ${f1(roll.peakDb)} dBFS`);
     console.log(`stress: requested ${st.requested}, played ${st.played}, dropped ${st.dropped}, stolen ${st.stolen}, max concurrent ${st.maxConcurrent}, peak ${f1(st.peakDb)} dBFS`);
     console.log(`limiter: −20 dBFS sine gain ${comp.limiter.quietGainDb.toFixed(3)} dB · +6 dBFS sine peak ${comp.limiter.loudOutPeak.toFixed(3)}`);
-    console.log(`music 60 s: M ${f1(mu.lufsM)} LUFS, peak ${f1(mu.peakDb)} dBFS, min 2 s window ${f1(mu.minWindowDb)} dBFS, centroid ${Math.round(mu.centroidHz)} Hz`);
+    console.log(`score 60 s (seed 3): ${f1(sc.integrated)} LUFS-I (${f1(sc.vsBoardDb)} dB vs board SFX = ${Math.round(Math.pow(10, sc.vsBoardDb / 20) * 100)}%), 3 s median ${f1(sc.shortTermMedian)}, M max ${f1(sc.lufsM)}, peak ${f1(sc.peakDb)} dBFS, centroid ${Math.round(sc.centroidHz)} Hz, laptop −${f1(sc.laptopDropDb)} dB, min 2 s window ${f1(mu.minWindowDb)} dBFS`);
+    console.log(`  events ${f1(sc.eventsPerMin)}/min planned, ${f1(sc.detectedOnsetsPerMin)}/min heard · pads ${sc.pads.map((p: Any) => p.chord).join(' → ')}`);
+    console.log(`  events: ${sc.events.map((e: Any) => `${e.t}s ${e.kind} ${e.midis.join('+')}`).join(' · ')}`);
+    console.log(`  loop-free: max 4 s self-similarity ${sc.selfSimMax.toFixed(2)} (lag ${sc.selfSimLagSec} s) · vs seed 4 ${sc.otherSeedSimMax.toFixed(2)}`);
+    console.log(`  30 min plan: ${sc.long.events} events (${f1(sc.long.perMin)}/min), gaps ${f1(sc.long.gapMean)} ± ${f1(sc.long.gapSd)} s, stepwise ${sc.long.stepwise}, repeated 4-event passages ${sc.long.repeated4}, ${sc.long.chordFourGrams} distinct 4-chord paths in ${sc.long.pads} pads`);
+    console.log(`  duck under conquer: ${f1(duck.depthDb)} dB, back within 1 dB after ${f1(duck.recoveredWithin1dBAfterSec)} s`);
+    console.log(`stroke: commit ${f1(stroke.commit.lk200)} LUFS pk ${f1(stroke.commit.peakDb)} · cancel ${f1(stroke.cancel.lk200)} LUFS, dries in ${Math.round(stroke.cancel.durationSec * 1000 - 50 - 736)} ms after release`);
+    console.log(`the moment (18 s through the limiter): peak ${f1(moment.stats.peakDb)} dBFS · ${moment.marks.map((m: Any) => `${m.t.toFixed(2)} ${m.what}`).join(' · ')}`);
     console.log('variants:');
     for (const v of vars) console.log(`  ${pad(v.label, 22)} ${f1(v.lk200)} LUFS  peak ${f1(v.peakDb)}  reported ${v.reportedDur.toFixed(3)} s  sound ${Math.round(v.durationSec * 1000)} ms`);
     console.log(`build sweep: ${sweep.length ? sweep.length + ' failures' : 'every sound × variant × rate/duration extreme × 20 seeds built cleanly'}`);
     console.log(`bank: max |Δ loudness| ${Math.max(...bank.map((b) => Math.abs(b.dLk))).toFixed(3)} dB · mono keys ${bank.filter((b) => b.channels === 1).map((b) => b.name).join(', ')}`);
-    console.log(`warm-up after unlock: ${Math.round(warm.ms)} ms · unlock-click task ${warm.unlockTaskMs.join(', ') || '<50'} ms (browser audio-device init) · other long tasks: ${warm.otherLongTasksMs.length ? warm.otherLongTasksMs.join(', ') + ' ms' : 'none'}`);
+    console.log(`warm-up after unlock: ${Math.round(warm.ms)} ms · unlock-click task ${warm.unlockTaskMs.join(', ') || '<50'} ms (browser audio-device init) · other long tasks: ${warm.otherLongTasksMs.length ? warm.otherLongTasksMs.join(', ') + ' ms' : 'none'} · of them our script: ${warm.longScripts.length ? warm.longScripts.join(', ') : 'none'}`);
     console.log(`bank keys ${cost.banked} · play() cost median/max (ms): ${Object.entries(cost.cost).map(([n, c]: [string, Any]) => `${n} ${c.median.toFixed(2)}/${c.max.toFixed(2)}`).join(', ')}`);
-    console.log(`live: ${JSON.stringify({ state: live.state, played: live.afterAll.played, spamVoices: live.spam.voicesByName, droppedBySpam: live.droppedBySpam, music: [live.musicOn, live.musicOff] })}`);
+    console.log(`live: ${JSON.stringify({ state: live.state, playedAll: live.playedAll, hover: live.hoverPlayed, sameFrame: live.sameFrameRoutine, shakeWon: live.shakeWon, inBeat: live.inBeat, spamVoices: live.spam.voicesByName, droppedBySpam: live.droppedBySpam, musicDefault: live.musicDefault, muted: live.musicWhileMuted, hidden: live.hidden, shown: live.shown })}`);
     console.log(failures.length ? `\nFAIL (${failures.length})\n  ${failures.join('\n  ')}` : '\nPASS — all audio checks');
   } finally {
     await browser.close();

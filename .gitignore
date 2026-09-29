@@ -18,3 +18,7 @@ _claude/review-shots/
 _claude/review-fable-shots/
 _claude/*.log
 *.swp
+
+# Agent screenshots and evidence stay local (regenerate with the scripts)
+artifacts/*
+!artifacts/map/

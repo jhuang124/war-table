@@ -115,13 +115,14 @@ async function run(dev: DeviceName): Promise<void> {
     const aw = document.querySelector('.v-awards') as HTMLElement;
     const wasHidden = aw.classList.contains('hidden');
     aw.classList.remove('hidden');
-    const cs = { display: getComputedStyle(aw).display, overflowX: getComputedStyle(aw).overflowX };
+    // INK B5: three award lines on the scroll (stacked, all visible; the old swipe row hid two of three).
+    const cs = { display: getComputedStyle(aw).display, dir: getComputedStyle(aw).flexDirection, fits: aw.scrollWidth <= aw.clientWidth + 1 };
     if (wasHidden) aw.classList.add('hidden');
     sc.scrollTo(0, 99999);
-    return { scrollable: sc.scrollHeight > sc.clientHeight, awardsRow: cs.display === 'flex' && cs.overflowX === 'auto', mid: getComputedStyle(document.querySelector('.v-mid')!).gridTemplateColumns };
+    return { scrollable: sc.scrollHeight > sc.clientHeight, awardsRow: cs.display === 'flex' && cs.dir === 'column' && cs.fits, mid: getComputedStyle(document.querySelector('.v-mid')!).gridTemplateColumns };
   });
   await page.waitForTimeout(200);
-  check(v.awardsRow, `${tag} victory: awards are a swipe row`, results);
+  check(v.awardsRow, `${tag} victory: awards are stacked lines that fit the width`, results);
   check(await inView('rematch'), `${tag} victory: Rematch stays on screen scrolled to the end (scrollable ${v.scrollable})`, results);
   await still('victory');
   await tapId(page, 'rematch');

@@ -5,13 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <title>War Table · UI gallery</title>
-    <link rel="preload" href="/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
-    <link rel="preload" href="/fonts/cinzel-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin />
-    <link rel="preload" href="/fonts/cinzel-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/cormorant-garamond-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
     <style>
-      @font-face { font-family: 'Inter Variable'; font-style: normal; font-display: block; font-weight: 100 900; src: url(/fonts/inter-latin-wght-normal.woff2) format('woff2-variations'); }
-      @font-face { font-family: 'Cinzel'; font-style: normal; font-display: block; font-weight: 600; src: url(/fonts/cinzel-latin-600-normal.woff2) format('woff2'); }
-      @font-face { font-family: 'Cinzel'; font-style: normal; font-display: block; font-weight: 700; src: url(/fonts/cinzel-latin-700-normal.woff2) format('woff2'); }
+      @font-face { font-family: 'Cormorant Garamond Variable'; font-style: normal; font-display: block; font-weight: 300 700; src: url(/fonts/cormorant-garamond-latin-wght-normal.woff2) format('woff2-variations'); }
       html { background: #0c0f13; }
       /* Stand-in board: dark walnut table, the map preview as a tilted slab with a brass frame. */
       .g-table {
@@ -43,10 +39,10 @@
       .g-index {
         position: fixed; z-index: 1000; inset: 20px auto 20px 20px; width: 380px; overflow: auto; padding: 18px 20px; display: none;
         background: rgba(10, 12, 15, 0.97); border: 1px solid rgba(194, 160, 98, 0.35); border-radius: 12px; color: #f3ead8;
-        font: 14px/1.5 'Inter Variable', system-ui, sans-serif;
+        font: 16px/1.45 'Cormorant Garamond Variable', Georgia, serif;
       }
       .g-index.open { display: block; }
-      .g-index h1 { font: 600 20px 'Cinzel', serif; letter-spacing: 0.08em; margin: 0 0 6px; }
+      .g-index h1 { font: 600 22px 'Cormorant Garamond Variable', Georgia, serif; font-variant: small-caps; letter-spacing: 0.08em; margin: 0 0 6px; }
       .g-index h2 { font-size: 13px; color: #dcc08a; margin: 14px 0 4px; }
       .g-index p { color: rgba(243, 234, 216, 0.6); margin: 0; }
       .g-index ul { margin: 0; padding: 0; list-style: none; }

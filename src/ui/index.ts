@@ -1,18 +1,23 @@
 // The HTML UI (docs/SIMPLIFY.md): renders the ViewModel, sends UiIntents, never imports the engine.
 //
-// In game the only chrome floats on the board (docs/ROUND2.md): the seat pills + ≡ at the top, the
-// bottom strip (Turn Track · line · count · ≤ 2 buttons) and, during a fight, the dice tray's header
-// line. The banner slot, the cards sheet, the hand-off cover and the menu sheets come and go.
+// In game the only chrome is ink on the paper (docs/INK.md B5): the seat rings + the ensō menu at the
+// top; at the bottom the one line, the gold rule with the game's ensō, and the Turn Track pill with the
+// action pills; during a fight, the dice tray's header words. The breath line, the cards sheet, the
+// hand-off cover and the menu sheets come and go.
 //
 // Rendering: each component keeps its elements and patches them; every level short-circuits on
 // ViewModel identity (the controller keeps unchanged subtrees identical), so an idle frame costs a few
 // reference compares and no DOM writes.
 
+// One family (INK B3). index.html preloads the same files with font-display: block; this import also
+// covers pages without that head (the UI gallery).
+import '@fontsource-variable/cormorant-garamond/wght.css';
+import '@fontsource-variable/cormorant-garamond/wght-italic.css';
 import './styles.css';
 import './mobile.css';
-import type { MountUi, Screen, UiIntent, ViewModel } from '../game/viewModel';
+import type { GameVM, MountUi, Screen, SeatChipVM, StripVM, UiIntent, ViewModel } from '../game/viewModel';
 import type { ViewportInsets } from '../render/BoardView';
-import { h, motion, setAttr, toggle } from './dom';
+import { h, hashSeed, motion, setAttr, toggle } from './dom';
 import { boardTrayGeometry as trayGeometry } from '../shared/tray';
 import { Announcements } from './hud/announce';
 import { BattleHeader } from './hud/battle';
@@ -44,6 +49,25 @@ export function solveBand(H: number, scale: number, W = typeof window !== 'undef
   const trayH = trayGeometry(W, H, band, scale).trayH;
   const margin = Math.floor((band - trayH) / 2);
   return { band, strip: need, trayTop: margin + trayH };
+}
+
+/** A line arriving over a visible one waits this long: the old one dries (160 ms), then the paper is still. */
+const SLOT_CLEAR_MS = 250;
+
+/**
+ * The one seat still holding ground once every other is gone: the world is held, the victory beat is
+ * playing (the displayed board already shows it; the scroll hasn't risen yet). Null otherwise, and
+ * always null in setup, where empty seats are just waiting for their first pick.
+ */
+function worldHolder(g: GameVM): SeatChipVM | null {
+  if (g.strip.track.kind !== 'turn' || g.seats.length < 2) return null;
+  let holder: SeatChipVM | null = null;
+  for (const c of g.seats) {
+    if (c.territories <= 0) continue;
+    if (holder) return null;
+    holder = c;
+  }
+  return holder;
 }
 
 interface Instance {
@@ -80,7 +104,36 @@ export const mountUi: MountUi = (host, api) => {
   // Phones only (docs/MOBILE.md): the one-time rotate hint and the long-press name card.
   const rotate = new RotatePill();
   const nameCard = new NameCard();
-  hud.append(top.el, battle.el, strip.el, cards.scrim, cards.el, announce.el, bandProbe, rotate.el, nameCard.el);
+  hud.append(top.el, battle.el, strip.el, cards.scrim, cards.el, bandProbe, nameCard.el);
+  // The breath line and the rotate hint sit on the paper exactly where the strip's line does.
+  strip.el.querySelector('.st-say')!.append(announce.el, rotate.el);
+  // One line in the slot, ever (INK B4: one thing moves at a time). While a breath / epitaph line or the
+  // rotate hint is on the paper, the strip's own line steps aside (it dries in 160 ms, easeInQuad); a
+  // line arriving over a visible one brushes in only after that has gone and the paper has been still.
+  const say = { announce: false, hint: false };
+  // Phone landscape floats the breath line above the dock instead (mobile.css), so nothing to clear.
+  const sayInSlot = () => !(layout.form === 'phone' && !layout.portrait);
+  const syncSay = () => {
+    toggle(root, 'has-say', say.announce || say.hint);
+    strip.setLineAside((say.announce || say.hint) && sayInSlot());
+  };
+  const slotShowing = () => sayInSlot() && (!root.classList.contains('has-say') || rotate.busy);
+  announce.onShow = (on) => {
+    const wait = on && !say.announce && slotShowing() ? SLOT_CLEAR_MS : 0;
+    say.announce = on;
+    syncSay();
+    return wait;
+  };
+  rotate.onShow = (on) => {
+    say.hint = on;
+    syncSay();
+  };
+  // The hint only speaks into a quiet moment of a human's own turn: never over a turn line, a fight,
+  // a hand-off, a sheet or a moved view, and never once the game is decided.
+  const hintQuiet = (v: ViewModel) => {
+    const g = v.game;
+    return v.screen === 'game' && !v.overlay && !!g && !g.banner && !g.handoff && !g.confirm && !g.viewMoved && !g.battle && !g.cards?.open && g.strip.track.live && !worldHolder(g);
+  };
   installLayout();
 
   const title = new TitleScreen(send);
@@ -100,7 +153,7 @@ export const mountUi: MountUi = (host, api) => {
   for (const el of Object.values(screens)) el!.classList.add('off');
   hud.classList.add('off');
 
-  // ---- screen crossfade (360 ms) ------------------------------------------
+  // ---- screens: the old one dries (240 ms), the new one is brushed in -------
   let screen: Screen | null = null;
   const showScreen = (next: Screen) => {
     if (next === screen) return;
@@ -113,7 +166,7 @@ export const mountUi: MountUi = (host, api) => {
       if (motion.reduced || prev === 'boot') outEl.classList.add('off');
       else {
         outEl.classList.add('leaving');
-        const a = outEl.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 360, easing: 'ease-in-out', fill: 'forwards' });
+        const a = outEl.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 240, easing: 'cubic-bezier(0.11, 0, 0.5, 0)', fill: 'forwards' });
         a.onfinish = () => {
           if (screen !== prev) outEl.classList.add('off');
           outEl.classList.remove('leaving');
@@ -124,7 +177,7 @@ export const mountUi: MountUi = (host, api) => {
     if (inEl) {
       inEl.getAnimations().forEach((a) => a.cancel());
       inEl.classList.remove('off', 'leaving');
-      if (!motion.reduced && prev) inEl.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 360, easing: 'ease-in-out' });
+      if (!motion.reduced && prev) inEl.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 320, delay: 80, easing: 'cubic-bezier(0.2, 0.9, 0.2, 1)', fill: 'backwards' });
     }
     if (next === 'newGame') requestAnimationFrame(() => screen === 'newGame' && !vm?.overlay && newGame.focusFirstName());
     if (next !== 'boot' && boot) {
@@ -217,7 +270,8 @@ export const mountUi: MountUi = (host, api) => {
   const unLayout = onLayout(() => {
     applyScale(true);
     queueMeasure();
-    if (vm) rotate.update(vm.screen === 'game' && !vm.overlay && !vm.game?.banner && !vm.game?.handoff, layout.form === 'phone' && layout.portrait);
+    syncSay();
+    if (vm) rotate.update(hintQuiet(vm), layout.form === 'phone' && layout.portrait);
   });
   const ro = new ResizeObserver(queueMeasure);
   for (const el of [top.el, strip.el, bandProbe, top.el.querySelector('.ts-seats')!]) ro.observe(el);
@@ -247,7 +301,44 @@ export const mountUi: MountUi = (host, api) => {
   window.addEventListener('resize', onResizeScale);
 
   // ---- render -------------------------------------------------------------
+  // The victory beat (INK F7): once the world is held, the one line says so instead of a stale
+  // 'John's turn' until the scroll rises. Memoised so the strip's identity short-circuit still holds.
+  // Before that, while the deciding fight still plays on the displayed board, the turn has already
+  // stopped being live (the real state is over) and the strip would fall back to 'John's turn': the
+  // armed line the fight started from stays on the paper instead, so the line never goes stale.
+  let heldFrom: StripVM | null = null;
+  let heldVm: StripVM | null = null;
+  let lastLive: StripVM | null = null;
+  let fightLine: StripVM | null = null;
+  const stripFor = (g: GameVM): StripVM => {
+    const s = g.strip;
+    const holder = worldHolder(g);
+    if (holder) {
+      fightLine = null;
+      if (heldFrom !== s || !heldVm) {
+        heldFrom = s;
+        heldVm = { ...s, line: `${holder.seat.name} holds the world`, lineKind: 'normal', buttons: [], count: null };
+      }
+      return heldVm;
+    }
+    if (s.track.live || !g.battle || s.mode !== 'watching') {
+      fightLine = null;
+      lastLive = s.track.live && g.battle ? s : null;
+      return s;
+    }
+    // A live turn's fight went un-live mid-roll (only the game ending does that): hold its line.
+    const from = fightLine ?? lastLive;
+    if (!from) return s;
+    if (!fightLine || heldFrom !== s) {
+      heldFrom = s;
+      fightLine = from;
+      heldVm = { ...s, line: from.line, lineKind: from.lineKind, lineKey: from.lineKey, buttons: [], count: null };
+    }
+    return heldVm!;
+  };
+
   let vm: ViewModel | null = null;
+  let gameSeed = -1;
   const render = (next: ViewModel) => {
     const prev = vm;
     vm = next;
@@ -257,25 +348,36 @@ export const mountUi: MountUi = (host, api) => {
     if (!prev || prev.settings.textSize !== next.settings.textSize) applyScale(!!prev);
     showScreen(next.screen);
     toggle(root, 'in-game', next.screen === 'game');
-    // After the turn banner (never over it) and never over the hand-off cover.
-    rotate.update(next.screen === 'game' && !next.overlay && !next.game?.banner && !next.game?.handoff && !next.game?.viewMoved, layout.form === 'phone' && layout.portrait);
-    // Panning / zooming answers the hint (and `Reset view` takes the same corner): it goes.
-    if (next.game?.viewMoved) rotate.dismiss();
+    // After the turn line (never over it); panning / zooming answers it too.
+    rotate.update(hintQuiet(next), layout.form === 'phone' && layout.portrait);
     nameCard.update(next.screen === 'game' ? next.game?.nameCard : null);
     toggle(lost, 'hidden', !next.boardLost);
 
-    if (next.screen === 'title' || next.overlay) title.update(next);
+    if (next.screen === 'title' || next.overlay || prev?.screen === 'title') title.update(next);
     if (next.screen === 'newGame') newGame.update(next.newGame);
     victory.update(next.victory, next.screen === 'victory');
     setAttr(victory.el, 'data-testid', next.screen === 'victory' ? 'victory' : null);
 
     const g = next.game;
     if (g && (!prev || prev.game !== g)) {
+      // The game's ensō (seed = the game's seed; a stable stand-in until the controller sends it).
+      const seed = g.seed ?? hashSeed(g.seats.map((c) => `${c.seat.name}:${c.seat.color}`).join('|'));
+      if (seed !== gameSeed) {
+        gameSeed = seed;
+        top.setSeed(seed);
+        strip.setSeed(seed);
+      }
       top.update(g.seats);
       top.setViewMoved(g.viewMoved);
-      strip.update(g.strip);
+      // A breath line arriving in this very render (a turn start): the strip's line keeps its words
+      // while it dries, rather than swapping to the new turn's line and drying that (INK F6).
+      if (g.banner && g.banner.id !== prev?.game?.banner?.id && sayInSlot()) strip.setLineAside(true);
+      strip.update(stripFor(g), g.gold);
+      // Ambient motion yields to the strike (INK A1): the rule's glint and breath rest while dice roll.
+      toggle(root, 'is-striking', !!g.battle?.rolling);
       battle.update(g.battle);
       announce.update(g.banner);
+      syncSay();
       cards.update(g.cards);
       handoff.update(g.handoff);
       confirm.update(g.confirm);
@@ -393,6 +495,19 @@ export const mountUi: MountUi = (host, api) => {
     }
   };
 
+  // INK A1: after 3 minutes without input the ambient layer (here: the rule's glint and the ensō's breath)
+  // runs at half speed; any input wakes it.
+  const DOZE_MS = 180_000;
+  let dozeT = 0;
+  const wake = () => {
+    toggle(root, 'is-dozing', false);
+    window.clearTimeout(dozeT);
+    dozeT = window.setTimeout(() => toggle(root, 'is-dozing', true), DOZE_MS);
+  };
+  const wakeEvents = ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
+  for (const ev of wakeEvents) window.addEventListener(ev, wake, { passive: true, capture: true });
+  wake();
+
   root.addEventListener('pointerdown', onPointerDown);
   window.addEventListener('pointerup', clearDown);
   window.addEventListener('pointercancel', clearDown);
@@ -412,6 +527,8 @@ export const mountUi: MountUi = (host, api) => {
     dispose() {
       unsub();
       unLayout();
+      window.clearTimeout(dozeT);
+      for (const ev of wakeEvents) window.removeEventListener(ev, wake, { capture: true });
       ro.disconnect();
       window.removeEventListener('resize', queueMeasure);
       window.removeEventListener('resize', onResizeScale);

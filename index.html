@@ -5,8 +5,8 @@
     <!-- The game provides its own zoom (pinch on the board) and a Text size setting (docs/MOBILE.md §2). -->
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no" />
     <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#0c0f13" />
-    <meta name="description" content="The classic game of world conquest in 3D, for 2 to 4 players around one screen." />
+    <meta name="theme-color" content="#0b1224" />
+    <meta name="description" content="The classic game of world conquest, for 2 to 4 players around one screen." />
     <title>War Table</title>
     <!-- Installed app: manifest + icons (public/), status bar over the board. -->
     <link rel="manifest" href="/manifest.webmanifest" />
@@ -18,11 +18,9 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="War Table" />
     <meta name="format-detection" content="telephone=no" />
-    <!-- Fonts: the @fontsource files, copied to public/fonts so they can be preloaded at stable URLs
-         with font-display: block (SPEC §8.8: no font swap on a cold load). -->
-    <link rel="preload" href="/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
-    <link rel="preload" href="/fonts/cinzel-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin />
-    <link rel="preload" href="/fonts/cinzel-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <!-- One family (docs/INK.md B3): Cormorant Garamond, copied from @fontsource-variable to public/fonts so
+         it can be preloaded at a stable URL with font-display: block (no font swap on a cold load). -->
+    <link rel="preload" href="/fonts/cormorant-garamond-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
     <script>
       // Device class before first paint (src/ui/layout.ts keeps it current): no desktop-layout flash on a
       // phone. By capability and viewport size, never the user agent.
@@ -37,64 +35,71 @@
     </script>
     <style>
       @font-face {
-        font-family: 'Inter Variable';
+        font-family: 'Cormorant Garamond Variable';
         font-style: normal;
         font-display: block;
-        font-weight: 100 900;
-        src: url(/fonts/inter-latin-wght-normal.woff2) format('woff2-variations');
+        font-weight: 300 700;
+        src: url(/fonts/cormorant-garamond-latin-wght-normal.woff2) format('woff2-variations');
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
       }
       @font-face {
-        font-family: 'Cinzel';
+        font-family: 'Cormorant Garamond Variable';
         font-style: normal;
         font-display: block;
-        font-weight: 600;
-        src: url(/fonts/cinzel-latin-600-normal.woff2) format('woff2');
+        font-weight: 300 700;
+        src: url(/fonts/cormorant-garamond-latin-ext-wght-normal.woff2) format('woff2-variations');
+        unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
       }
       @font-face {
-        font-family: 'Cinzel';
-        font-style: normal;
-        font-display: block;
-        font-weight: 700;
-        src: url(/fonts/cinzel-latin-700-normal.woff2) format('woff2');
+        font-family: 'Cormorant Garamond Variable';
+        font-style: italic;
+        font-display: swap;
+        font-weight: 300 700;
+        src: url(/fonts/cormorant-garamond-latin-wght-italic.woff2) format('woff2-variations');
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
       }
       /* App shell (docs/MOBILE.md §2): one fixed screen. No page scroll, zoom, rubber-banding,
          pull-to-refresh, text selection, tap highlight or long-press callouts; 100dvh, never 100vh. */
       html, body {
-        margin: 0; height: 100%; height: 100dvh; overflow: hidden; background: #0c0f13;
+        margin: 0; height: 100%; height: 100dvh; overflow: hidden; background: #0b1224;
         overscroll-behavior: none; -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
         -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
       }
       body { position: fixed; inset: 0; width: 100%; touch-action: manipulation; }
       #board { position: fixed; inset: 0; touch-action: none; }
       #ui { position: fixed; inset: 0; pointer-events: none; }
-      /* Boot splash: invisible for the first 600 ms, so fast boots never flash it (UX.md §8.8). */
+      /* Boot splash: the title's own lockup (serif small caps, the gold hairline with the title's ensō at
+         its centre), invisible for the first 600 ms so fast boots never flash it; the ensō breathes
+         slowly while the board builds (the same 8 s breath as the in-game rule). */
       #boot-splash {
-        position: fixed; inset: 0; display: grid; place-content: center; justify-items: center;
-        gap: 18px; color: #f3ead8; font: 600 28px/1 'Cinzel', serif; letter-spacing: 0.32em;
-        opacity: 0; animation: boot-in 300ms ease-out 600ms forwards; pointer-events: none;
+        position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; gap: 18px;
+        color: #f0ebe0; font: 500 44px/1 'Cormorant Garamond Variable', Georgia, serif; font-variant: small-caps;
+        letter-spacing: 0.08em; opacity: 0; animation: boot-in 300ms ease-out 600ms forwards; pointer-events: none;
+        background: radial-gradient(120% 90% at 50% 45%, #121d36, #0b1224);
       }
       #boot-splash i {
-        display: block; width: 220px; height: 1px; background: rgba(194, 160, 98, 0.22);
-        position: relative; overflow: hidden;
+        position: relative; display: block; width: min(460px, 76vw); height: 44px;
+        background:
+          linear-gradient(90deg, rgba(201, 169, 97, 0), #c9a961) left center / calc(50% - 32px) 1px no-repeat,
+          linear-gradient(270deg, rgba(201, 169, 97, 0), #c9a961) right center / calc(50% - 32px) 1px no-repeat;
       }
-      #boot-splash i::after {
-        content: ''; position: absolute; inset: 0; background: #c2a062; transform-origin: left;
-        transform: scaleX(0); animation: boot-fill 2.4s cubic-bezier(0.2, 0.7, 0.2, 1) 600ms forwards;
+      #boot-splash svg {
+        position: absolute; left: 50%; top: 0; width: 44px; height: 44px; margin-left: -22px; color: #c9a961; overflow: visible;
+        animation: boot-breathe 8s ease-in-out 600ms infinite alternate;
       }
       /* The installed app starts on the splash straight away (no 600 ms grace: there is no page behind it). */
       @media (display-mode: standalone), (display-mode: fullscreen) {
         #boot-splash { animation-delay: 0ms; }
-        #boot-splash i::after { animation-delay: 0ms; }
       }
       @keyframes boot-in { to { opacity: 1; } }
-      @keyframes boot-fill { to { transform: scaleX(0.92); } }
+      @keyframes boot-breathe { from { opacity: 1; } to { opacity: 0.84; } }
     </style>
   </head>
   <!-- Contract: #board (WebGL canvas container) sits under #ui (HTML overlay). src/main.ts boots both. -->
   <body>
     <div id="board"></div>
     <div id="ui">
-      <div id="boot-splash" aria-hidden="true">WAR TABLE<i></i></div>
+      <div id="boot-splash" aria-hidden="true">War Table<i><svg viewBox="0 0 100 100"><path fill="currentColor" d="M83.4 22.7L86 25.4L89 28.3L91.3 31.7L92.8 35.5L93.8 39.4L94.5 43.4L94.8 47.4L94.8 51.4L94.4 55.5L93.7 59.4L92.6 63.3L91.1 67L89.4 70.6L87.3 74.1L85 77.3L82.4 80.3L79.5 83.2L76.4 85.7L73.1 88L69.6 89.9L65.9 91.5L62.1 92.7L58.3 93.7L54.4 94.3L50.4 94.6L46.5 94.5L42.5 94.2L38.5 93.5L34.6 92.3L30.8 90.8L27.1 88.9L23.6 86.7L20.4 84.1L17.4 81.3L14.7 78.2L12.3 74.9L10.3 71.4L8.5 67.7L7.2 63.9L6.1 60L5.5 55.9L5.3 51.8L5.5 47.8L6.1 43.8L7.1 40L8.5 36.3L12.2 37.5L11.2 41L10.5 44.5L10.1 48.1L10 51.7L10.3 55.3L10.9 58.9L11.9 62.3L13.2 65.7L14.8 68.9L16.6 72L18.8 74.9L21.1 77.7L23.7 80.2L26.5 82.4L29.6 84.4L32.8 86.1L36.2 87.4L39.6 88.4L43.1 89L46.7 89.3L50.2 89.3L53.7 89.1L57.2 88.5L60.7 87.7L64 86.6L67.2 85.2L70.3 83.5L73.3 81.5L76 79.2L78.5 76.8L80.8 74.1L82.8 71.2L84.6 68.2L86.1 65L87.4 61.7L88.3 58.3L88.9 54.8L89.2 51.3L89.2 47.8L88.8 44.2L88.2 40.8L87.2 37.3L85.9 34L84.3 30.9L82.2 28L80 25.3ZM80.6 24.9L82.9 27.5L85.1 30.4L87 33.6L88.3 37L89.3 40.5L90 44.1L90.4 47.7L90.4 51.3L90.1 54.9L89.4 58.5L88.4 62L87.1 65.4L85.5 68.6L83.6 71.7L81.5 74.6L79.2 77.4L76.6 79.9L73.8 82.2L70.8 84.3L67.7 86L64.4 87.5L60.9 88.7L57.4 89.5L53.9 90.1L50.3 90.4L46.7 90.4L43 90.1L39.4 89.5L35.8 88.6L32.3 87.3L28.9 85.7L25.7 83.7L22.7 81.4L19.9 78.8L17.4 76L15.2 73L13.2 69.8L11.6 66.4L10.3 62.9L9.3 59.2L8.6 55.5L8.4 51.7L8.5 48L9.1 44.3L10 40.7L11.2 37.2L12.6 33.8L14.4 30.6L16.3 27.5L18.4 24.6L20.8 21.8L23.4 19.3L26.3 17L29.4 14.9L32.6 13.2L36 11.8L39.6 10.8L39.9 11.8L36.5 13.1L33.4 14.7L30.4 16.5L27.7 18.7L25.2 21.1L22.9 23.7L20.9 26.4L19.1 29.3L17.5 32.3L16.1 35.3L15 38.5L14.1 41.7L13.4 45L13.1 48.3L13.1 51.6L13.4 54.9L14.1 58.1L15 61.3L16.3 64.4L17.7 67.3L19.5 70.1L21.5 72.8L23.6 75.2L26 77.5L28.6 79.5L31.4 81.2L34.3 82.6L37.3 83.6L40.5 84.4L43.7 84.9L46.9 85.2L50.1 85.1L53.3 84.9L56.4 84.4L59.5 83.6L62.5 82.6L65.3 81.3L68.1 79.8L70.7 78L73.1 76L75.3 73.8L77.3 71.4L79.1 68.9L80.8 66.2L82.1 63.4L83.2 60.4L84.1 57.4L84.6 54.3L84.8 51.1L84.7 48L84.3 44.9L83.7 41.8L82.8 38.8L81.6 35.9L80.4 33L79.1 30.2L77.3 27.5ZM78.5 26.5L80.4 29.3L82 32.1L83.4 35.2L84.5 38.3L85.3 41.4L85.9 44.7L86.2 47.9L86.2 51.2L86 54.5L85.4 57.7L84.6 60.8L83.4 63.9L82 66.8L80.4 69.6L78.5 72.3L76.4 74.8L74.1 77.1L71.6 79.2L68.9 81.1L66.1 82.8L63.1 84.1L60 85.3L56.7 86.1L53.5 86.6L50.1 86.9L46.8 86.9L43.5 86.6L40.1 86L36.9 85.1L33.7 83.9L30.7 82.5L27.8 80.7L25.1 78.6L22.6 76.3L20.3 73.7L18.2 71L16.4 68L14.9 65L13.6 61.8L12.7 58.4L12 55.1L11.7 51.6L11.7 48.2L12.1 44.7L12.8 41.4L16.8 42.4L16.4 45.4L16.3 48.5L16.4 51.5L16.8 54.4L17.5 57.3L18.4 60.2L19.5 63L20.9 65.6L22.5 68.1L24.3 70.5L26.3 72.7L28.5 74.6L30.8 76.4L33.2 77.9L35.7 79.2L38.4 80.2L41.2 80.9L44.1 81.4L47 81.6L49.9 81.6L52.9 81.4L55.7 80.9L58.5 80.2L61.2 79.2L63.7 78L66.1 76.6L68.4 75L70.5 73.2L72.5 71.2L74.3 69.1L75.9 66.8L77.3 64.4L78.4 61.8L79.4 59.2L80.1 56.5L80.5 53.8L80.6 51L80.5 48.2L80.2 45.5L79.7 42.7L79 40.1L78 37.5L77.3 34.8L76.6 31.9L75.1 29.1ZM83.8 26.1L83.3 28L82.1 29.6L80.2 30.6L78 30.4L76 29.7L75.1 28.1L74.5 26.1L74.8 24L76.1 22.6L78 21.4L80.2 21.7L82.1 22.4L83.2 24Z"/></svg></i></div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

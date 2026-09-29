@@ -1,27 +1,18 @@
-// Victory (UX.md §4.6): winner banner (2.5 s), then ≤ 3 award cards dealt 250 ms apart, the
-// territories-over-time chart, standings, Rematch / New setup / Title, and Full stats.
+// Victory (docs/INK.md B2.8, B5): a scroll, not fireworks. On the dimmed board one paper sheet rises
+// with the game's ensō in the winner's wash drawing itself, `John holds the world`, `Round 14 · 31
+// territories`, three award lines (Nemesis first), one ink timeline per player with no grid, a quiet
+// standings line, then Rematch (the only gold) · New setup · Title, and Full stats folded away.
+// Nothing makes anyone wait: Enter / a click finishes the drawing at once.
 
 import type { PlayerStats } from '../../engine/types';
-import type { SeatRef, UiIntent, VictoryVM } from '../../game/viewModel';
-import { PLAYER_COLORS, EMBLEM_PATHS } from '../../shared/palette';
+import type { UiIntent, VictoryVM } from '../../game/viewModel';
+import { PLAYER_COLORS } from '../../shared/palette';
 import { uiButton } from '../controls';
-import { EASE_OUT_QUART, emblem, h, motion, setStyle, svg, titleText, toggle } from '../dom';
+import { drawEnso, drawIn, EASE_BRUSH, emblem, ensoEl, h, hashSeed, minus, motion, setEnso, setStyle, svg, toggle } from '../dom';
 
 type Send = (i: UiIntent) => void;
 
-const AWARD_GLYPH: Record<string, string> = {
-  // crossed swords
-  nemesis:
-    '<path d="M5 4l9.5 9.5M4 5l1-1M14.5 13.5l-2 2 3 3 2-2zM19 4L9.5 13.5M20 5l-1-1M9.5 13.5l2 2-3 3-2-2z"/>',
-  // a die showing five
-  hotDice:
-    '<rect x="4.5" y="4.5" width="15" height="15" rx="3"/><circle cx="8.6" cy="8.6" r="1.2"/><circle cx="15.4" cy="8.6" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="8.6" cy="15.4" r="1.2"/><circle cx="15.4" cy="15.4" r="1.2"/>',
-  // a die showing one
-  cursedDice: '<rect x="4.5" y="4.5" width="15" height="15" rx="3"/><circle cx="12" cy="12" r="1.3"/>',
-  // stacked cards
-  cashIn: '<rect x="8" y="4" width="10" height="14" rx="1.6"/><path d="M6 6.5v12a1.6 1.6 0 0 0 1.6 1.6H15"/>',
-};
-
+/** The full-stats rows, in reading order. */
 const STAT_COLS: { key: keyof PlayerStats; label: string }[] = [
   { key: 'territoriesConquered', label: 'Conquered' },
   { key: 'battlesWon', label: 'Rolls won' },
@@ -37,181 +28,92 @@ function ordinal(n: number): string {
   return n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`;
 }
 
-/** Territories-over-time line chart (SVG). One 2 px line per seat in its base color, emblem-marked
- *  end labels, recessive grid, hover crosshair with a per-round readout. */
+/** 'CRIMSON RULES THE WORLD' (older controllers) → 'Crimson rules the world'. */
+function plain(s: string): string {
+  if (s !== s.toUpperCase()) return s;
+  const t = s.toLowerCase();
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+/**
+ * The timeline: one ink line per player, in turn order, all on one scale (territories over rounds), no
+ * grid and no axes — just the rise and fall, the final count at the right, and where a player went out.
+ */
 export class TerritoryChart {
   readonly el: HTMLDivElement;
-  private readout: HTMLDivElement;
-  private W = 640;
-  private H = 260;
-  private pad = { l: 34, r: 104, t: 12, b: 28 };
   private last: VictoryVM | null = null;
-
-  /** Re-draw at the current size (resize, text-size change). */
-  refresh(): void {
-    if (this.last) this.render(this.last);
-  }
 
   constructor() {
     this.el = h('div', 'chart');
-    this.readout = h('div', 'chart-readout hidden');
   }
 
-  render(vm: VictoryVM): void {
+  refresh(): void {
+    if (this.last) this.render(this.last, false);
+  }
+
+  render(vm: VictoryVM, animate = true): void {
     this.last = vm;
     this.el.textContent = '';
-    // Legend (identity never by color alone)
-    const legend = h('div', 'chart-legend');
-    for (const seat of vm.seats) {
-      const it = h('span', 'lg-item');
-      const sw = h('i', 'lg-line');
-      setStyle(sw, 'background', PLAYER_COLORS[seat.color].base);
-      it.append(sw, emblem(seat.color), h('span', '', seat.name));
-      legend.append(it);
-    }
-    const head = h('div', 'chart-head');
-    head.append(h('h2', 'chart-title', 'Territories, round by round'), legend);
-    const plot = h('div', 'chart-plot');
-    this.el.append(head, plot);
-    // Draw in real CSS pixels at the plot's size, so labels follow the text-size setting (rem).
-    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    const W = Math.max(320, Math.round(plot.clientWidth));
-    const H = Math.max(160, Math.round(plot.clientHeight || 260));
-    this.W = W;
-    this.H = H;
-    this.pad = { l: Math.round(2.4 * rem), r: Math.round(6.5 * rem), t: Math.round(0.9 * rem), b: Math.round(1.9 * rem) };
-    const pad = this.pad;
     const pts = vm.timeline;
-    const s = svg('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'chart-svg', role: 'img' });
-    s.setAttribute('aria-label', 'Territories held by each player, round by round');
-    if (pts.length === 0) {
-      plot.append(h('p', 'dim', 'No rounds recorded'));
+    if (!pts.length) {
+      this.el.append(h('p', 'dim', 'No rounds recorded'));
       return;
     }
-    // Samples are taken at the start of each round (the board after the previous round); the engine adds
-    // one more at game over, inside the last round. That final board is plotted at the end of the last
-    // round (x = R + 1, tick 'End'), so the line climbs across the round instead of spiking in place.
     const n = pts.length;
-    const finalDup = n > 1 && pts[n - 1].round === pts[n - 2].round;
-    const xr = pts.map((p, i) => (finalDup && i === n - 1 ? p.round + 1 : p.round));
-    const minR = xr[0];
-    const maxR = xr[n - 1];
-    const span = Math.max(1, maxR - minR);
-    const x = (r: number) => pad.l + ((r - minR) / span) * (W - pad.l - pad.r);
-    // Scale to the game that was played (a called game at 13 territories shouldn't hug the floor).
-    let peak = 0;
+    let peak = 1;
     for (const p of pts) for (const v of Object.values(p.territories)) peak = Math.max(peak, v as number);
-    const yMax = Math.min(42, Math.max(20, Math.ceil((peak + 2) / 10) * 10));
-    const y = (v: number) => pad.t + (1 - v / yMax) * (H - pad.t - pad.b);
-    const xs = n === 1 ? [pad.l] : xr.map((r) => x(r));
-    const tick = 0.84 * rem;
-
-    // Grid + y axis
-    const grid = svg('g', { class: 'c-grid' });
-    for (const v of [0, 10, 20, 30, 40].filter((v) => v <= yMax)) {
-      grid.append(svg('line', { x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v) }));
-      const t = svg('text', { x: pad.l - 8, y: y(v) + tick * 0.35, 'text-anchor': 'end', class: 'c-tick' });
-      t.textContent = String(v);
-      grid.append(t);
-    }
-    // x ticks: about 6 labels, plus 'End' under the final board.
-    const every = Math.max(1, Math.ceil(span / 6));
-    const endX = finalDup ? xs[n - 1] : Infinity;
-    for (let r = minR; r <= maxR; r += every) {
-      const i = xr.findIndex((v, k) => v === r && !(finalDup && k === n - 1));
-      if (i < 0 || Math.abs(xs[i] - endX) < 2.2 * rem) continue;
-      const t = svg('text', { x: xs[i], y: H - tick * 0.4, 'text-anchor': 'middle', class: 'c-tick' });
-      t.textContent = String(r);
-      grid.append(t);
-    }
-    if (finalDup) {
-      const t = svg('text', { x: endX, y: H - tick * 0.4, 'text-anchor': 'middle', class: 'c-tick' });
-      t.textContent = 'End';
-      grid.append(t);
-    }
-    s.append(grid);
-
-    // Lines (winner drawn last, on top)
-    const order = [...vm.seats].sort((a, b) => (a.id === vm.winner.id ? 1 : 0) - (b.id === vm.winner.id ? 1 : 0));
-    const lines = svg('g', { class: 'c-lines' });
-    const ends: { seat: SeatRef; y: number; v: number }[] = [];
-    for (const seat of order) {
+    const rounds = h('div', 'tl-rounds num');
+    rounds.append(h('span', '', `Round ${pts[0].round}`), h('span', '', n > 1 ? `Round ${pts[n - 1].round}` : ''));
+    vm.seats.forEach((seat, si) => {
       const col = PLAYER_COLORS[seat.color];
-      const d = pts.map((p, i) => `${i ? 'L' : 'M'}${xs[i].toFixed(1)},${y(p.territories[seat.id] ?? 0).toFixed(1)}`).join('');
-      const path = svg('path', { d, class: `c-line${seat.id === vm.winner.id ? ' winner' : ''}` });
-      path.style.stroke = col.base;
-      lines.append(path);
-      if (!motion.reduced) {
-        const len = W * 3;
+      const row = h('div', `tl-row${seat.id === vm.winner.id ? ' winner' : ''}`);
+      setStyle(row, '--seat-light', col.light);
+      const name = h('span', 'tl-name');
+      name.append(emblem(seat.color), h('span', '', seat.name));
+      const plot = h('div', 'tl-plot');
+      const W = 600;
+      const H = 40;
+      const x = (i: number) => (n === 1 ? 0 : (i / (n - 1)) * W);
+      const y = (v: number) => H - 3 - (v / peak) * (H - 6);
+      // The line stops where the player went out (the first zero after holding land).
+      let end = n - 1;
+      for (let i = 1; i < n; i++) if ((pts[i].territories[seat.id] ?? 0) === 0 && (pts[i - 1].territories[seat.id] ?? 0) > 0) {
+        end = i;
+        break;
+      }
+      const d = pts
+        .slice(0, end + 1)
+        .map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.territories[seat.id] ?? 0).toFixed(1)}`)
+        .join('');
+      const s = svg('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', class: 'tl-svg' });
+      s.setAttribute('aria-hidden', 'true');
+      const base = svg('line', { x1: 0, x2: W, y1: H - 3, y2: H - 3, class: 'tl-base' });
+      const path = svg('path', { d, class: 'tl-line' });
+      s.append(base, path);
+      plot.append(s);
+      const final = pts[n - 1].territories[seat.id] ?? 0;
+      const out = final === 0 && end < n - 1;
+      const val = h('span', 'tl-val num', out ? 'out' : String(final));
+      if (out) val.append(h('span', 'tl-when', ` · round ${pts[end].round}`));
+      row.append(name, plot, val);
+      this.el.append(row);
+      if (animate && !motion.reduced && typeof path.animate === 'function') {
+        const len = W * 2.5;
         path.style.strokeDasharray = `${len}`;
-        path.style.strokeDashoffset = `${len}`;
-        path.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }], { duration: 900, delay: 150, easing: EASE_OUT_QUART, fill: 'forwards' });
+        path.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }], { duration: 900, delay: 500 + si * 90, easing: EASE_BRUSH, fill: 'backwards' });
       }
-      const last = pts[pts.length - 1].territories[seat.id] ?? 0;
-      ends.push({ seat, y: y(last), v: last });
-    }
-    s.append(lines);
-
-    // Direct end labels: emblem + name + value, de-collided vertically.
-    ends.sort((a, b) => a.y - b.y);
-    const lh = 1.15 * rem;
-    for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < lh) ends[i].y = ends[i - 1].y + lh;
-    const lab = svg('g', { class: 'c-labels' });
-    const xEnd = xs[xs.length - 1];
-    for (const e of ends) {
-      const col = PLAYER_COLORS[e.seat.color];
-      const g = svg('g', { transform: `translate(${xEnd + 10}, ${e.y})` });
-      const k = (0.8 * rem) / 24;
-      const em = svg('path', { d: EMBLEM_PATHS[col.emblem], transform: `translate(0,${-0.4 * rem}) scale(${k})` });
-      em.style.fill = col.light;
-      const t = svg('text', { x: rem * 1.05, y: 0.3 * rem, class: 'c-end' });
-      t.textContent = `${e.seat.name} ${e.v}`;
-      g.append(em, t);
-      lab.append(g);
-    }
-    s.append(lab);
-
-    // Hover layer: crosshair + readout
-    const cross = svg('line', { class: 'c-cross', y1: pad.t, y2: H - pad.b, x1: 0, x2: 0, opacity: 0 });
-    const hit = svg('rect', { x: pad.l, y: 0, width: W - pad.l - pad.r + 8, height: H, fill: 'transparent' });
-    s.append(cross, hit);
-    const move = (ev: PointerEvent) => {
-      const r = s.getBoundingClientRect();
-      const px = ((ev.clientX - r.left) / r.width) * W;
-      let best = 0;
-      for (let i = 1; i < xs.length; i++) if (Math.abs(xs[i] - px) < Math.abs(xs[best] - px)) best = i;
-      cross.setAttribute('x1', String(xs[best]));
-      cross.setAttribute('x2', String(xs[best]));
-      cross.setAttribute('opacity', '1');
-      const p = pts[best];
-      this.readout.textContent = '';
-      this.readout.append(h('div', 'cr-head', best === pts.length - 1 ? 'Final board' : `Round ${p.round}`));
-      const rows = [...vm.seats].sort((a, b) => (p.territories[b.id] ?? 0) - (p.territories[a.id] ?? 0));
-      for (const seat of rows) {
-        const row = h('div', 'cr-row');
-        row.append(emblem(seat.color), h('span', '', seat.name), h('span', 'num', String(p.territories[seat.id] ?? 0)));
-        this.readout.append(row);
-      }
-      this.readout.classList.remove('hidden');
-      const left = (xs[best] / W) * r.width;
-      this.readout.style.left = `${Math.round(left > r.width * 0.6 ? left - 12 : left + 12)}px`;
-      toggle(this.readout, 'flip', left > r.width * 0.6);
-    };
-    hit.addEventListener('pointermove', move);
-    hit.addEventListener('pointerleave', () => {
-      cross.setAttribute('opacity', '0');
-      this.readout.classList.add('hidden');
     });
-
-    plot.append(s, this.readout);
+    this.el.append(rounds);
   }
 }
 
 export class VictoryScreen {
   readonly el: HTMLElement;
   private vm: VictoryVM | null = null;
-  private intro: HTMLDivElement;
-  private body: HTMLDivElement;
+  private scroll: HTMLDivElement;
+  private mark: SVGSVGElement;
+  private title: HTMLHeadingElement;
+  private sub: HTMLParagraphElement;
   private awards: HTMLDivElement;
   private chart = new TerritoryChart();
   private standings: HTMLOListElement;
@@ -224,49 +126,50 @@ export class VictoryScreen {
 
   constructor(send: Send) {
     this.el = h('section', 'screen victory-screen');
-    this.intro = h('div', 'v-intro');
-    this.body = h('div', 'v-body hidden');
+    this.scroll = h('div', 'v-scroll sheet');
+    const head = h('div', 'v-head');
+    this.mark = ensoEl(1, 'enso v-enso', { drawable: true });
+    this.title = h('h1', 'v-title');
+    this.sub = h('p', 'v-sub num');
+    head.append(this.mark, this.title, this.sub);
     this.awards = h('div', 'v-awards');
     const mid = h('div', 'v-mid');
-    const chartWrap = h('div', 'panel v-chart');
+    const chartWrap = h('div', 'v-chart');
     chartWrap.append(this.chart.el);
-    const standWrap = h('div', 'panel v-stand');
-    standWrap.append(h('h2', 'chart-title', 'Final standings'));
     this.standings = h('ol', 'standings');
-    standWrap.append(this.standings);
-    mid.append(chartWrap, standWrap);
-    this.stats = h('div', 'panel v-stats hidden');
+    mid.append(chartWrap, this.standings);
+    this.stats = h('div', 'v-stats hidden');
     const actions = h('div', 'v-actions');
     this.statsBtn = uiButton('Full stats', 'role-exit', () => this.setStats(!this.statsOpen), undefined, 'victory-stats');
     actions.append(
-      uiButton('Rematch', 'brass role-primary big', () => send({ type: 'rematch' }), 'Enter', 'rematch'),
-      uiButton('New setup', 'role-secondary big', () => send({ type: 'nav', screen: 'newGame' }), undefined, 'victory-newsetup'),
-      uiButton('Title', 'role-secondary big', () => send({ type: 'nav', screen: 'title' }), undefined, 'victory-title'),
+      uiButton('Rematch', 'brass role-primary big', () => send({ type: 'rematch' }), undefined, 'rematch'),
+      uiButton('New setup', 'role-secondary', () => send({ type: 'nav', screen: 'newGame' }), undefined, 'victory-newsetup'),
+      uiButton('Title', 'role-secondary', () => send({ type: 'nav', screen: 'title' }), undefined, 'victory-title'),
       h('span', 'v-spacer'),
       this.statsBtn,
     );
-    this.body.append(this.awards, mid, this.stats, actions);
-    this.el.append(h('div', 'v-scrim'), this.intro, this.body);
+    this.scroll.append(head, this.awards, mid, actions, this.stats);
+    this.el.append(h('div', 'v-scrim'), this.scroll);
     let rt = 0;
     window.addEventListener('resize', () => {
       window.clearTimeout(rt);
       rt = window.setTimeout(() => {
-        if (this.phase === 'full' && this.el.isConnected) this.chart.refresh();
+        if (this.el.isConnected && this.vm) this.chart.refresh();
       }, 120);
     });
-    // A click after the first 1.5 s skips the intro hold.
+    // A press during the drawing finishes it (never a wait).
     this.el.addEventListener('pointerdown', () => {
-      if (this.phase === 'intro' && performance.now() - this.shownAt > 1500) this.showFull();
+      if (this.phase === 'intro' && performance.now() - this.shownAt > 250) this.showFull();
     });
   }
 
   private setStats(on: boolean): void {
     this.statsOpen = on;
     toggle(this.stats, 'hidden', !on);
-    toggle(this.body, 'stats-open', on);
+    toggle(this.scroll, 'stats-open', on);
     this.statsBtn.querySelector('.btn-label')!.textContent = on ? 'Hide stats' : 'Full stats';
     if (on) {
-      animateInSafe(this.stats);
+      drawIn(this.stats, 240);
       this.stats.scrollIntoView({ block: 'nearest', behavior: motion.reduced ? 'auto' : 'smooth' });
     }
   }
@@ -287,109 +190,100 @@ export class VictoryScreen {
     const pal = PLAYER_COLORS[vm.winner.color];
     setStyle(this.el, '--seat', pal.base);
     setStyle(this.el, '--seat-light', pal.light);
+    const seed = vm.seed ?? hashSeed(vm.seats.map((s) => `${s.name}:${s.color}`).join('|'));
+    setEnso(this.mark, seed, { drawable: true });
+    this.title.textContent = minus(plain(vm.title));
+    this.sub.textContent = minus(vm.subline);
 
-    // Intro banner
-    this.intro.textContent = '';
-    const rb = h('div', 'ribbon v-banner');
-    rb.append(h('div', 'rb-edge'));
-    const em = h('div', 'v-emb');
-    em.append(emblem(vm.winner.color));
-    const vt = h('div', 'v-title');
-    vt.append(titleText(vm.title));
-    rb.append(em, vt, h('div', 'rb-sub num', vm.subline));
-    this.intro.append(rb);
-    this.intro.classList.remove('docked');
-    this.body.classList.add('hidden');
-    rb.animate(
-      [
-        { opacity: 0, transform: `scale(${motion.reduced ? 1 : 0.96})` },
-        { opacity: 1, transform: 'scale(1)' },
-      ],
-      { duration: 600, easing: EASE_OUT_QUART },
-    );
-
-    // Awards
+    // Awards: three lines. Nemesis first — the grudge is the story of the evening.
     this.awards.textContent = '';
-    for (const a of vm.awards.slice(0, 3)) {
-      const c = h('div', `award panel award-${a.id}`);
-      const col = PLAYER_COLORS[a.seat.color];
-      setStyle(c, '--seat', col.base);
-      const g = h('div', 'aw-glyph');
-      g.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${AWARD_GLYPH[a.id] ?? ''}</svg>`;
-      const txt = h('div', 'aw-text');
-      const who = h('div', 'aw-who');
-      who.append(emblem(a.seat.color), h('span', '', a.seat.name));
-      txt.append(h('div', 'aw-title', a.title), h('div', 'aw-line num', a.text), who);
-      c.append(g, txt);
+    const order = [...vm.awards].sort((a, b) => (a.id === 'nemesis' ? -1 : 0) - (b.id === 'nemesis' ? -1 : 0)).slice(0, 3);
+    for (const a of order) {
+      const c = h('div', `award award-${a.id}`);
+      setStyle(c, '--seat-light', PLAYER_COLORS[a.seat.color].light);
+      const txt = h('span', 'aw-line num');
+      const t = minus(a.text);
+      // The winner of the award's name in their wash where it leads the line.
+      if (t.startsWith(a.seat.name)) txt.append(h('span', 'aw-who', a.seat.name), document.createTextNode(t.slice(a.seat.name.length)));
+      else txt.append(document.createTextNode(`${t} · `), h('span', 'aw-who', a.seat.name));
+      c.append(h('span', 'aw-title', a.title), txt);
       this.awards.append(c);
     }
     toggle(this.awards, 'hidden', vm.awards.length === 0);
 
-    // Standings
+    // Standings: one quiet line.
     this.standings.textContent = '';
     for (const st of [...vm.standings].sort((a, b) => a.place - b.place)) {
       const li = h('li', `st-row${st.place === 1 ? ' first' : ''}`);
-      setStyle(li, '--seat', PLAYER_COLORS[st.seat.color].base);
-      li.append(h('span', 'st-place num', ordinal(st.place)), emblem(st.seat.color), h('span', 'st-name', st.seat.name));
-      li.append(h('span', 'st-terr num', `${st.territories}`), h('span', 'st-unit', 'territories'));
+      setStyle(li, '--seat-light', PLAYER_COLORS[st.seat.color].light);
+      li.append(h('span', 'st-place num', ordinal(st.place)), h('span', 'st-name', st.seat.name), h('span', 'st-terr num', `${st.territories}`));
       this.standings.append(li);
     }
 
-    // Full stats table
+    // Full stats: one row per stat, one column per player (winner first), so it fits the sheet with
+    // up to six seats; territories live in the timeline and the standings, not here too.
     this.stats.textContent = '';
-    const table = h('table', 'stats-table');
+    const ranked = [...vm.standings].sort((a, b) => a.place - b.place);
+    // Five or six seats on a phone: the header keeps each seat's emblem and lets the names go.
+    const table = h('table', `stats-table${ranked.length >= 5 ? ' many' : ''}`);
     const thead = h('thead');
     const hr = h('tr');
-    hr.append(h('th', '', 'Player'), h('th', 'num', 'Territories'));
-    for (const c of STAT_COLS) hr.append(h('th', 'num', c.label));
+    hr.append(h('th', 'sx-label'));
+    for (const st of ranked) {
+      const th = h('th', `sx-seat${st.place === 1 ? ' first' : ''}`);
+      setStyle(th, '--seat-light', PLAYER_COLORS[st.seat.color].light);
+      th.title = st.seat.name;
+      th.append(emblem(st.seat.color), h('span', 'sx-name', st.seat.name));
+      hr.append(th);
+    }
     thead.append(hr);
     const tb = h('tbody');
-    for (const st of [...vm.standings].sort((a, b) => a.place - b.place)) {
+    for (const c of STAT_COLS) {
       const tr = h('tr');
-      const nm = h('td', 'st-cell');
-      nm.append(emblem(st.seat.color), h('span', '', st.seat.name));
-      tr.append(nm, h('td', 'num', String(st.territories)));
-      for (const c of STAT_COLS) tr.append(h('td', 'num', String(st.stats[c.key])));
+      tr.append(h('th', 'sx-label', c.label));
+      for (const st of ranked) tr.append(h('td', 'num', String(st.stats[c.key])));
       tb.append(tr);
     }
     table.append(thead, tb);
     this.stats.append(table);
     this.setStats(false);
+    this.scroll.scrollTop = 0;
+    this.el.scrollTop = 0;
 
+    // The scroll rises (a fade: nothing slides), the ensō draws itself, the words are brushed on after it.
+    this.chart.render(vm, !motion.reduced);
+    if (!motion.reduced) {
+      this.el.querySelector('.v-scrim')!.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 600, easing: 'ease-out' });
+      this.scroll.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 400, easing: EASE_BRUSH });
+    }
+    drawEnso(this.mark, 900, 120);
+    drawIn(this.title, 360, 420);
+    drawIn(this.sub, 280, 620);
+    [...this.awards.children].forEach((c, i) => drawIn(c as HTMLElement, 260, 760 + i * 120));
+    for (const el of this.scroll.querySelectorAll<HTMLElement>('.v-mid, .v-actions'))
+      if (!motion.reduced) el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, delay: 900, easing: 'ease-out', fill: 'backwards' });
     this.timers.forEach((t) => clearTimeout(t));
-    this.timers = [window.setTimeout(() => this.showFull(), 2500)];
+    this.timers = [window.setTimeout(() => (this.phase = 'full'), 1400)];
   }
 
   refreshChart(): void {
-    if (this.phase === 'full') this.chart.refresh();
+    this.chart.refresh();
   }
 
+  /** Finish the drawing now (Enter / a press / the gallery). */
   showFull(): void {
     if (!this.vm || this.phase === 'full') return;
     this.phase = 'full';
     this.timers.forEach((t) => clearTimeout(t));
     this.timers = [];
-    this.intro.classList.add('docked');
-    this.body.classList.remove('hidden');
-    const cards = [...this.awards.children] as HTMLElement[];
-    cards.forEach((c, i) => {
-      c.animate(
-        [
-          { opacity: 0, transform: `translateY(${motion.reduced ? 0 : 18}px) rotate(${motion.reduced ? 0 : i % 2 ? 1.5 : -1.5}deg)` },
-          { opacity: 1, transform: 'translateY(0) rotate(0)' },
-        ],
-        { duration: 320, delay: 200 + i * 250, easing: EASE_OUT_QUART, fill: 'backwards' },
-      );
-    });
-    const after = 200 + cards.length * 250;
-    this.body.querySelectorAll<HTMLElement>('.v-mid, .v-actions').forEach((el) =>
-      el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 360, delay: after, easing: 'ease-out', fill: 'backwards' }),
-    );
-    this.chart.render(this.vm);
+    for (const a of this.el.getAnimations({ subtree: true })) {
+      try {
+        a.finish();
+      } catch {
+        a.cancel();
+      }
+    }
+    this.el.querySelectorAll('.ink-in').forEach((e) => e.classList.remove('ink-in'));
   }
 }
 
-function animateInSafe(el: HTMLElement): void {
-  if (motion.reduced) return;
-  el.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 220, easing: EASE_OUT_QUART });
-}

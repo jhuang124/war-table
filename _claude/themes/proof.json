@@ -1,0 +1,9 @@
+{
+ "jobs": [
+  {
+   "id": "2-pixelpass-A",
+   "prompt": "Video game screenshot of 'War Table', a polished world-conquest strategy board game in the spirit of classic Risk: a recognizable stylized world map (North and South America, Europe, Africa, Asia, Australia) divided into territories, owned by four players colored crimson red, cobalt blue, amber yellow and emerald green. Each territory holds one army piece (a soldier for small armies, a horse-and-rider for medium, a cannon for large) with a small clear number showing army size. Dotted sea routes connect some coasts. Wide landscape 16:9 desktop view of the whole board mid-game, with a slim clean bottom bar containing a turn track reading 'Place  Attack  Fortify  End turn' and two buttons 'Roll' and 'Blitz'. Art style: a 3D toy diorama rendered as hi-bit pixel art (A Short Hike, t3ssel8r pixel-3D, Game Boy Advance era palette): the whole image is low resolution upscaled with hard crisp pixels, limited saturated palette, dithered shading, dark outlines on every object, chunky toy-like terrain and pieces with real 3D depth; UI text and numbers are sharp high-resolution on top. High detail, premium, charming, readable game UI, no watermark.",
+   "output": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/themes/2-pixelpass-A.png"
+  }
+ ]
+}

@@ -1,0 +1,106 @@
+{
+ "verdict": "Close. This is the chosen board, alive on a real table: indigo paper, feathered ivory coasts, muted washes, one gold that moves, and the fights land inside the budgets (clean single roll 1177\u20131201 ms, 7-roll blitz 2711 ms, 23-roll blitz 2881 ms, forced wait 0, zero console errors on desktop and both phones). The moment mostly happens: the stroke follows the pointer in gold, the tray rises, the verdict holds its breath, the defender's die goes ink-splashed and dim, Siberia's red is eaten by slate with a torn rim, and the next morning's banner says \"Sam took Siberia, Priya took India\". Elimination greys Sam's ring with \"taken by John\" and the epitaph names him. Two things keep it from being the SOUL picture. (1) The calm is not yet alive: sampled every 4 s for 20 s, 0.3\u20130.6% of pixels move more than 6/255 and at 400 ms apart nothing does; at couch distance the board reads as a still painting, which is the exact misread SOUL records against both plans. (2) The dice tray is the one loud object on a quiet screen: a near-black glossy stadium ~700\u00d7150 px on desktop that covers a third of the board on phones, and on phone landscape the whole board dims behind it during every roll, so the room can't read the map while the fight happens. Fix those two and this ships; the rest is minor and polish. Not verified: AI-turn median at 'watch' came in around 6 s in my 4-turn sample (5.0 / 7.7 / 7.5 / 3.5 s) with screenshot overhead inflating it, against a \u2264 6 s budget; worth one clean measurement. Frames: /Users/jhuang/Desktop/JH-Projects/risk3d/artifacts/ink/fable-review/ (play.ts and verify.ts there reproduce everything; dev server on 5365 was stopped).",
+ "soulCheck": [
+  "Moment (Round 6, couch, Ural\u2192Siberia): SERVES, with one gap. Gold stroke follows the finger (desk-07-stroke-*.png, verify-stroke-at12-now.png), tray rises, dice settle, 250 ms hush, defender die splashed and dimmed, figure lifts, slate soaks over red with a torn rim (desk-21-sting-blitz-02/04/06/08.png), John's next turn opens 'Sam took Siberia, Priya took India' (desk-23-grudge-turnstart-02-0802ms.png). Gap: 'the board settles back into its slow drift' \u2014 the drift is below perception (see pillar 1).",
+  "Pillar 1 (the calm is the experience): WORKS AGAINST, quietly. Ambient layer runs (29.5 fps desktop, 18.8 phone) but the amplified diff of frames 4 s apart (verify-idle-diff-0-4s-x8.png) shows only faint mist over open ocean; 400 ms apart 0.00% of pixels change > 6/255; 20 s apart only 3.7%. At home zoom the idle board looks finished, not breathing \u2014 the 2026-09-28 'pure stillness' misread survives in the build even though the code moves.",
+  "Pillar 2 (readable, not decorated): SERVES on the board, IGNORES it in the tray. Owner and count read instantly from every wash and ring at 1440\u00d7900 and on both phone orientations (desk-19-idle-0s.png, iphone-land-08-armed.png). Words on screen stay under ~24. But the tray is a pure-black lacquer slab (#08090c floor, glossy rim) that covers the southern ocean plus Australia's label on desktop (desk-09-roll-00.png) and Africa/South America on portrait (iphone-21-sting-blitz-02-0901ms.png); on phone landscape the whole board dims behind it during every roll (iphone-land-21-sting-blitz-03-0901ms.png vs iphone-land-20-sting-armed.png). Portrait also keeps a 'Rotate for the full map' chip over the board and the SIBERIA label (iphone-20-sting-armed.png).",
+  "Pillar 3 (ink linework as structure, not props): SERVES. Coasts and borders are the board's own dry-brush lines, the ens\u014d is the only mark, no kanji/seals/blossoms/Fuji anywhere (desk-01-title.png, desk-17-menu.png, desk-26-victory-scroll.png). Closest prop is the black lacquer tray itself, which reads as an object placed on the painting rather than drawn into it.",
+  "Pillar 4 (losing stings): SERVES. Torn dark rim as slate eats Siberia (desk-21-sting-blitz-06-2162ms.png), the defender's dice go dark and splashed, the seat count drops live, the recap line names the takers next turn, elimination empties Sam's ring with 'taken by John' under it and the epitaph 'Sam \u00b7 taken by John \u00b7 round 9' (desk-24-elim-after.png, iphone-land-24-elim-after.png). No red, no shake. Grudge is visible without shouting.",
+  "Pillar 5 (change the feel of the tempo, not the tempo): SERVES. Clean measurements without screenshots in flight: single roll 1177 / 1177 / 1201 ms (\u2264 1250 incl. hush), 2-roll blitz 1563, 7-roll 2711, 23-roll 2881 ms (\u2264 3000), human forced wait 0, occupy/fortify one click each. AI turns at 'watch' were 5.0 / 7.7 / 7.5 / 3.5 s in a 4-turn sample with screenshot overhead; median budget \u2264 6 s is borderline and unconfirmed.",
+  "Inherited choices the build leans on: the lacquer dice tray and its size; the DOM count rings beside figures; portrait's cropped camera plus the 'Rotate' chip (docs/MOBILE.md); the Turn Track pill; the battle header floating on the board above the tray. A clean-room build from SOUL.md would keep dice in a tray and the Track (docs/ROUND2.md binds) but would not arrive at a black slab this size or a persistent hint chip.",
+  "Closest Misread repeated: 2026-09-28 'both proposed pure stillness' \u2014 the ambient layer exists but is tuned so low it reads as stillness. Runner-up: 2026-09-27 'panels, hints and chips' via the portrait 'Rotate for the full map' chip and the outsized tray."
+ ],
+ "score": 7.5,
+ "issues": [
+  {
+   "id": "F1",
+   "severity": "major",
+   "area": "render",
+   "pillar": "Pillar 1: the calm is the experience (Misread 2026-09-28: pure stillness)",
+   "title": "The living calm is below perception at couch distance",
+   "detail": "The ambient layer runs (ambient.on true, amp 1, mist 1; 29.5 fps desktop, 18.8 phone) but its amplitude is so low the board reads as a finished painting. Only open-ocean mist moves; coasts, washes and wave strokes show no visible change across 20 s. SOUL's test is 'drifts and breathes like clouds, never static' \u2014 a cloud you can't see moving is stillness.",
+   "evidence": "/Users/jhuang/Desktop/JH-Projects/risk3d/artifacts/ink/fable-review/verify-idle-diff-0-4s-x8.png (x8-gained diff of frames 4 s apart: faint mist only), verify-idle-diff-400ms-x16.png (nothing), desk-19-idle-0s.png vs desk-19-idle-20s.png. Measured: 400 ms apart 0.00% of pixels change > 6/255; each 4 s step 0.29\u20130.39%; 0\u219220 s 3.68%. Phone landscape 0.39\u20130.63% per 4 s.",
+   "fix": "In src/render (ambient block near index.ts:1872 and the ground/ink shaders): push the A1 ranges to their upper ends and make the motion legible without speeding it up. Mist opacity 8% (top of range) with 2\u20133\u00d7 larger veils and drift at 1.0\u20131.2% board-width/s; let two of the veils cross coasts (A1 allows it) so land breathes too; wave strokes drift with the mist; coastline displacement at the full 0.5 px with the dry-brush opacity breath at \u00b16%; wash lightness breath at the full \u00b12%. Acceptance: frames 1 s apart show \u2265 1.5% of board pixels changed > 6/255 and 4 s apart \u2265 5%, while 400 ms apart stays under 0.5% (slow, not busy). Reduced motion still turns it off."
+  },
+  {
+   "id": "F2",
+   "severity": "major",
+   "area": "render",
+   "pillar": "Pillar 2: readable at a glance, not decorated (and Pillar 3: props)",
+   "title": "The dice tray is the loudest object on a quiet screen and blacks out the board on phones",
+   "detail": "The tray is a near-black glossy stadium (#08090c floor, high-gloss rim) about 700\u00d7150 px at 1440\u00d7900, covering the southern ocean, Australia's label and Madagascar's figure; on phone landscape it spans ~70% of the width and the whole board dims behind it for every roll, so nobody in the room can read the map while the fight happens; on portrait it covers Africa and South America. The battle header floats over territory figures above it. The dice themselves (salmon/pastel) are brighter than any wash. Integration flagged the size; it is worse than a size problem because it is the one thing on screen that is not paper.",
+   "evidence": "/Users/jhuang/Desktop/JH-Projects/risk3d/artifacts/ink/fable-review/desk-09-roll-00-0000ms.png, iphone-land-21-sting-blitz-03-0901ms.png (board dimmed ~50% vs iphone-land-20-sting-armed.png), iphone-21-sting-blitz-02-0901ms.png (tray over Africa/South America), iphone-land-24-elim-04-1322ms.png (header 'Kamchatka 20 \u00b7 Alaska 1' over Europe's figures). Source: src/render/dice.ts:304 floorMat '#08090c', :305 rimMat roughness 0.24 with lacquer map.",
+   "fix": "src/render/dice.ts: (a) shrink the tray to fit the dice with one die of padding: dice ~0.7\u00d7 current, tray ~420\u00d7110 px at 1440\u00d7900, ~55% of width on phone landscape, and keep it entirely over ocean (anchor to the southern Atlantic/Indian ocean, never over Australia or Africa); (b) make it paper's object, not a prop: floor = deep indigo #0b1224 with the washi grain at ~20%, rim = a single hairline ivory at 40% with one soft highlight instead of high-gloss lacquer (roughness \u2265 0.6, envMapIntensity \u2264 0.1); (c) desaturate the dice toward their seat wash (use the palette hex directly, ivory pips) so they sit inside the palette; (d) on phones do not dim the board during a roll (or cap the dim at 15%); (e) place the battle header on the tray's rim line, not on the board. Acceptance: with the tray up, every count ring on the board still reads in the phone-landscape screenshot, and the tray's mean luminance is within 20% of the ocean's."
+  },
+  {
+   "id": "F3",
+   "severity": "minor",
+   "area": "ui",
+   "pillar": "Pillar 2: nothing on screen that isn't information (Misread 2026-09-27: hints and chips)",
+   "title": "Portrait keeps a 'Rotate for the full map' chip over the board",
+   "detail": "A pill-shaped hint with an \u00d7 sits over the top of the board on iPhone portrait in every state I loaded (idle, armed, rolling, victory beat), covering the SIBERIA label and ocean. It is a hint chip of exactly the kind the walnut misread was called out for, and it competes with the one gold and the seat strip.",
+   "evidence": "/Users/jhuang/Desktop/JH-Projects/risk3d/artifacts/ink/fable-review/iphone-20-sting-armed.png (chip over SIBERIA label), iphone-19-idle-0s.png, iphone-25-victory-05-1802ms.png (still there during the victory beat).",
+   "fix": "src/ui (rotate-pill): show it once per device (localStorage flag), only on the first portrait game screen, as one serif line on the paper in the dock's line slot ('Rotate for the full map') that dries out after 4 s or on the first touch; never as a bordered pill over the board and never during a roll, hand-off or victory. Keep the \u00d7 out; the dry-out is the dismissal."
+  },
+  {
+   "id": "F4",
+   "severity": "minor",
+   "area": "render",
+   "pillar": "Feel: 'a gold brush stroke follows his finger' / Motion: quick sure strokes",
+   "title": "The armed attack arrow reads as a hairline pointer, not a brush stroke",
+   "detail": "Both the live stroke and the settled arrow are a 2\u20133 px line with a small arrowhead. From across the room it is a UI pointer; the moodboard's arrow and Part B 'thick\u2192thin, ending in a flick' want a weighted dry-brush stroke whose tail thins and frays. The gold-while-dice-decide rule works; the mark itself is too thin to carry the moment.",
+   "evidence": "/Users/jhuang/Desktop/JH-Projects/risk3d/artifacts/ink/fable-review/desk-21-sting-blitz-04-1441ms.png (gold Ural\u2192Siberia line), iphone-land-21-sting-blitz-05-1441ms.png, verify-stroke-at12-now.png (live stroke mid-draw), desk-09-roll-00-0000ms.png.",
+   "fix": "src/render (arrow/live stroke mesh): width profile head \u2248 9 px tapering to \u2248 2 px at the tail at home zoom on 1440\u00d7900 (scale with homePxPerUnit), bristle-noise alpha along the length so the tail dries and frays, and a short flick at the head instead of a triangular arrowhead. Keep timings (260 ms draw) and the ivory-at-rest / gold-while-deciding rule unchanged."
+  },
+  {
+   "id": "F5",
+   "severity": "minor",
+   "area": "render",
+   "pillar": "Pillar 2 / Motion coherence",
+   "title": "A wrap-around attack draws a full-width bar across the top of the board",
+   "detail": "Kamchatka\u2192Alaska crosses the map edge, and the arrow is drawn as a straight stroke that exits right and re-enters left, so an ivory (or gold, while the dice decide) bar runs the entire width of the board at the latitude of Alaska. It is the largest mark on screen and reads as a glitch, not a stroke; a stray '\u22121' sits at the far left edge.",
+   "evidence": "/Users/jhuang/Desktop/JH-Projects/risk3d/artifacts/ink/fable-review/desk-24-elim-03-1345ms.png, desk-24-elim-after.png (ivory bar from x\u224830 to x\u22481410 at y\u2248180), iphone-land-24-elim-04-1322ms.png (gold bar across the whole top).",
+   "fix": "src/render (arrow builder): for wrap pairs (kamchatka\u2194alaska), draw two short strokes that leave the source toward the nearest edge and arrive at the target from the opposite edge, each fading to zero alpha within ~120 px of the edge, matching the dashed sea-lane hint already drawn there; place the '\u2212N' beside the target ring, never at the wrap point."
+  },
+  {
+   "id": "F6",
+   "severity": "minor",
+   "area": "ui",
+   "pillar": "Motion: one thing moves at a time; things are drawn in and dry out",
+   "title": "The AI's last narration line and the human's turn banner overlap for the first frames of a turn",
+   "detail": "At the start of John's turn the strip still shows the previous strike ('Sage attacks Brazil' / 'Theo takes China') while the banner 'Vermilion \u00b7 3 armies' is brushing in behind it, so two serif lines sit on top of each other at the same spot, and the AI's brief arrow is still on the board. Integration fixed the dismiss-side overlap; the arrive-side remains.",
+   "evidence": "/Users/jhuang/Desktop/JH-Projects/risk3d/artifacts/ink/fable-review/desk-16-turn2-start-00-0000ms.png ('Vermili\u2026' under 'Sage attacks Brazil', Sage's arrow still on Brazil), desk-23-grudge-turnstart-00-0000ms.png ('John' under 'Theo takes China').",
+   "fix": "src/ui (strip/banner): when a human turn begins, dry the strip's line out first (160 ms easeInQuad) and start the banner's brush-in only after it has gone (the 250 ms stillness rule), and have the controller clear the AI's brief arrow before the turn-start event fires. Acceptance: no frame in a 200 ms-cadence capture of turn start shows two lines in the banner slot."
+  },
+  {
+   "id": "F7",
+   "severity": "polish",
+   "area": "ui",
+   "pillar": "Words: plain English; one line means one thing",
+   "title": "The strip says 'John's turn' during the victory beat",
+   "detail": "While the winner's ink settles and the tray is still up, the one line reads 'John's turn' (italic) under 'Alaska captured', before the scroll rises. It is stale copy at the game's most-watched second.",
+   "evidence": "/Users/jhuang/Desktop/JH-Projects/risk3d/artifacts/ink/fable-review/desk-25-victory-06-2342ms.png, iphone-25-victory-05-1802ms.png.",
+   "fix": "src/ui + src/game (victory handoff): when the reducer reports game over, suppress the turn-start line and let the strip read 'John holds the world' (or stay empty) until the scroll rises."
+  },
+  {
+   "id": "F8",
+   "severity": "polish",
+   "area": "ui",
+   "pillar": "Pillar 2: nothing that isn't information; Feel: look",
+   "title": "New game opens with the first seat's name text-selected",
+   "detail": "On desktop the seat-1 name field is focused and its text selected on open, so 'Vermilion' sits in a grey selection block: the only rectangle on a sheet of hairlines, and it looks like a rendering fault.",
+   "evidence": "/Users/jhuang/Desktop/JH-Projects/risk3d/artifacts/ink/fable-review/desk-02-newgame.png (grey block behind 'Vermilion').",
+   "fix": "src/ui (new game): focus the field without select(), or style ::selection on the sheet to gold at ~18% alpha so an intentional selection still reads as ink."
+  },
+  {
+   "id": "F9",
+   "severity": "polish",
+   "area": "ui",
+   "pillar": "Pillar 2: readable",
+   "title": "The victory 'Full stats' table clips its last column on desktop",
+   "detail": "The stats table under the scroll is wider than the sheet; 'Armies lost' is cut to 'Armies los' and its values are hidden, with no scroll affordance.",
+   "evidence": "/Users/jhuang/Desktop/JH-Projects/risk3d/artifacts/ink/fable-review/desk-27-victory-stats.png.",
+   "fix": "src/ui (victory stats): fit the table to the sheet's width (drop the separate Territories column, which the timeline already shows, or shorten headers to 'Won / Lost / Destroyed / Lost'), or let the table scroll horizontally with a fade at the edge."
+  }
+ ]
+}

@@ -107,7 +107,7 @@ await seg(page, 'attack');
 await idle(page);
 await clickT(page, f.to);
 u = await ui(page);
-check(u.primary === 'Blitz' && !!u.battle && /^.+ → .+ · \d+%$/.test(u.line) && u.step === 'Attack', `armed target-first: "${u.line}" · tray ${u.battle?.header}`, results);
+check(u.primary === 'Blitz' && !!u.battle && /^.+ → .+ · \d+%( · .+)?$/.test(u.line) && u.step === 'Attack', `armed target-first: "${u.line}" · tray ${u.battle?.header}`, results);
 check(u.track.join(' ') === 'done:place current:attack eligible:fortify eligible:endTurn' && u.brass.join() === 'Blitz', `the track never hides while armed (${u.track.join(' ')}), one brass (${u.brass.join()})`, results);
 await page.screenshot({ path: `${ART}/game-armed.png` });
 const pre = (await state(page))!;
@@ -288,11 +288,11 @@ const full1 = m.rolls.filter((r) => r.style === 'full' && !r.blitz && r.count ==
 const blitz = m.rolls.filter((r) => r.blitz && r.style === 'full').map((r) => r.ms);
 const brief = m.rolls.filter((r) => r.style === 'brief').map((r) => r.ms);
 console.log(`   rolls: single ${full1.join(',')} · blitz ${blitz.join(',')} · brief max ${Math.max(0, ...brief)} (${brief.length})`);
-// Slack: metrics are wall-clock from dispatch to the last promise, including a frame or two (the blitz
-// cap sits right at its limit, so it gets 250 ms of measurement overhead).
-check(full1.length > 0 && Math.max(...full1) <= 1260, `single roll ≤ 1.2 s (max ${Math.max(0, ...full1)} ms)`, results);
-check(blitz.length > 0 && Math.max(...blitz) <= 3250, `blitz ≤ 3.0 s (max ${Math.max(0, ...blitz)} ms over ${blitz.length})`, results);
-check(brief.length > 0 && Math.max(...brief) <= 860, `brief AI-vs-AI engagement ≤ 0.8 s (max ${Math.max(0, ...brief)} ms over ${brief.length})`, results);
+// INK A6's budgets, exactly (metrics are wall-clock from dispatch to the last promise). The single roll
+// includes the 250 ms verdict silence; the blitz's middle rolls share its budget against the real clock.
+check(full1.length > 0 && Math.max(...full1) <= 1250, `single roll ≤ 1.25 s incl. the silence (max ${Math.max(0, ...full1)} ms)`, results);
+check(blitz.length > 0 && Math.max(...blitz) <= 3000, `blitz ≤ 3.0 s (max ${Math.max(0, ...blitz)} ms over ${blitz.length})`, results);
+check(brief.length > 0 && Math.max(...brief) <= 800, `brief AI-vs-AI engagement ≤ 0.8 s (max ${Math.max(0, ...brief)} ms over ${brief.length})`, results);
 check(m.cameraMovesDuringHumanInput === 0, `cameraMovesDuringHumanInput ${m.cameraMovesDuringHumanInput}`, results);
 check(m.maxCameraDegPerSec <= 45, `automatic camera peak ${m.maxCameraDegPerSec}°/s (≤ 45)`, results);
 check(m.inputDropped === 0, `inputDropped ${m.inputDropped}`, results);

@@ -6,6 +6,7 @@
 import { idle, loadScenario, scenario, state, TWO_HUMANS } from './lib';
 import { DEVICES, longPress, openDevice, pageStill, settle, tapId, tapT, type DeviceName } from './mobile-lib';
 import type { GameState, Phase } from '../../src/engine';
+import type { Page } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 const OUT = process.argv[2] ?? 'artifacts/mobile';
@@ -39,6 +40,13 @@ function base(phase: Phase, mutate?: (s: GameState) => void, players = PLAYERS):
       },
     },
   );
+}
+
+// A tap straight after a scenario loads can land in the controller's 250 ms guard after a turn starts
+// (it's dropped on purpose): wait for the board to idle, then past the guard.
+async function pastGuard(page: Page): Promise<void> {
+  await page.evaluate(() => window.__risk.waitIdle(5000)).catch(() => undefined);
+  await page.waitForTimeout(320);
 }
 
 const report: string[] = [];
@@ -82,6 +90,7 @@ for (const dev of LIST) {
   });
   await step('place', async () => {
     await loadScenario(page, base({ kind: 'reinforce', remaining: 5, mustTrade: false, placed: {}, midTurn: false }));
+    await pastGuard(page);
     await page.waitForTimeout(1300);
     if (portrait) await shot('05-rotate-pill');
     await page.evaluate(() => document.querySelector<HTMLElement>('[data-testid="rotate-pill-close"]')?.click());
@@ -180,6 +189,7 @@ for (const dev of LIST) {
       st.players[1].cards = [{ id: 7, territory: 'siam', symbol: 'cavalry' }];
     }, TWO_HUMANS as never);
     await loadScenario(page, s);
+    await pastGuard(page);
     await tapId(page, 'seg-endTurn');
     await page.locator('[data-testid="handoff"]').waitFor({ state: 'visible', timeout: 8000 });
     await page.waitForTimeout(500);
@@ -196,6 +206,7 @@ for (const dev of LIST) {
       st.timeline = Array.from({ length: 8 }, (_, i) => ({ round: i + 1, territories: { 0: 10 + i * 3, 1: 12 - i, 2: 10 - i, 3: 10 - i } })) as never;
     });
     await loadScenario(page, s);
+    await pastGuard(page);
     await tapT(page, 'alaska');
     await tapId(page, 'btn-blitz');
     await page.waitForFunction(() => window.__risk.ui().screen === 'victory', null, { timeout: 20000 });
@@ -214,6 +225,7 @@ for (const dev of LIST) {
       st.territories.southern_europe = { owner: 1, armies: 6 };
     });
     await loadScenario(page, s);
+    await pastGuard(page);
     await page.evaluate(() => document.querySelector<HTMLElement>('[data-testid="rotate-pill-close"]')?.click());
     await tapT(page, 'southern_europe');
     await page.waitForTimeout(400);

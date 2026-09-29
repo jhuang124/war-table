@@ -1,17 +1,27 @@
-// Sound Lab (audio.html): one button per sound, music + volume, game-beat scenarios, and the offline
-// analysis the team uses instead of ears. Also exposes window.__audioLab for the verify script.
+// Sound Lab (audio.html): the ink bank by material, the ambient score, game-beat scenarios, and the
+// offline analysis the team uses instead of ears. Also exposes window.__audioLab for the verify script.
 
-import '@fontsource/cinzel/600.css';
-import '@fontsource-variable/inter';
-import { analyze, encodeWav, fft, type SoundStats } from './analyze';
+import '@fontsource-variable/cormorant-garamond';
+import { analyze, encodeWav, fft, longLoudness, speakerHighpass, type SoundStats } from './analyze';
+import { WARM_ORDER } from './bank';
 import { LIMITS, summarize, type SoundReport } from './checks';
 import { createAudio } from './engine';
-import { LIMITER_MAKEUP_COMP, MAX_VOICES } from './mixer';
-import { OFFLINE_SR, buildSweep, renderBankPair, renderDiceRoll, renderLimiterProbe, renderMusic, renderSfx, renderStress, type RenderOptions } from './offline';
+import { LIMITER_MAKEUP_COMP, MAX_VOICES, Mixer } from './mixer';
+import { CHORDS, planScore, type NoteItem } from './music';
+import { OFFLINE_SR, buildSweep, renderBankPair, renderDiceRoll, renderLimiterProbe, renderMoment, renderMusic, renderSfx, renderStress, renderStroke, type RenderOptions } from './offline';
 import { SFX } from './sounds';
-import { SFX_NAMES, TIER_TARGET_LUFS, type PlayOptions, type SfxName, type SfxVariant } from './types';
+import { SFX_NAMES, TIER_TARGET_LUFS, type PlayOptions, type SfxName, type SfxVariant, type StrokeHandle } from './types';
 
 const engine = createAudio({ volume: 0.8 });
+/** Sounds that actually sound (uiHover is silent by design: no hover sounds). */
+const AUDIBLE = SFX_NAMES.filter((n) => !SFX[n].silent);
+
+/** The five materials (INK §6). */
+const MATERIAL: Record<SfxName, 'paper' | 'brush' | 'wood' | 'bone' | 'bowl'> = {
+  uiHover: 'paper', uiClick: 'paper', uiError: 'paper', cardDraw: 'paper', cardTrade: 'paper', turnStart: 'paper',
+  whoosh: 'brush', place: 'brush', unplace: 'brush', march: 'brush', hit: 'brush', conquer: 'brush',
+  diceShake: 'wood', diceLand: 'bone', continent: 'bowl', eliminated: 'bowl', victory: 'bowl',
+};
 
 // ---------------------------------------------------------------------------
 // Rendering + analysis API (used by the page and by src/audio/verify.ts)
@@ -31,7 +41,7 @@ async function analyzeSound(name: SfxName, seeds = SEEDS, o: RenderOptions = {})
 
 async function analyzeAll(seeds = SEEDS): Promise<SoundReport[]> {
   const out: SoundReport[] = [];
-  for (const n of SFX_NAMES) out.push(await analyzeSound(n, seeds));
+  for (const n of AUDIBLE) out.push(await analyzeSound(n, seeds));
   return out;
 }
 
@@ -95,7 +105,7 @@ async function composites() {
 
 async function bankCheck() {
   const out: { name: SfxName; directLk: number; bankedLk: number; dLk: number; dPeak: number; channels: number }[] = [];
-  for (const name of SFX_NAMES) {
+  for (const name of AUDIBLE) {
     const { direct, banked, bankChannels } = await renderBankPair(name);
     const a = analyze(channelsOf(direct), direct.sampleRate);
     const b = analyze(channelsOf(banked), banked.sampleRate);
@@ -107,11 +117,11 @@ async function bankCheck() {
 /** Live: wait for the bank to warm, then time play() for every sound (muted). */
 async function liveCost(timeoutMs = 30000) {
   const t0 = performance.now();
-  while (engine.stats().banked < 20 && performance.now() - t0 < timeoutMs) await new Promise((r) => setTimeout(r, 100));
+  while (engine.stats().banked < WARM_ORDER.length && performance.now() - t0 < timeoutMs) await new Promise((r) => setTimeout(r, 100));
   const warmMs = performance.now() - t0;
   engine.setMuted(true);
   const cost: Record<string, { median: number; max: number }> = {};
-  for (const n of SFX_NAMES) {
+  for (const n of AUDIBLE) {
     const ts: number[] = [];
     for (let i = 0; i < 7; i++) {
       engine.stopAll();
@@ -131,7 +141,7 @@ async function liveCost(timeoutMs = 30000) {
 async function variants() {
   const cases: [SfxName, RenderOptions, string][] = [
     ['turnStart', { variant: 'bright' }, 'turnStart bright'],
-    ['conquer', { variant: 'somber' }, 'conquer somber'],
+    ['conquer', { variant: 'somber' }, 'conquer somber (snap)'],
     ['continent', { variant: 'somber' }, 'continent somber'],
     ['diceShake', { duration: 0.08 }, 'diceShake 80 ms'],
     ['diceShake', { duration: 0.6 }, 'diceShake 600 ms'],
@@ -151,7 +161,7 @@ async function variants() {
 // Drawing: waveform + log-frequency spectrogram
 // ---------------------------------------------------------------------------
 
-const RAMP = ['#07090c', '#12262b', '#1f4a4a', '#6d5a2e', '#c2a062', '#f3ead8'].map((h) => parseInt(h.slice(1), 16));
+const RAMP = ['#0b1224', '#15223f', '#2c3e63', '#6b6a6e', '#c9a961', '#f0ebe0'].map((h) => parseInt(h.slice(1), 16));
 function rampColor(v: number, out: Uint8ClampedArray, o: number): void {
   const x = Math.max(0, Math.min(0.9999, v)) * (RAMP.length - 1);
   const i = Math.floor(x);
@@ -165,19 +175,19 @@ function rampColor(v: number, out: Uint8ClampedArray, o: number): void {
 }
 
 function drawSound(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, mono: Float32Array, sr: number, seconds: number, title: string, lines: string[]): void {
-  g.fillStyle = '#080a0d';
+  g.fillStyle = '#0b1224';
   g.fillRect(x, y, w, h);
   const n = Math.min(mono.length, Math.round(seconds * sr));
   const waveH = Math.round(h * 0.28);
   const specY = y + waveH + 2;
   const specH = h - waveH - 2 - 30;
   // waveform (min/max per column), dBFS grid lines at ±0.5 (−6 dB)
-  g.strokeStyle = 'rgba(243,234,216,0.12)';
+  g.strokeStyle = 'rgba(240,235,224,0.12)';
   g.beginPath();
   g.moveTo(x, y + waveH / 2);
   g.lineTo(x + w, y + waveH / 2);
   g.stroke();
-  g.fillStyle = 'rgba(243,234,216,0.8)';
+  g.fillStyle = 'rgba(240,235,224,0.8)';
   for (let c = 0; c < w; c++) {
     const s0 = Math.floor((c / w) * n);
     const s1 = Math.max(s0 + 1, Math.floor(((c + 1) / w) * n));
@@ -215,18 +225,18 @@ function drawSound(g: CanvasRenderingContext2D, x: number, y: number, w: number,
   }
   g.putImageData(img, x, specY);
   // frequency guides: 100 Hz, 1 kHz, 5 kHz
-  g.font = '10px Inter Variable, sans-serif';
+  g.font = '11px "Cormorant Garamond Variable", serif';
   for (const f of [100, 1000, 5000]) {
     const r = (1 - Math.log(f / 40) / Math.log(12000 / 40)) * (specH - 1);
-    g.fillStyle = 'rgba(243,234,216,0.25)';
+    g.fillStyle = 'rgba(240,235,224,0.25)';
     g.fillRect(x, specY + r, 6, 1);
     g.fillText(f >= 1000 ? `${f / 1000}k` : `${f}`, x + 8, specY + r + 3);
   }
-  g.fillStyle = '#c2a062';
-  g.font = '600 12px Inter Variable, sans-serif';
+  g.fillStyle = '#c9a961';
+  g.font = '600 14px "Cormorant Garamond Variable", serif';
   g.fillText(title, x + 6, y + h - 17);
-  g.fillStyle = 'rgba(243,234,216,0.7)';
-  g.font = '10.5px Inter Variable, sans-serif';
+  g.fillStyle = 'rgba(240,235,224,0.7)';
+  g.font = '500 12px "Cormorant Garamond Variable", serif';
   g.fillText(lines.join('  ·  '), x + 6, y + h - 4);
 }
 
@@ -239,7 +249,7 @@ function monoOf(b: AudioBuffer): Float32Array {
 
 /** Draw every sound (seed 1) into a grid canvas. Used for the screenshot review. */
 async function drawAll(canvas: HTMLCanvasElement, extra: { label: string; name: SfxName; o: RenderOptions }[] = []): Promise<void> {
-  const items: { label: string; name: SfxName; o: RenderOptions }[] = [...SFX_NAMES.map((n) => ({ label: n, name: n, o: {} })), ...extra];
+  const items: { label: string; name: SfxName; o: RenderOptions }[] = [...AUDIBLE.map((n) => ({ label: `${n} · ${MATERIAL[n]}`, name: n, o: {} })), ...extra];
   const cols = 4;
   const cw = 290,
     ch = 200,
@@ -249,7 +259,7 @@ async function drawAll(canvas: HTMLCanvasElement, extra: { label: string; name: 
   canvas.height = rows * ch + (rows - 1) * gap;
   canvas.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
   const g = canvas.getContext('2d')!;
-  g.fillStyle = '#0c0f13';
+  g.fillStyle = '#101a30';
   g.fillRect(0, 0, canvas.width, canvas.height);
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
@@ -272,7 +282,7 @@ async function drawMusic(canvas: HTMLCanvasElement, seconds = 60): Promise<void>
   canvas.height = 260;
   canvas.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
   const g = canvas.getContext('2d')!;
-  drawSound(g, 0, 0, canvas.width, canvas.height, monoOf(b), b.sampleRate, seconds, `music bed · ${seconds} s`, [
+  drawSound(g, 0, 0, canvas.width, canvas.height, monoOf(b), b.sampleRate, seconds, `score · ${seconds} s · seed 3`, [
     `M ${s.lufsM.toFixed(1)} LUFS`,
     `pk ${s.peakDb.toFixed(1)} dBFS`,
     `centroid ${s.centroidHz.toFixed(0)} Hz`,
@@ -280,46 +290,289 @@ async function drawMusic(canvas: HTMLCanvasElement, seconds = 60): Promise<void>
 }
 
 // ---------------------------------------------------------------------------
-// Scenarios: real game beats, timed from docs/UX.md §8.2
+// The score: density, variety, loop-freeness, level, ducking
 // ---------------------------------------------------------------------------
 
+const mono = (b: AudioBuffer) => monoOf(b);
+
+/** Log band energies per frame (24 bands, 80 Hz – 4 kHz), mean-removed per band (drone cancels out). */
+function bandFrames(x: Float32Array, sr: number, frameSec: number): Float64Array[] {
+  const N = 4096;
+  const hop = Math.round(frameSec * sr);
+  const bands = 24;
+  const edges = Array.from({ length: bands + 1 }, (_, k) => 80 * Math.pow(4000 / 80, k / bands));
+  const win = new Float64Array(N);
+  for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (N - 1));
+  const out: Float64Array[] = [];
+  const re = new Float64Array(N);
+  const im = new Float64Array(N);
+  for (let s0 = 0; s0 + N <= x.length; s0 += hop) {
+    for (let i = 0; i < N; i++) {
+      re[i] = x[s0 + i] * win[i];
+      im[i] = 0;
+    }
+    fft(re, im);
+    const v = new Float64Array(bands);
+    for (let b = 0; b < bands; b++) {
+      const k0 = Math.max(1, Math.floor((edges[b] * N) / sr));
+      const k1 = Math.max(k0 + 1, Math.floor((edges[b + 1] * N) / sr));
+      let e = 0;
+      for (let k = k0; k < k1; k++) e += re[k] * re[k] + im[k] * im[k];
+      v[b] = 10 * Math.log10(e / (k1 - k0) + 1e-12);
+    }
+    out.push(v);
+  }
+  const bandsMean = new Float64Array(bands);
+  for (const v of out) for (let b = 0; b < bands; b++) bandsMean[b] += v[b] / out.length;
+  for (const v of out) for (let b = 0; b < bands; b++) v[b] -= bandsMean[b];
+  return out;
+}
+
+/** Max cosine similarity between any two `winFrames`-long windows at least `minLagFrames` apart. */
+function selfSimilarity(frames: Float64Array[], winFrames: number, minLagFrames: number): { max: number; atLagSec: number } {
+  const vec = (i: number) => {
+    const v: number[] = [];
+    for (let k = 0; k < winFrames; k++) v.push(...frames[i + k]);
+    const m = v.reduce((a, b) => a + b, 0) / v.length;
+    return v.map((x) => x - m);
+  };
+  const W: number[][] = [];
+  for (let i = 0; i + winFrames <= frames.length; i++) W.push(vec(i));
+  let best = -1;
+  let lag = 0;
+  for (let i = 0; i < W.length; i++)
+    for (let j = i + minLagFrames; j < W.length; j++) {
+      let d = 0,
+        a = 0,
+        b = 0;
+      for (let k = 0; k < W[i].length; k++) {
+        d += W[i][k] * W[j][k];
+        a += W[i][k] * W[i][k];
+        b += W[j][k] * W[j][k];
+      }
+      const c = d / Math.sqrt(a * b + 1e-12);
+      if (c > best) {
+        best = c;
+        lag = j - i;
+      }
+    }
+  return { max: best, atLagSec: lag };
+}
+
+/** Onsets heard in the render (piano/bowl strikes, not the slow pads): energy flux in 300 Hz–4 kHz. */
+function detectOnsets(x: Float32Array, sr: number): number[] {
+  const hopSec = 0.05;
+  const frames = bandFrames(x, sr, hopSec);
+  // un-normalised mid-band level per frame
+  const lvl = frames.map((v) => {
+    let e = 0;
+    for (let b = 6; b < 24; b++) e += Math.pow(10, v[b] / 10);
+    return 10 * Math.log10(e + 1e-12);
+  });
+  const on: number[] = [];
+  for (let i = 10; i < lvl.length; i++) {
+    let m = 0;
+    for (let k = i - 10; k < i - 1; k++) m += lvl[k] / 9;
+    const rise = lvl[i] - m;
+    if (rise > 4 && (!on.length || i * hopSec - on[on.length - 1] > 2.5)) on.push(i * hopSec);
+  }
+  return on;
+}
+
+async function musicAnalysis(seconds = 60, seed = 3) {
+  const plan = planScore(seed, seconds);
+  const notes = plan.filter((p): p is NoteItem => p.kind !== 'pad');
+  const pads = plan.filter((p) => p.kind === 'pad');
+  const b = await renderMusic(seconds, seed);
+  const ch = channelsOf(b);
+  const stats = analyze(ch, b.sampleRate);
+  const loud = longLoudness(ch, b.sampleRate);
+  // through laptop / phone speakers (2nd-order high-pass at 180 Hz)
+  const hpf = speakerHighpass(b.sampleRate);
+  const lap = ch.map((c) => {
+    const y = new Float32Array(c.length);
+    let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    for (let i = 0; i < c.length; i++) {
+      const y0 = hpf.b0 * c[i] + hpf.b1 * x1 + hpf.b2 * x2 - hpf.a1 * y1 - hpf.a2 * y2;
+      x2 = x1; x1 = c[i]; y2 = y1; y1 = y0; y[i] = y0;
+    }
+    return y;
+  });
+  const loudLaptop = longLoudness(lap, b.sampleRate);
+  const m = mono(b);
+  const frames = bandFrames(m, b.sampleRate, 0.5);
+  // skip the fade-in; 4 s windows, at least 10 s apart
+  const sim = selfSimilarity(frames.slice(12), 8, 20);
+  const onsets = detectOnsets(m, b.sampleRate).filter((t) => t > 6);
+  // a second seed must be a different piece
+  const b2 = await renderMusic(seconds, seed + 1);
+  const f2 = bandFrames(mono(b2), b2.sampleRate, 0.5);
+  let cross = 0;
+  const n = Math.min(frames.length, f2.length);
+  for (let i = 12; i + 8 <= n; i += 4) {
+    const a: number[] = [];
+    const c: number[] = [];
+    for (let k = 0; k < 8; k++) {
+      a.push(...frames[i + k]);
+      c.push(...f2[i + k]);
+    }
+    let d = 0,
+      aa = 0,
+      cc = 0;
+    for (let k = 0; k < a.length; k++) {
+      d += a[k] * c[k];
+      aa += a[k] * a[k];
+      cc += c[k] * c[k];
+    }
+    cross = Math.max(cross, d / Math.sqrt(aa * cc + 1e-12));
+  }
+  // 30 minutes of plan: no stepwise runs, no repeated passages, gaps never regular
+  const long = planScore(seed, 1800).filter((p): p is NoteItem => p.kind !== 'pad');
+  const pianoSeq = long.filter((p) => p.kind === 'piano').map((p) => p.midis[0]);
+  let stepwise = 0;
+  for (let i = 1; i < pianoSeq.length; i++) if (Math.abs(pianoSeq[i] - pianoSeq[i - 1]) <= 2) stepwise++;
+  const gaps = long.slice(1).map((p, i) => p.t - long[i].t);
+  const gMean = gaps.reduce((a, x) => a + x, 0) / gaps.length;
+  const gSd = Math.sqrt(gaps.reduce((a, x) => a + (x - gMean) ** 2, 0) / gaps.length);
+  const grams = new Map<string, number>();
+  for (let i = 0; i + 4 <= long.length; i++) {
+    const k = long.slice(i, i + 4).map((p) => `${p.kind}:${p.midis.join('+')}`).join(' ');
+    grams.set(k, (grams.get(k) ?? 0) + 1);
+  }
+  const repeated4 = [...grams.values()].filter((c) => c > 1).length;
+  const longPads = planScore(seed, 1800).filter((p) => p.kind === 'pad') as { chord: number }[];
+  const chordGrams = new Set<string>();
+  for (let i = 0; i + 4 <= longPads.length; i++) chordGrams.add(longPads.slice(i, i + 4).map((p) => p.chord).join('-'));
+  return {
+    seconds,
+    seed,
+    eventsPerMin: (notes.length * 60) / seconds,
+    events: notes.map((p) => ({ t: +p.t.toFixed(2), kind: p.kind, midis: p.midis })),
+    pads: pads.map((p) => ({ t: +p.t.toFixed(2), chord: CHORDS[(p as { chord: number }).chord].name })),
+    detectedOnsetsPerMin: (onsets.length * 60) / (seconds - 6),
+    onsets: onsets.map((t) => +t.toFixed(2)),
+    peakDb: stats.peakDb,
+    lufsM: stats.lufsM,
+    integrated: loud.integrated,
+    shortTermMedian: loud.shortTermMedian,
+    vsBoardDb: loud.integrated - TIER_TARGET_LUFS.board,
+    laptopIntegrated: loudLaptop.integrated,
+    laptopDropDb: loud.integrated - loudLaptop.integrated,
+    centroidHz: stats.centroidHz,
+    hfShare: stats.hfShare,
+    dc: stats.dc,
+    nan: stats.nan,
+    selfSimMax: sim.max,
+    selfSimLagSec: sim.atLagSec * 0.5,
+    otherSeedSimMax: cross,
+    long: { minutes: 30, events: long.length, perMin: long.length / 30, stepwise, gapMean: gMean, gapSd: gSd, repeated4, chordFourGrams: chordGrams.size, pads: longPads.length },
+  };
+}
+
+/** The duck: the same score rendered with and without a cue on top (the cue itself muted). */
+async function duckTest(name: SfxName = 'conquer', at = 20, seconds = 28) {
+  const sr = 24000;
+  const render = async (withCue: boolean) => {
+    const ctx = new OfflineAudioContext(2, Math.ceil(seconds * sr), sr);
+    const mixer = new Mixer(ctx, ctx.destination, { limiter: false });
+    mixer.sfxBus.gain.value = 0;
+    mixer.startMusic(0, { seed: 5, renderUntil: seconds });
+    if (withCue) mixer.trigger(name, at, {});
+    return ctx.startRendering();
+  };
+  const a = monoOf(await render(false));
+  const b = monoOf(await render(true));
+  const W = Math.round(0.1 * sr);
+  const curve: { t: number; db: number }[] = [];
+  for (let s0 = Math.round((at - 1) * sr); s0 + W <= a.length; s0 += W) {
+    let ea = 0,
+      eb = 0;
+    for (let i = s0; i < s0 + W; i++) {
+      ea += a[i] * a[i];
+      eb += b[i] * b[i];
+    }
+    curve.push({ t: s0 / sr - at, db: 10 * Math.log10((eb + 1e-20) / (ea + 1e-20)) });
+  }
+  const depth = Math.min(...curve.map((c) => c.db));
+  const rec = curve.find((c) => c.t > 0.3 && c.db > -1 && curve.filter((d) => d.t >= c.t).every((d) => d.db > -1));
+  return { name, depthDb: depth, recoveredWithin1dBAfterSec: rec ? rec.t : Infinity, curve: curve.filter((_, i) => i % 5 === 0) };
+}
+
+async function strokeStats() {
+  const b = await renderStroke(true);
+  const s = analyze(channelsOf(b), b.sampleRate);
+  const c = await renderStroke(false);
+  const sc = analyze(channelsOf(c), c.sampleRate);
+  return { commit: s, cancel: sc };
+}
+
+// ---------------------------------------------------------------------------
+// Scenarios: real game beats (ink timings: dice tray single roll, INK §4)
+// ---------------------------------------------------------------------------
+
+let demoStroke: StrokeHandle | null = null;
 const scenarios: Record<string, () => void> = {
   'Single roll (3v2)': () => {
-    engine.play('diceShake', { duration: 0.15 });
-    [-0.3, -0.3, -0.3, 0.3, 0.3].forEach((pan, i) => engine.play('diceLand', { pan, delay: 0.6 + i * 0.04 }));
-    engine.play('hit', { pan: 0.3, delay: 1.0 });
+    engine.play('uiClick');
+    engine.play('diceShake', { duration: 0.15, delay: 0.02 });
+    [-0.3, -0.3, -0.3, 0.3, 0.3].forEach((pan, i) => engine.play('diceLand', { pan, delay: 0.46 + i * 0.04 }));
+    setTimeout(() => engine.hush?.(250), 720);
+    engine.play('hit', { pan: 0.3, delay: 0.98 });
   },
   'Blitz (6 rolls)': () => {
     engine.play('diceShake', { duration: 0.1 });
-    const gaps = [0.7, 0.6, 0.45, 0.34, 0.25, 0.7];
+    const gaps = [0.7, 0.45, 0.4, 0.36, 0.34, 0.7];
     let t = 0;
     gaps.forEach((g, k) => {
       t += g;
       engine.play('diceLand', { delay: t - 0.1, rate: Math.min(1.4, 1 + 0.08 * k) });
-      engine.play('hit', { delay: t, pan: k % 2 ? 0.3 : -0.3 });
+      engine.play('hit', { delay: t, pan: k % 2 ? 0.3 : -0.3, volume: k === gaps.length - 1 ? 1 : 0.5 });
     });
     engine.play('conquer', { delay: t + 0.35 });
     engine.play('march', { delay: t + 0.5, duration: 0.5 });
   },
+  'You lose a territory': () => {
+    engine.play('hit', { pan: 0.3 });
+    engine.play('conquer', { delay: 0.34, variant: 'somber', pan: 0.2 });
+    engine.play('march', { delay: 0.49, duration: 0.5 });
+  },
   'Conquest + continent': () => {
     engine.play('hit', { pan: 0.3 });
-    engine.play('conquer', { delay: 0.35 });
-    engine.play('march', { delay: 0.5, duration: 0.5 });
+    engine.play('conquer', { delay: 0.34 });
+    engine.play('march', { delay: 0.49, duration: 0.5 });
     engine.play('continent', { delay: 1.25 });
   },
-  'Reinforce ×8 (rising)': () => {
+  'Continent broken': () => engine.play('continent', { variant: 'somber' }),
+  'Draw an attack (stroke)': () => {
+    demoStroke?.end(false);
+    const h = engine.stroke?.({ pan: -0.2 });
+    demoStroke = h ?? null;
+    if (!h) return;
+    let k = 0;
+    const id = setInterval(() => {
+      const u = k / 40;
+      h.move(0.1 + 0.9 * Math.sin(Math.PI * Math.min(1, u * 1.1)), -0.2 + 0.4 * u);
+      if (++k > 40) {
+        clearInterval(id);
+        h.end(true);
+      }
+    }, 16);
+  },
+  'Reinforce ×8': () => {
     for (let i = 0; i < 8; i++) engine.play('place', { delay: 0.2 + i * 0.16, rate: Math.min(1.15, 1 + 0.03 * i), pan: (i % 3) * 0.2 - 0.2 });
   },
   'AI drop wave (20)': () => {
-    for (let i = 0; i < 20; i++) engine.play('place', { delay: i * 0.05, volume: 0.6, pan: Math.sin(i) * 0.5 });
+    for (let i = 0; i < 20; i++) engine.play('place', { delay: i * 0.05, volume: 0.5, pan: Math.sin(i) * 0.5 });
   },
-  'Elimination beat': () => {
+  'Elimination': () => {
     engine.stopAll();
     engine.play('eliminated', { delay: 0.15 });
   },
-  'Stress: 60 dice now': () => {
-    for (let i = 0; i < 60; i++) engine.play('diceLand');
+  'Victory': () => {
+    engine.stopAll();
+    engine.play('victory');
   },
+  'New game (reseed score)': () => engine.setMusicSeed?.((Math.random() * 1e9) >>> 0),
 };
 
 // ---------------------------------------------------------------------------
@@ -335,9 +588,10 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string,
 
 function build(): void {
   const app = document.getElementById('app')!;
-  app.append(el('h1', {}, 'War Table · Sound Lab'));
+  app.append(el('h1', {}, 'War Table · Sound'));
+  app.append(el('div', { class: 'rule' }));
   app.append(
-    el('p', { class: 'sub' }, 'Every sound is synthesized in WebAudio (no files). Click to hear one. Analyze renders each sound offline and measures loudness, peaks and spectrum.'),
+    el('p', { class: 'sub' }, 'Five materials: paper, brush, wood, bone, bowl. A soft score underneath. Everything is synthesized in the browser. Press a sound to hear it; Analyze renders each one offline and measures it.'),
   );
 
   // controls
@@ -357,7 +611,8 @@ function build(): void {
     return i;
   };
   const opts: PlayOptions & { useDuration: boolean } = { useDuration: false };
-  slider('Volume', 0, 1, 0.01, 0.8, (v) => v.toFixed(2), (v) => engine.setVolume(v));
+  slider('Effects', 0, 1, 0.01, 0.8, (v) => v.toFixed(2), (v) => engine.setVolume(v));
+  slider('Score', 0, 1, 0.01, 0.7, (v) => v.toFixed(2), (v) => engine.setMusicVolume(v));
   slider('Rate', 0.5, 2, 0.01, 1, (v) => v.toFixed(2), (v) => (opts.rate = v));
   slider('Pan', -1, 1, 0.05, 0, (v) => v.toFixed(2), (v) => (opts.pan = v));
   slider('Duration', 0.06, 1.5, 0.01, 0.5, (v) => `${(v * 1000).toFixed(0)} ms`, (v) => {
@@ -371,35 +626,44 @@ function build(): void {
   vs.addEventListener('change', () => (opts.variant = (vs.value || undefined) as SfxVariant | undefined));
   vl.append(vs);
   controls.append(vl);
-  const mute = el('button', {}, 'Mute');
+  const mute = el('button', { class: 'pill' }, 'Mute');
   let muted = false;
   mute.addEventListener('click', () => {
     muted = !muted;
     engine.setMuted(muted);
     mute.classList.toggle('on', muted);
   });
-  const music = el('button', { id: 'music' }, 'Music: off');
-  let musicOn = false;
+  const music = el('button', { id: 'music', class: 'pill on' }, 'Score: on');
+  let musicOn = true;
   music.addEventListener('click', () => {
     musicOn = !musicOn;
     engine.setMusic(musicOn);
-    music.textContent = `Music: ${musicOn ? 'on' : 'off'}`;
+    music.textContent = `Score: ${musicOn ? 'on' : 'off'}`;
     music.classList.toggle('on', musicOn);
   });
   controls.append(mute, music);
   app.append(controls);
 
-  // sounds
+  // sounds, by material
   const cards = new Map<SfxName, HTMLElement>();
-  const groups = ['UI', 'Board', 'Battle', 'Cards', 'Stingers'] as const;
-  for (const grp of groups) {
-    app.append(el('h2', {}, grp));
+  const mats = ['paper', 'brush', 'wood', 'bone', 'bowl'] as const;
+  const blurb: Record<(typeof mats)[number], string> = {
+    paper: 'turn breath, sheets, the Turn Track',
+    brush: 'the stroke, the dab, the flood, the breath of smoke',
+    wood: 'dice shaken in a lacquer cup',
+    bone: 'dice landing in the tray',
+    bowl: 'a struck rin: continent, elimination, victory',
+  };
+  for (const mat of mats) {
+    const h = el('h2', {}, mat);
+    h.append(el('span', {}, blurb[mat]));
+    app.append(h);
     const grid = el('div', { class: 'grid' });
-    for (const name of SFX_NAMES.filter((n) => SFX[n].group === grp)) {
+    for (const name of AUDIBLE.filter((n) => MATERIAL[n] === mat)) {
       const meta = SFX[name];
       const b = el('button', { class: 'sfx', 'data-sfx': name });
       b.append(el('b', {}, meta.label));
-      b.append(el('small', {}, `${name} · ${meta.tier} ${TIER_TARGET_LUFS[meta.tier]} LUFS${meta.duration ? ' · follows duration' : ''}`));
+      b.append(el('small', {}, `${name} · ${meta.tier} ${TIER_TARGET_LUFS[meta.tier]} LUFS${meta.duration ? ' · follows motion' : ''}`));
       const m = el('small', { class: 'm' }, '');
       b.append(m);
       cards.set(name, m);
@@ -414,23 +678,25 @@ function build(): void {
     app.append(grid);
   }
 
-  app.append(el('h2', {}, 'Game beats (timed from UX §8.2)'));
+  const beats = el('h2', {}, 'game beats');
+  beats.append(el('span', {}, 'timed like the board plays them'));
+  app.append(beats);
   const row = el('div', { class: 'row' });
   for (const [label, fn] of Object.entries(scenarios)) {
-    const b = el('button', {}, label);
+    const b = el('button', { class: 'pill' }, label);
     b.addEventListener('click', fn);
     row.append(b);
   }
   app.append(row);
 
-  app.append(el('h2', {}, 'Selected sound (offline render)'));
+  app.append(el('h2', {}, 'selected sound'));
   const one = el('canvas', { id: 'one', width: '1180', height: '240' });
   one.style.aspectRatio = '1180 / 240';
   app.append(one);
 
-  app.append(el('h2', {}, 'Analysis'));
+  app.append(el('h2', {}, 'analysis'));
   const bar = el('div', { class: 'row' });
-  const analyzeBtn = el('button', { class: 'primary', id: 'analyze' }, 'Analyze all');
+  const analyzeBtn = el('button', { class: 'pill gold', id: 'analyze' }, 'Analyze all');
   bar.append(analyzeBtn);
   app.append(bar);
   const status = el('div', { id: 'status' });
@@ -442,7 +708,7 @@ function build(): void {
   app.append(all);
 
   analyzeBtn.addEventListener('click', async () => {
-    status.textContent = 'Rendering every sound offline (6 seeds each)…';
+    status.textContent = 'Rendering every sound offline, six seeds each…';
     const reports = await analyzeAll();
     renderTable(table, reports);
     for (const r of reports) cards.get(r.name)!.textContent = `${r.median.lk200.toFixed(1)} LUFS · pk ${r.peakMaxDb.toFixed(1)} · ${(r.median.durationSec * 1000).toFixed(0)} ms`;
@@ -454,7 +720,7 @@ function build(): void {
   setInterval(() => {
     const s = engine.stats();
     const live = document.getElementById('live');
-    if (live) live.textContent = `context: ${s.state} · voices ${s.voices} · played ${s.played} · dropped ${s.dropped} · stolen ${s.stolen} · music ${s.music ? 'on' : 'off'}`;
+    if (live) live.textContent = `context ${s.state} · voices ${s.voices} · played ${s.played} · dropped ${s.dropped} · score ${s.music ? 'playing' : s.musicWanted ? 'waiting for a tap' : 'off'} · seed ${s.musicSeed}`;
   }, 250);
   const live = el('div', { id: 'live', class: 'sub' });
   app.insertBefore(live, controls.nextSibling);
@@ -476,7 +742,7 @@ function build(): void {
 
 function renderTable(host: HTMLElement, reports: SoundReport[]): void {
   host.style.display = '';
-  const cols = ['sound', 'tier', 'target', 'LK200', 'range', 'peak', 'dur ms', 'onset', 'centroid', 'laptop %', '>8k %', 'trim', 'suggest', 'issues'];
+  const cols = ['sound', 'material', 'tier', 'target', 'LK200', 'range', 'peak', 'dur ms', 'onset', 'centroid', 'laptop %', '>8k %', 'trim', 'suggest', 'issues'];
   const t = el('table');
   const tr = el('tr');
   for (const c of cols) tr.append(el('th', {}, c));
@@ -486,6 +752,7 @@ function renderTable(host: HTMLElement, reports: SoundReport[]): void {
     const row = el('tr');
     const cells = [
       r.name,
+      MATERIAL[r.name],
       r.tier,
       String(r.target),
       m.lk200.toFixed(1),
@@ -518,12 +785,16 @@ declare global {
   }
 }
 
+const wavOf = (b: AudioBuffer, trim = false) => toBase64(encodeWav(trim ? trimmed(b) : channelsOf(b), b.sampleRate));
+
 window.__audioLab = {
   engine,
   names: SFX_NAMES,
+  audible: AUDIBLE,
+  warmKeys: WARM_ORDER.length,
   limits: LIMITS,
   sampleRate: OFFLINE_SR,
-  meta: Object.fromEntries(SFX_NAMES.map((n) => [n, { tier: SFX[n].tier, trimDb: SFX[n].trimDb, maxDur: SFX[n].maxDur, maxVoices: SFX[n].maxVoices, minGapMs: SFX[n].minGapMs, group: SFX[n].group, duration: SFX[n].duration }])),
+  meta: Object.fromEntries(SFX_NAMES.map((n) => [n, { tier: SFX[n].tier, trimDb: SFX[n].trimDb, maxDur: SFX[n].maxDur, maxVoices: SFX[n].maxVoices, minGapMs: SFX[n].minGapMs, group: SFX[n].group, duration: SFX[n].duration, silent: !!SFX[n].silent, material: MATERIAL[n] }])),
   analyzeSound,
   analyzeAll,
   measure,
@@ -533,16 +804,25 @@ window.__audioLab = {
   liveCost,
   buildSweep,
   wavBase64,
+  musicAnalysis,
+  duckTest,
+  strokeStats,
   scenarios: Object.keys(scenarios),
   runScenario: (k: string) => scenarios[k]?.(),
   drawAll: (extra?: { label: string; name: SfxName; o: RenderOptions }[]) => drawAll(document.getElementById('all') as HTMLCanvasElement, extra),
   drawMusic: (s?: number) => drawMusic(document.getElementById('all') as HTMLCanvasElement, s),
-  musicWav: async (seconds = 40) => {
-    const b = await renderMusic(seconds, 3);
-    return toBase64(encodeWav(channelsOf(b), b.sampleRate));
-  },
-  rollWav: async () => {
-    const b = await renderDiceRoll(1);
-    return toBase64(encodeWav(trimmed(b), b.sampleRate));
+  musicWav: async (seconds = 60, seed = 3) => wavOf(await renderMusic(seconds, seed)),
+  rollWav: async () => wavOf(await renderDiceRoll(1), true),
+  strokeWav: async (commit = true) => wavOf(await renderStroke(commit), true),
+  momentWav: async () => {
+    const m = await renderMoment();
+    const canvas = document.getElementById('all') as HTMLCanvasElement;
+    canvas.width = 1180;
+    canvas.height = 300;
+    canvas.style.aspectRatio = '1180 / 300';
+    const g = canvas.getContext('2d')!;
+    const secs = m.buffer.duration;
+    drawSound(g, 0, 0, canvas.width, canvas.height, monoOf(m.buffer), m.buffer.sampleRate, secs, 'the moment · stroke, roll, beat, breath, snap, flood, settle', m.marks.filter((x) => !/diceLand/.test(x.what)).map((x) => `${x.t.toFixed(1)} ${x.what.split(' ')[0]}`));
+    return { b64: wavOf(m.buffer), marks: m.marks, stats: analyze(channelsOf(m.buffer), m.buffer.sampleRate) };
   },
 };

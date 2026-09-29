@@ -204,7 +204,7 @@ export function mountDebugHud(root: HTMLElement, api: ControllerApi): { dispose(
     const bn = g.banner;
     const banner = bn
       ? `<div class="p" ${attr({ type: 'dismissTurnBanner' })} data-testid="banner" style="position:absolute;left:50%;top:4rem;transform:translateX(-50%);text-align:center;cursor:pointer;${bn.seat ? `border-top:4px solid ${PLAYER_COLORS[bn.seat.color].base}` : ''}">
-        <div class="title" style="font-size:1.7rem">${esc(bn.title)}</div>${bn.sub ? `<div>${esc(bn.sub)}</div>` : ''}${bn.recap ? `<div class="muted">${esc(bn.recap)}</div>` : ''}</div>`
+        <div class="title" style="font-size:1.7rem">${esc(bn.line ?? bn.title)}</div>${bn.sub && !bn.line ? `<div>${esc(bn.sub)}</div>` : ''}${bn.recap ? `<div class="muted">${esc(bn.recap)}</div>` : ''}</div>`
       : '';
     const c = g.cards;
     const cards = c?.open
@@ -268,7 +268,7 @@ export function mountDebugHud(root: HTMLElement, api: ControllerApi): { dispose(
         Animation ${sel('animationSpeed', [['1', '1×'], ['2', '2×'], ['0', 'Instant']], String(s.animationSpeed))}
         AI ${sel('aiSpeed', [['watch', 'Watch'], ['fast', 'Fast'], ['instant', 'Skip']], s.aiSpeed)}
         Text ${sel('textSize', [['laptop', 'Laptop'], ['couch', 'Couch'], ['tv', 'TV']], s.textSize)}<br>
-        ${chk('showLabels', 'Territory names')}${chk('hideCardsBetweenTurns', 'Hide cards between turns')}${chk('muted', 'Mute')}${chk('music', 'Music')}
+        ${chk('showLabels', 'Territory names')}${chk('hideCardsBetweenTurns', 'Hide cards between turns')}${chk('muted', 'Mute')}${chk('music', 'Ambient score')}${chk('ambient', 'Living board')}
         ${chk('reduceMotion', 'Reduce motion')}${chk('showWinChance', 'Show win chance')}${chk('autoCamera', 'Auto-camera')}
         Volume <input type="range" data-k="set.sfxVolume" min="0" max="100" value="${Math.round(s.sfxVolume * 100)}"><br>
         ${(vm.game?.seatActions ?? []).map((a) => btn(a.label, a.intent, { id: `seat-action-${a.seat.id}` })).join('')}

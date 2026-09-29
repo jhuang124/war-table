@@ -1,71 +1,50 @@
-// Title screen (SPEC §7 Screens 1): the name over the attract-mode board.
+// Title (docs/INK.md B5): the painting, flat, and on it "War Table" in serif small caps with the ensō
+// drawing itself beneath on the gold rule (~900 ms). Three lines: New game · Continue · How to play, and
+// one quiet Settings word (text size lives in Settings). One gold: Continue when a save exists, else
+// New game — a gold outline with gold words; the rest are words.
 
-import type { TextSize, UiIntent, ViewModel } from '../../game/viewModel';
-import { Segmented, uiButton } from '../controls';
-import { h, setText, toggle } from '../dom';
+import type { UiIntent, ViewModel } from '../../game/viewModel';
+import { uiButton } from '../controls';
+import { drawEnso, drawIn, ensoEl, h, motion, setEnso, setText, toggle } from '../dom';
+
+/** The title's mark is always the same brush (the game's own ensō is drawn from its seed in play). */
+const TITLE_SEED = 2026;
 
 export class TitleScreen {
   readonly el: HTMLElement;
   private cont: HTMLButtonElement;
   private contSub: HTMLSpanElement;
-  private contKey: HTMLElement;
   private ng: HTMLButtonElement;
-  private ngKey: HTMLElement;
   private menu: HTMLDivElement;
+  private mark: SVGSVGElement;
+  private name: HTMLElement;
   private hasSave: boolean | null = null;
-  private text: Segmented<TextSize>;
-  private fitNote: HTMLSpanElement;
+  private drawn = false;
 
   constructor(send: (i: UiIntent) => void) {
     this.el = h('section', 'screen title-screen');
     const col = h('div', 'title-col');
     const lock = h('div', 'lockup');
-    const name = h('div', 'lk-risk');
-    name.append(h('span', '', 'War'), h('span', '', 'Table'));
-    lock.append(name);
-    const wt = h('div', 'lk-sub');
-    wt.append(h('i', 'lk-rule'), h('span', '', 'World conquest'), h('i', 'lk-rule'));
-    lock.append(wt);
-    const tag = h('p', 'title-tag', 'The classic game of world conquest, for 2 to 4 players around one screen. Any seat can be an AI.');
+    this.name = h('h1', 'lk-name', 'War Table');
+    const rule = h('div', 'lk-rule');
+    this.mark = ensoEl(TITLE_SEED, 'enso lk-enso', { drawable: true });
+    rule.append(h('i', 'lk-half'), this.mark, h('i', 'lk-half'));
+    lock.append(this.name, rule);
 
     const menu = (this.menu = h('div', 'title-menu'));
-    // The brass button (and Enter) is New game, or Continue when a save exists: the group that closed
-    // the lid mid-evening presses Enter and is back in the game.
-    this.ng = uiButton('New game', 'big', () => send({ type: 'nav', screen: 'newGame' }), 'Enter', 'title-new');
-    this.ngKey = this.ng.querySelector('kbd')!;
-    this.cont = uiButton('Continue', 'big continue', () => send({ type: 'continue' }), 'Enter', 'title-continue');
-    const contRow = h('span', 'btn-row');
-    this.contKey = this.cont.querySelector('kbd')!;
-    contRow.append(this.cont.querySelector('.btn-label')!, this.contKey);
+    this.ng = uiButton('New game', 'title-item', () => send({ type: 'nav', screen: 'newGame' }), undefined, 'title-new');
+    this.cont = uiButton('Continue', 'title-item continue', () => send({ type: 'continue' }), undefined, 'title-continue');
     this.contSub = h('span', 'btn-sub num');
-    this.cont.append(contRow, this.contSub);
-    const ng = this.ng;
-    const links = h('div', 'title-links');
-    links.append(
-      uiButton('How to play', 'link', () => send({ type: 'overlay', overlay: 'rules' }), undefined, 'title-rules'),
-      uiButton('Settings', 'link', () => send({ type: 'overlay', overlay: 'settings' }), undefined, 'title-settings'),
-    );
-    const ts = h('div', 'title-textsize');
-    const tl = h('span', 'field-label', 'Text size');
-    this.fitNote = h('span', 'field-detail hidden', 'fitted to this screen');
-    tl.append(this.fitNote);
-    ts.append(tl);
-    this.text = new Segmented<TextSize>('seg-row', (v) => send({ type: 'setting', patch: { textSize: v } }), 'Text size', 'textsize');
-    this.text.setOptions([
-      { value: 'laptop', label: 'Laptop' },
-      { value: 'couch', label: 'Couch' },
-      { value: 'tv', label: 'TV' },
-    ]);
-    ts.append(this.text.el);
-    menu.append(ng, this.cont, links, ts);
-    col.append(lock, tag, menu);
+    this.cont.append(this.contSub);
+    const rules = uiButton('How to play', 'title-item', () => send({ type: 'overlay', overlay: 'rules' }), undefined, 'title-rules');
+    const settings = uiButton('Settings', 'title-item quiet', () => send({ type: 'overlay', overlay: 'settings' }), undefined, 'title-settings');
+    menu.append(this.ng, this.cont, rules, settings);
+    col.append(lock, menu);
     this.el.append(h('div', 'title-scrim'), col);
   }
 
-  /** The chosen text size is bigger than this screen has room for, so it was fitted down (src/ui/uiScale.ts). */
-  setFitted(on: boolean): void {
-    toggle(this.fitNote, 'hidden', !on);
-  }
+  /** Kept for the root's call (the fitted-text note now lives only in Settings). */
+  setFitted(_on: boolean): void {}
 
   update(vm: ViewModel): void {
     const save = !!vm.save;
@@ -74,17 +53,21 @@ export class TitleScreen {
       toggle(this.cont, 'hidden', !save);
       const primary = save ? this.cont : this.ng;
       const secondary = save ? this.ng : this.cont;
-      primary.classList.add('brass', 'role-primary');
-      primary.classList.remove('role-secondary');
-      secondary.classList.remove('brass', 'role-primary');
-      secondary.classList.add('role-secondary');
-      toggle(this.contKey, 'hidden', !save);
-      toggle(this.ngKey, 'hidden', save);
+      primary.classList.add('brass', 'gold', 'role-primary');
+      secondary.classList.remove('brass', 'gold', 'role-primary');
       // Primary first.
       this.menu.prepend(primary);
       primary.after(secondary);
     }
     if (vm.save) setText(this.contSub, vm.save.summary);
-    this.text.set(vm.settings.textSize);
+    setEnso(this.mark, TITLE_SEED, { drawable: true });
+    if (vm.screen === 'title' && !this.drawn) {
+      this.drawn = true;
+      // Arrival: the name is brushed on, then the ensō draws itself round once; the words follow.
+      drawIn(this.name, 420);
+      drawEnso(this.mark, 900, motion.reduced ? 0 : 180);
+      if (!motion.reduced) [...this.menu.children].forEach((c, i) => drawIn(c as HTMLElement, 260, 420 + i * 70));
+    }
+    if (vm.screen !== 'title') this.drawn = false;
   }
 }

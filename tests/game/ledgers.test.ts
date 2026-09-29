@@ -12,11 +12,14 @@ describe('recap: one line, only when you lost territory', () => {
     const s = board({ ural: [0, 3] });
     const ledger: RecapLedger = {};
     recordRecap(ledger, s, conquer('ukraine', 1));
-    expect(buildRecap(ledger[0], s)).toBe('Sam took Ukraine');
+    expect(buildRecap(ledger[0], s)).toBe('Sam took Ukraine from you');
     recordRecap(ledger, s, conquer('ural', 1));
-    expect(buildRecap(ledger[0], s)).toBe('Sam took 2 of yours');
+    expect(buildRecap(ledger[0], s)).toBe('Sam took Ukraine and Ural from you');
     recordRecap(ledger, s, conquer('siberia', 2));
-    expect(buildRecap(ledger[0], s)).toBe('Sam and Priya took 3 of yours');
+    expect(buildRecap(ledger[0], s)).toBe('Sam took Ukraine and Ural, Priya took Siberia');
+    // Past 60 characters the names give way to counts.
+    for (const t of ['kamchatka', 'yakutsk', 'irkutsk', 'mongolia']) recordRecap(ledger, s, conquer(t, 1));
+    expect(buildRecap(ledger[0], s)).toBe('Sam and Priya took 7 of yours');
   });
   it('nothing lost → no line', () => {
     const s = board({ ural: [0, 3] });
@@ -124,13 +127,13 @@ describe('new game draft → GameConfig', () => {
     expect(vm.summary).toBe('Territories dealt at random · armies placed for you · first to 30 territories wins');
     expect(vm.canStart).toBe(true);
     let d = patchSeat(defaultDraft(), 1, { color: 'crimson' });
-    expect(buildNewGameVM(d).problems).toContain('Two seats share Crimson');
+    expect(buildNewGameVM(d).problems).toContain('Two seats share Vermilion');
     expect(buildNewGameVM(d).canStart).toBe(false);
     d = patchSeat(defaultDraft(), 1, { color: 'violet' });
-    expect(d.seats[1].name).toBe('Violet'); // AI seats follow their color's name
+    expect(d.seats[1].name).toBe('Wisteria'); // AI seats follow their color's name
     d = patchSeat(d, 1, { kind: 'human' });
-    expect(d.seats[1].name).toBe('Violet'); // flipping Human/AI keeps the name (R1-16)
-    expect(defaultDraft().seats[0].name).toBe('Crimson'); // humans default to their color too
+    expect(d.seats[1].name).toBe('Wisteria'); // flipping Human/AI keeps the name (R1-16)
+    expect(defaultDraft().seats[0].name).toBe('Vermilion'); // humans default to their color too
     d = patchSeat(d, 0, { name: 'John' });
     d = patchSeat(d, 0, { color: 'emerald' });
     expect(d.seats[0].name).toBe('John');

@@ -1,32 +1,51 @@
-// Territory tiles: extruded, bevelled, per-tile materials (owner color, dim, hover light, flash,
-// conquest flood), ivory rims, and the flat footprint data used for picking.
+// Territory tiles: flat painted washes (docs/INK.md B §3) — one thin extruded sheet per territory, drawn by
+// an unlit wash shader (owner colour × paper grain × edge darkening, the ink layer on top, the selection rim
+// as a screen-constant ivory line inside the border), plus the flat footprint data used for picking.
 import * as THREE from 'three';
-import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
-import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
-import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import type { BoardGeometry, Vec2 } from '../map/types';
 import type { TerritoryId } from '../engine/types';
 import { TERRITORY_IDS } from '../engine/mapData';
-import { BEVEL_S, BEVEL_T, TILE_DEPTH, TILE_TOP, adjust, mixRgb, setColor, toWorld, type RGB, hexToRgb, IVORY, distToRing, ringArea, simplifyRing } from './util';
+import { TILE_DEPTH, TILE_TOP, adjust, hexToRgb, IVORY, distToRing, toWorld, unclaimedRgb, type RGB } from './util';
+import { SIDE_FRAG, SIDE_VERT, TILE_FRAG, TILE_VERT, type SharedUniforms } from './inkGlsl';
+import type { InkLayer } from './ink';
 
 export type RimMode = 'none' | 'selectable' | 'selected' | 'target' | 'armed';
 
+export interface TileUniforms {
+  [k: string]: THREE.IUniform;
+  uAnchorW: { value: THREE.Vector2 };
+  uColor: { value: THREE.Vector3 };
+  uDeep: { value: THREE.Vector3 };
+  uId: { value: number };
+  uDim: { value: number };
+  uLight: { value: number };
+  uFlash: { value: number };
+  uGlow: { value: number };
+  uDry: { value: number };
+  uPhase: { value: number };
+  uPeriod: { value: number };
+  uSeed: { value: number };
+  uRim: { value: THREE.Vector2 };
+  uFloodOn: { value: number };
+  uFloodR: { value: number };
+  uFloodMode: { value: number };
+  uFloodTorn: { value: number };
+  uFloodSeed: { value: number };
+  uFloodOrigin: { value: THREE.Vector2 };
+  uFloodDir: { value: THREE.Vector2 };
+  uFloodColor: { value: THREE.Vector3 };
+  uFloodDeep: { value: THREE.Vector3 };
+}
+
 export interface Tile {
   id: TerritoryId;
+  /** 1-based index (the ink field's territory id). */
+  index: number;
   pivot: THREE.Group;
   mesh: THREE.Mesh;
-  top: THREE.MeshStandardMaterial;
-  side: THREE.MeshStandardMaterial;
-  uniforms: {
-    uFloodColor: { value: THREE.Color };
-    uFloodOrigin: { value: THREE.Vector2 };
-    uFloodR: { value: number };
-    uFloodOn: { value: number };
-  };
-  rimUnder: LineSegments2;
-  rimIvory: LineSegments2;
-  rimUnderMat: LineMaterial;
-  rimIvoryMat: LineMaterial;
+  top: THREE.ShaderMaterial;
+  side: THREE.ShaderMaterial;
+  uniforms: TileUniforms;
   /** World-space anchor at the un-lifted tile top. */
   anchorW: THREE.Vector3;
   anchor: Vec2;
@@ -37,29 +56,32 @@ export interface Tile {
   /** Clear radius around the anchor inside the tile (board units); the army token sits at the anchor. */
   clearance: number;
   // --- displayed look (animated)
-  rgb: RGB; // owner color currently shown (before dim/light)
-  dim: number; // 0..1
+  rgb: RGB; // owner wash currently shown (before dim/light)
+  dim: number; // 0..1 (up to ~1.8 for fortify's phase dim)
   light: number; // 0..1 hover lightness
   flash: number; // 0..1 ivory flash
   flashColor: RGB;
-  tint: number; // 0..1 wave tint toward tintColor
-  tintColor: RGB;
+  /** Victory: the wash dries back to paper (0..1). */
+  dry: number;
   hoverLift: number;
   selectLift: number;
   press: number;
   fxLift: number;
-  /** Phase-change lift (pulsePhase 'attack'). */
+  /** Phase-change lift (unused on the flat board; kept for the contract of the look fields). */
   phaseLift: number;
-  /** Transient ivory rim sweep 0..1 (pulsePhase), on top of the rim mode. */
+  /** Transient coastline glow 0..1 (pulsePhase 'attack'), on top of the rim mode. */
   glow: number;
-  flipX: number; // 1 = normal, 0 = edge-on
+  flipX: number; // 1 = normal
   rimMode: RimMode;
-  rimAlpha: number; // animated rim opacity target multiplier
+  rimAlpha: number; // animated rim opacity multiplier
   dirty: boolean;
   ver: Record<string, number>;
 }
 
-const FLOOD_SOFT = 0.9;
+/** Deep (edge) tone of a wash: darker and a touch more saturated, like pigment pooled at the edge. */
+export function deepOf(c: RGB): RGB {
+  return adjust(c, 1.12, 0.62);
+}
 
 export class TileSet {
   group = new THREE.Group();
@@ -67,12 +89,12 @@ export class TileSet {
   list: Tile[] = [];
   private entry = new Map<string, Vec2>();
   materials: THREE.Material[] = [];
-  private lineMats: LineMaterial[] = [];
 
-  constructor(g: BoardGeometry, grain: THREE.Texture) {
-    const ivory = new THREE.Color(IVORY);
+  constructor(g: BoardGeometry, ink: InkLayer, shared: SharedUniforms) {
+    const un = unclaimedRgb();
     for (const id of TERRITORY_IDS) {
       const tg = g.territories[id];
+      const index = ink.index(id);
       const anchorW = toWorld(tg.anchor[0], tg.anchor[1], TILE_TOP);
       const shapes: THREE.Shape[] = [];
       const rings: Vec2[][] = [];
@@ -82,118 +104,60 @@ export class TileSet {
         for (const h of p.holes) s.holes.push(new THREE.Path(h.map(([x, y]) => new THREE.Vector2(x, y))));
         shapes.push(s);
       }
-      const geo = new THREE.ExtrudeGeometry(shapes, {
-        depth: TILE_DEPTH,
-        bevelEnabled: true,
-        bevelThickness: BEVEL_T,
-        bevelSize: BEVEL_S,
-        bevelOffset: -BEVEL_S,
-        bevelSegments: 2,
-        curveSegments: 1,
-      });
+      const geo = new THREE.ExtrudeGeometry(shapes, { depth: TILE_DEPTH, bevelEnabled: false, curveSegments: 1 });
       // shape (x, y, z) → world (x − W/2, z, H/2 − y), then relative to the anchor.
       geo.rotateX(-Math.PI / 2);
       geo.translate(-g.width / 2 - anchorW.x, 0, g.height / 2 - anchorW.z);
-      geo.computeVertexNormals();
+      geo.deleteAttribute('normal');
+      geo.deleteAttribute('uv');
       geo.computeBoundingSphere();
 
-      const uniforms = {
-        uFloodColor: { value: new THREE.Color() },
-        uFloodOrigin: { value: new THREE.Vector2() },
-        uFloodR: { value: 0 },
+      // Per-territory breath: its own period (10–18 s) and phase.
+      const h = (k: number) => {
+        const x = Math.sin(index * 12.9898 + k * 78.233) * 43758.5453;
+        return x - Math.floor(x);
+      };
+      const uniforms: TileUniforms = {
+        uAnchorW: { value: new THREE.Vector2(anchorW.x, anchorW.z) },
+        uColor: { value: new THREE.Vector3(un[0], un[1], un[2]) },
+        uDeep: { value: new THREE.Vector3() },
+        uId: { value: index },
+        uDim: { value: 0 },
+        uLight: { value: 0 },
+        uFlash: { value: 0 },
+        uGlow: { value: 0 },
+        uDry: { value: 0 },
+        uPhase: { value: h(1) * Math.PI * 2 },
+        uPeriod: { value: 10 + 8 * h(2) },
+        uSeed: { value: h(3) * 7.13 },
+        uRim: { value: new THREE.Vector2(0, 2) },
         uFloodOn: { value: 0 },
+        uFloodR: { value: 0 },
+        uFloodMode: { value: 0 },
+        uFloodTorn: { value: 0 },
+        uFloodSeed: { value: h(4) * 3.7 },
+        uFloodOrigin: { value: new THREE.Vector2() },
+        uFloodDir: { value: new THREE.Vector2(1, 0) },
+        uFloodColor: { value: new THREE.Vector3() },
+        uFloodDeep: { value: new THREE.Vector3() },
       };
-      const top = new THREE.MeshStandardMaterial({ color: '#cbbd9b', map: grain, roughness: 0.78, metalness: 0 });
-      top.onBeforeCompile = (sh) => {
-        Object.assign(sh.uniforms, uniforms);
-        sh.vertexShader = sh.vertexShader
-          .replace('#include <common>', '#include <common>\nvarying vec2 vFloodP;')
-          .replace(
-            '#include <worldpos_vertex>',
-            '#include <worldpos_vertex>\nvFloodP = (modelMatrix * vec4(transformed, 1.0)).xz;',
-          );
-        sh.fragmentShader = sh.fragmentShader
-          .replace(
-            '#include <common>',
-            `#include <common>
-            varying vec2 vFloodP;
-            uniform vec3 uFloodColor; uniform vec2 uFloodOrigin; uniform float uFloodR; uniform float uFloodOn;`,
-          )
-          .replace(
-            '#include <color_fragment>',
-            `#include <color_fragment>
-            if (uFloodOn > 0.5) {
-              float fd = distance(vFloodP, uFloodOrigin);
-              float k = smoothstep(uFloodR, uFloodR - ${FLOOD_SOFT.toFixed(2)}, fd);
-              float edge = exp(-pow((fd - uFloodR + 0.35) / 0.28, 2.0)) * step(0.01, uFloodR);
-              diffuseColor.rgb = mix(diffuseColor.rgb, uFloodColor, k) + edge * 0.10;
-            }`,
-          );
-      };
-      top.customProgramCacheKey = () => 'tile-top-v1';
-      // UVs are board units; the grain tiles every 9 units.
-      grain.wrapS = grain.wrapT = THREE.RepeatWrapping;
-      grain.repeat.set(1 / 9, 1 / 9);
-      const side = new THREE.MeshStandardMaterial({ color: '#7a6a50', roughness: 0.7, metalness: 0 });
+      const top = new THREE.ShaderMaterial({
+        uniforms: { ...shared, ...uniforms },
+        vertexShader: TILE_VERT,
+        fragmentShader: TILE_FRAG,
+        toneMapped: false,
+      });
+      const side = new THREE.ShaderMaterial({
+        uniforms: { uColor: uniforms.uColor },
+        vertexShader: SIDE_VERT,
+        fragmentShader: SIDE_FRAG,
+        toneMapped: false,
+      });
       const mesh = new THREE.Mesh(geo, [top, side]);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
       mesh.userData.territory = id;
       const pivot = new THREE.Group();
       pivot.position.set(anchorW.x, 0, anchorW.z);
       pivot.add(mesh);
-
-      // Rims: the tile outline, relative to the pivot. Drawn just above the tile top (not down at the
-      // bevel shoulder), so no bevel, own or neighbour's, ever cuts into the screen-space line.
-      const segs: number[] = [];
-      const yRim = TILE_TOP + 0.02;
-      // The rim traces the shape, not the coastline: detail finer than the stroke (≈ 0.12 units at home)
-      // and islets smaller than a token scribble into noise, so they're simplified away / skipped.
-      const biggest = Math.max(...rings.map(ringArea));
-      const rimRings = rings.filter((r) => ringArea(r) >= Math.min(1.5, biggest)).map((r) => simplifyRing(r, 0.12));
-      for (const ring of rimRings) {
-        for (let i = 0; i < ring.length; i++) {
-          const a = ring[i];
-          const b = ring[(i + 1) % ring.length];
-          const wa = toWorld(a[0], a[1], yRim);
-          const wb = toWorld(b[0], b[1], yRim);
-          segs.push(wa.x - anchorW.x, wa.y, wa.z - anchorW.z, wb.x - anchorW.x, wb.y, wb.z - anchorW.z);
-        }
-      }
-      const lg = new LineSegmentsGeometry();
-      lg.setPositions(segs);
-      // Each outline is hundreds of short segments whose quads overlap at every joint; blended twice,
-      // those joints read as a bright stipple. The stencil lets each pixel take a stroke only once:
-      // every under-stroke writes 1, every ivory stroke writes 2 (and may cover the under-stroke).
-      const rimUnderMat = new LineMaterial({
-        color: 0x0b0d10,
-        linewidth: 4,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        stencilWrite: true,
-        stencilRef: 1,
-        stencilFunc: THREE.NotEqualStencilFunc,
-        stencilZPass: THREE.ReplaceStencilOp,
-      });
-      const rimIvoryMat = new LineMaterial({
-        color: ivory.getHex(),
-        linewidth: 2,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        stencilWrite: true,
-        stencilRef: 2,
-        stencilFunc: THREE.NotEqualStencilFunc,
-        stencilZPass: THREE.ReplaceStencilOp,
-      });
-      this.lineMats.push(rimUnderMat, rimIvoryMat);
-      const rimUnder = new LineSegments2(lg, rimUnderMat);
-      const rimIvory = new LineSegments2(lg, rimIvoryMat);
-      rimUnder.renderOrder = 3;
-      rimIvory.renderOrder = 4;
-      rimUnder.visible = rimIvory.visible = false;
-      mesh.add(rimUnder, rimIvory);
 
       let radius = 0;
       for (const ring of rings)
@@ -203,28 +167,24 @@ export class TileSet {
 
       const tile: Tile = {
         id,
+        index,
         pivot,
         mesh,
         top,
         side,
         uniforms,
-        rimUnder,
-        rimIvory,
-        rimUnderMat,
-        rimIvoryMat,
         anchorW,
         anchor: tg.anchor,
         rings,
         bbox: tg.bbox,
         radius,
         clearance,
-        rgb: hexToRgb('#cbbd9b'),
+        rgb: un,
         dim: 0,
         light: 0,
         flash: 0,
         flashColor: hexToRgb(IVORY),
-        tint: 0,
-        tintColor: [1, 1, 1],
+        dry: 0,
         hoverLift: 0,
         selectLift: 0,
         press: 0,
@@ -312,39 +272,34 @@ export class TileSet {
     }
   }
 
-  setResolution(w: number, h: number): void {
-    for (const m of this.lineMats) m.resolution.set(w, h);
-  }
+  /** (Kept for the view's resize hook; the rims are drawn in the wash shader now.) */
+  setResolution(_w: number, _h: number): void {}
 
-  /** Recompute a tile's material colors and transform from its animated fields. */
+  /** Push a tile's animated fields into its uniforms and transform. `pulse` = the breathing target rim. */
   apply(t: Tile, pulse: number, rimScale: number): void {
     const lift = t.hoverLift + t.selectLift + t.press + t.fxLift + t.phaseLift;
     t.pivot.position.y = lift;
     t.pivot.scale.x = Math.max(0.001, t.flipX);
     if (!t.dirty && t.rimMode !== 'target') return;
+    const u = t.uniforms;
     if (t.dirty) {
-      let c = t.rgb;
-      // Unrelated land recedes only ~20 % (docs/ROUND2.md §E): the map stays the map.
-      if (t.dim > 0) c = adjust(c, 1 - 0.15 * t.dim, 1 - 0.2 * t.dim);
-      if (t.light > 0) c = adjust(c, 1, 1, 0.08 * t.light);
-      if (t.tint > 0) c = mixRgb(c, t.tintColor, t.tint * 0.7);
-      setColor(t.top.color, c);
-      setColor(t.side.color, adjust(c, 1.05, 0.52));
-      const fl = t.flash * 0.16;
-      const ti = t.tint * 0.34;
-      if (fl > 0 || ti > 0) {
-        setColor(t.top.emissive, ti >= fl ? t.tintColor : t.flashColor);
-        t.top.emissiveIntensity = Math.max(fl, ti);
-      } else t.top.emissiveIntensity = 0;
+      u.uColor.value.set(t.rgb[0], t.rgb[1], t.rgb[2]);
+      const d = deepOf(t.rgb);
+      u.uDeep.value.set(d[0], d[1], d[2]);
+      u.uDim.value = Math.min(1.8, t.dim);
+      u.uLight.value = t.light;
+      u.uFlash.value = t.flash;
+      u.uGlow.value = t.glow;
+      u.uDry.value = t.dry;
     }
-    // Rims
+    // Rim: selectable ≈ 0.6 / 2.5 px (readable on every wash at home zoom); the picked source full ivory; the
+    // eligible targets breathe 0.5 ↔ 0.8 (the board's only pulse); the armed target steady.
     let a = 0;
     let w = 2;
     switch (t.rimMode) {
       case 'selectable':
-        // strong enough to read at home zoom on crimson, amber and emerald (docs/ROUND2.md §E)
-        a = 0.6;
-        w = 2.5;
+        a = 0.55;
+        w = 2.2;
         break;
       case 'selected':
         a = 1;
@@ -356,35 +311,17 @@ export class TileSet {
         break;
       case 'armed':
         a = 0.95;
-        w = 2.5;
+        w = 2.8;
         break;
     }
     a *= t.rimAlpha;
-    if (t.glow > 0) {
-      const g = t.glow * 0.85;
-      if (g > a) {
-        a = g;
-        w = Math.max(w, 2.5);
-      }
-    }
-    const vis = a > 0.01;
-    t.rimIvory.visible = t.rimUnder.visible = vis;
-    if (vis) {
-      t.rimIvoryMat.opacity = a;
-      t.rimIvoryMat.linewidth = w * rimScale;
-      t.rimUnderMat.opacity = Math.min(1, a * 0.75);
-      t.rimUnderMat.linewidth = (w + 2) * rimScale;
-    }
+    u.uRim.value.set(a, w * rimScale);
     t.dirty = false;
   }
 
   dispose(): void {
-    for (const t of this.list) {
-      t.mesh.geometry.dispose();
-      t.rimIvory.geometry.dispose();
-    }
+    for (const t of this.list) t.mesh.geometry.dispose();
     for (const m of this.materials) m.dispose();
-    for (const m of this.lineMats) m.dispose();
   }
 }
 

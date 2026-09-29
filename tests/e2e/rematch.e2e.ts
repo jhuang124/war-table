@@ -42,7 +42,7 @@ await page.evaluate(() => {
 // Target-first: clicking the enemy arms it from the strongest neighbour; the buttons commit.
 await clickT(page, 'alaska');
 const armed = await ui(page);
-check(/^Kamchatka → Alaska · \d+%$/.test(armed.line) && armed.buttons.join(' / ') === 'Roll / Blitz' && armed.brass.join() === 'Blitz', `armed: ${armed.line} · ${armed.buttons.join(' / ')}`, results);
+check(/^Kamchatka → Alaska · \d+%( · .+)?$/.test(armed.line) && armed.buttons.join(' / ') === 'Roll / Blitz' && armed.brass.join() === 'Blitz', `armed: ${armed.line} · ${armed.buttons.join(' / ')}`, results);
 await clickBtn(page, 'btn-blitz');
 await page.waitForFunction(() => window.__risk.ui().screen === 'victory', null, { timeout: 20000 });
 const t0 = Date.now();

@@ -42,7 +42,8 @@ for (let guard = 0; guard < 10; guard++) {
   if (passes === 0) {
     check(u.line === `Place ${n} armies · click a territory` && u.step === 'Setup', `[${u.step}] ${u.line}`, results);
     check(u.track.join(',') === 'current:setup,locked:done' && u.trackLive && u.recommended === null, `track: ${u.track.join(', ')} (live ${u.trackLive})`, results);
-    check(u.primary === null && u.buttons.length === 0 && u.brass.length === 0, `nothing picked: no buttons (${u.buttons.join(' / ')}), nothing brass`, results);
+    // Nothing to commit: the one gold is the current segment (INK B2.1).
+    check(u.primary === null && u.buttons.length === 0 && u.brass.join() === 'Setup', `nothing picked: no buttons (${u.buttons.join(' / ')}), gold on the current segment [${u.brass.join(', ')}]`, results);
     check((await page.locator('[data-testid="handoff"]').count()) === 0, 'no hand-off cover during setup', results);
   }
   const own = TERRITORY_IDS.filter((t) => s.territories[t].owner === 0);

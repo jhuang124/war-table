@@ -72,6 +72,7 @@ export async function buildSweep(seeds = 20): Promise<string[]> {
   const bad: string[] = [];
   const cases: { name: SfxName; variant?: SfxVariant; duration?: number; rate?: number }[] = [];
   for (const name of Object.keys(SFX) as SfxName[]) {
+    if (SFX[name].silent) continue;
     cases.push({ name }, { name, rate: 0.5 }, { name, rate: 2 });
     const d = SFX[name].duration;
     if (d) cases.push({ name, duration: d[0] }, { name, duration: d[1] });
@@ -170,10 +171,71 @@ export async function renderLimiterProbe(amplitude: number): Promise<{ inPeak: n
   return { inPeak: amplitude, outPeak: peak, outRms: Math.sqrt(e / n), inRms: amplitude / Math.SQRT2 };
 }
 
-export async function renderMusic(seconds = 60, seed = 3): Promise<AudioBuffer> {
-  const sr = OFFLINE_SR;
-  const ctx = new OfflineAudioContext(2, Math.ceil(seconds * sr), sr);
+export async function renderMusic(seconds = 60, seed = 3, sampleRate = OFFLINE_SR): Promise<AudioBuffer> {
+  const ctx = new OfflineAudioContext(2, Math.ceil(seconds * sampleRate), sampleRate);
   const mixer = new Mixer(ctx, ctx.destination, { limiter: false });
   mixer.startMusic(0, { seed, renderUntil: seconds });
   return ctx.startRendering();
+}
+
+/**
+ * The live brush stroke, scripted: press, a quick sure drag (speed rising to 1 and easing), release.
+ * `commit` = it armed an attack; otherwise it dries out.
+ */
+export async function renderStroke(commit = true): Promise<AudioBuffer> {
+  const sr = OFFLINE_SR;
+  const ctx = new OfflineAudioContext(2, Math.ceil(2.2 * sr), sr);
+  const mixer = new Mixer(ctx, ctx.destination, { limiter: false });
+  const h = mixer.stroke({ at: 0.05 }) as ReturnType<Mixer['stroke']> & { moveAt: (v: number, at: number, p?: number) => void; endAt: (c: boolean, at: number) => void };
+  for (let k = 0; k <= 45; k++) {
+    const t = 0.05 + k * 0.016;
+    const u = k / 45;
+    h.moveAt(Math.sin(Math.PI * Math.min(1, u * 1.15)) * 1.0 + 0.05, t, -0.3 + 0.6 * u);
+  }
+  h.endAt(commit, 0.05 + 46 * 0.016);
+  return ctx.startRendering();
+}
+
+/**
+ * SOUL's moment, rendered through the live mix (limiter on): the score underneath; Sam's brush stroke
+ * from Ural toward Siberia; Roll; the wooden cup; bone dice click into the tray; the verdict beat;
+ * a breath of smoke as John's figure falls; the snap and the flood as Sam's colour soaks across;
+ * the march; then the board settles back into the score. Timings follow the dice tray (single roll).
+ */
+export async function renderMoment(seed = 6, seconds = 18): Promise<{ buffer: AudioBuffer; marks: { t: number; what: string }[] }> {
+  const sr = OFFLINE_SR;
+  const ctx = new OfflineAudioContext(2, Math.ceil(seconds * sr), sr);
+  const mixer = new Mixer(ctx, ctx.destination, { limiter: true });
+  const rand = mulberry32(seed);
+  mixer.startMusic(0, { seed: 11, renderUntil: seconds, fadeIn: 3 });
+  const marks: { t: number; what: string }[] = [];
+  const play = (name: SfxName, t: number, o: Parameters<Mixer['trigger']>[2] = {}) => {
+    mixer.trigger(name, t, { rand, ...o });
+    marks.push({ t, what: name + (o.variant ? ` · ${o.variant}` : '') });
+  };
+  // the stroke
+  const S = 6;
+  const h = mixer.stroke({ at: S }) as ReturnType<Mixer['stroke']> & { moveAt: (v: number, at: number, p?: number) => void; endAt: (c: boolean, at: number) => void };
+  for (let k = 0; k <= 40; k++) {
+    const u = k / 40;
+    h.moveAt(0.1 + 0.9 * Math.sin(Math.PI * Math.min(1, u * 1.1)), S + k * 0.016, -0.2 + 0.4 * u);
+  }
+  h.endAt(true, S + 0.66);
+  marks.push({ t: S, what: 'stroke (drag Ural → Siberia)' });
+  // Roll
+  const R = S + 1.3;
+  play('uiClick', R);
+  play('diceShake', R + 0.02, { duration: 0.15 });
+  // tumble 450 ms, dice touch down 40 ms apart
+  const land = R + 0.02 + 0.15 + 0.29;
+  [-0.3, -0.3, -0.3, 0.3, 0.3].forEach((pan, i) => play('diceLand', land + i * 0.04, { pan }));
+  const settle = land + 0.16 + 0.1;
+  mixer.hush(settle, 0.25);
+  marks.push({ t: settle, what: 'verdict beat (hush 250 ms)' });
+  const verdict = settle + 0.25;
+  play('hit', verdict, { pan: 0.3 });
+  const fall = verdict + 0.34;
+  play('conquer', fall, { variant: 'somber', pan: 0.2 });
+  play('march', fall + 0.15, { duration: 0.5, pan: 0.1 });
+  return { buffer: await ctx.startRendering(), marks };
 }

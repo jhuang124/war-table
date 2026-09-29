@@ -324,3 +324,32 @@ export function encodeWav(channels: Float32Array[], sr: number): ArrayBuffer {
   }
   return buf;
 }
+
+/**
+ * Loudness of a long render: BS.1770 K-weighted, 400 ms blocks with 75% overlap, absolute gate at
+ * −70 LUFS and the relative gate at −10 LU (integrated loudness, LUFS-I). Also returns the median
+ * 3 s short-term loudness, which is how "the score's level" is felt.
+ */
+export function longLoudness(channels: Float32Array[], sr: number): { integrated: number; shortTermMedian: number } {
+  const [shelf, hp] = kWeightingFilters(sr);
+  const weighted = channels.map((c) => runBiquad(runBiquad(c, shelf), hp));
+  const blockEnergy = (from: number, len: number) => {
+    let e = 0;
+    for (const w of weighted) for (let i = from; i < from + len; i++) e += w[i] * w[i];
+    return e / len;
+  };
+  const lufs = (e: number) => -0.691 + 10 * Math.log10(e + 1e-20);
+  const B = Math.round(0.4 * sr);
+  const hop = Math.round(0.1 * sr);
+  const blocks: number[] = [];
+  for (let s = 0; s + B <= weighted[0].length; s += hop) blocks.push(blockEnergy(s, B));
+  const abs = blocks.filter((e) => lufs(e) > -70);
+  const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
+  const rel = lufs(mean(abs)) - 10;
+  const gated = abs.filter((e) => lufs(e) > rel);
+  const S = Math.round(3 * sr);
+  const st: number[] = [];
+  for (let s = 0; s + S <= weighted[0].length; s += sr) st.push(lufs(blockEnergy(s, S)));
+  st.sort((a, b) => a - b);
+  return { integrated: lufs(mean(gated)), shortTermMedian: st.length ? st[Math.floor(st.length / 2)] : -Infinity };
+}

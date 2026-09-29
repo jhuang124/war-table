@@ -3,8 +3,11 @@
 **Play: https://jhuang124.github.io/war-table/**
 
 The classic game of world conquest for 2 to 4 players around one screen — a laptop on the coffee table, a TV, or
-one phone or tablet passed around the table. Any seat can be an AI. A 3D board on a walnut table, real dice in a tray, and a HUD that always says what to do
-next. No accounts, no server, no online play: everything runs in the browser and saves to it.
+one phone or tablet passed around the table. Any seat can be an AI. The board is an ink painting on indigo paper:
+ivory coastlines, muted washes for each player, brush-drawn soldiers, riders and cannons, bone dice in a
+lacquer tray, and one line of plain English that always says what to do next. At rest the board drifts
+and breathes; a soft ambient score plays underneath. No accounts, no server, no online play: everything
+runs in the browser and saves to it.
 
 ## Start
 
@@ -28,8 +31,12 @@ plays offline.
   suggests rotating.
 - **Tap** a territory to select it, **drag** to pan, **pinch** to zoom (**Reset view** brings the map
   home). **Touch and hold** a territory for its name card: continent and bonus, owner, armies.
+- **Draw to attack**: in your Attack step, put a finger on one of your territories that can attack and
+  drag to an enemy next to it. A gold brush stroke follows your finger; let go on the enemy to arm the
+  attack (the same as tapping it), anywhere else to cancel. The stroke never rolls: **Roll** or
+  **Blitz** does. A drag that starts anywhere else pans the map as usual.
 - The bottom **dock** is the Turn Track (Place · Attack · Fortify · End), the line, and the buttons,
-  in thumb reach. In portrait it stacks in rows. The card-stack button is your hand.
+  in thumb reach, under the gold rule. In portrait it stacks in rows. **Cards N** is your hand.
 - Menu, Settings, Rules, Log, your cards and the hand-off cover open as **sheets from the bottom**:
   pull one down by its handle (or tap outside it) to close it.
 - **Hide cards between turns** is on by default on phones and tablets: with 2+ humans, the next
@@ -39,7 +46,8 @@ plays offline.
 ## Playing
 
 **New game.** Name the seats (2–4), pick Human/AI (Easy · Normal · Hard), and click a seat's colour
-emblem to pick from the six colours (defaults: crimson, cobalt, amber, emerald). Pick a length and a
+emblem to pick from the six colours (Vermilion, Slate, Ochre, Sage, Wisteria, Plum; the first four
+are the defaults, chosen to stay apart for colour-blind players). Pick a length and a
 setup, then **Start**. The line above Start says exactly what you picked.
 
 | Length | Goal | Estimate |
@@ -57,36 +65,48 @@ against three AIs.
 | Quick deal (default) | Territories dealt at random, armies placed for you. You're playing in seconds. |
 | Place your own | Territories dealt at random; you place your starting armies in two passes. Pick a territory, choose how many, **Place**; **Done** on the track commits the pass. |
 
-**A turn.** The board fills the screen; the HUD floats on it. At the top, one pill per player (how many
-territories they hold) and ≡. At the bottom, one strip: the **Turn Track** on the left
-(**Place · Attack · Fortify · End turn**), one line saying what to do, and on the right the action
-zone: at most one count control and two buttons.
+**A turn.** The board fills the screen; the HUD floats on it. At the top, one ring per player (how many
+territories they hold) and the ensō menu. At the bottom: one line saying what to do, the gold rule, and
+under it the **Turn Track** (**Place · Attack · Fortify · End turn**), centred and never moving, with the
+action buttons to its right (at most one count control and two buttons). Gold marks the one thing that
+matters now: the button to press, the step you're on, or the stroke and the dice while a fight plays.
 
 The track is how you move through a turn: click the next segment you want. It never goes back; a
 segment you can't reach yet tells you why in the line ("Place your 3 armies first"); the one that's
-recommended next glows. A click on the board only ever selects; buttons commit.
+recommended next is outlined in gold. A click on the board only ever selects; buttons (or a finished
+brush stroke, which only arms) commit.
 
 1. **Place.** Click one of your territories, pick how many armies (defaults to all; − N + for a few, a
    slider for more), press **Place N**. **Undo** takes back the last placement. **Cards N** shows your
    hand and trades your best set (at 5 cards you must trade first). Then click **Attack** on the track.
 2. **Attack.** Click an enemy next to you; your strongest neighbour attacks (click another of yours to
-   switch). The line shows the odds, `Ural → Siberia · 82%`. **Blitz** keeps rolling until it falls;
+   switch). Or **draw it**: press on one of your territories and drag to the enemy; a gold brush stroke
+   follows and arms the attack when you let go on it (let go anywhere else to cancel). The line shows
+   the odds in numbers and a word, plus what's at stake when something is:
+   `Ural → Siberia · 82% · likely · takes Asia`. **Blitz** keeps rolling until it falls;
    **Roll** rolls once. After a win, pick how many to move in (the line shows what each side keeps)
    and press **Move N**; the new territory is then ready to keep attacking. Clicking the ocean or Esc
    clears a selection. Conquer at least one territory to earn a card.
 3. **Fortify.** One move through your own territories: pick where from, where to, how many, then
    **Move N · end turn**. Or click **End turn** on the track (from Attack it skips fortifying).
 
-Pieces show army size like the board game: a soldier for 1–4, a horse for 5–9, a cannon for 10+; the
-number is the exact count. If you orbit or zoom away, **Reset view** appears next to ≡.
+Pieces show army size like the board game: a soldier for 1–4, a rider for 5–9, a cannon for 10+; the
+number in the ring beside it is the exact count. If you pan, tilt or zoom away, **Reset view** appears
+next to the menu.
 
-AI turns play as a short highlight reel: the AI's marker moves along the same track and the line says
-what it did ("Cobalt takes Siam"). Change their pace in Settings. A click during an AI turn skips the
+When you lose a territory, its edge tears as the other colour soaks in, and your ring dims for a
+moment; when you're knocked out, the line names who did it (`Sam · taken by John · round 9`). From
+round 2, your turn line says who took what from you since your last turn.
+
+AI turns play as a short highlight reel at the same pace as before: the AI's marker moves along the
+same track and the line says what it did ("Cobalt takes Siam"). Change their pace in Settings. A click during an AI turn skips the
 current fight; a click during your own animation finishes it (the track waits while dice roll).
 
-**Ending.** First to the goal wins, or the menu (≡ or Esc) → **End game now** calls it for whoever holds the
-most territories. Victory shows awards (Nemesis, Hot/Cursed dice, Biggest cash-in), a territories
-chart, and **Rematch** (same seats, new dice).
+**Ending.** First to the goal wins, or the menu (the ensō at the top right, or Esc) → **End game now**
+calls it for whoever holds the most territories. The other colours dry back to paper and the victory
+scroll rises: `John holds the world`, the round and territories, up to three award lines (Nemesis,
+Hot/Cursed dice, Biggest cash-in), one ink line per player for the territories they held, and
+**Rematch** (same seats, new dice).
 
 The game autosaves after every action. Close the tab, come back, press **Continue**.
 
@@ -98,9 +118,10 @@ hidden keys speed things up:
 | Input | Does |
 |---|---|
 | Click a tile | Selects (what the bottom line says); never commits |
+| Left-drag from one of your territories (Attack step) | Draws the attack: let go on an enemy next to it to arm it; anywhere else cancels |
 | Click the ocean | Clears the selection |
-| Left-drag / right-drag / wheel | Orbit / pan / zoom (**Reset view**, or the camera returns home at your next turn) |
-| Enter | The brass thing: the brass button, or the glowing track segment |
+| Left-drag (elsewhere) / right-drag / wheel | Pan / tilt a little (70–85°, ±10°) / zoom (**Reset view**, or the camera returns home at your next turn) |
+| Enter | The gold thing: the gold button, or the gold-outlined track segment |
 | Space | Blitz, or confirm a move / placement (never changes phase) |
 | Esc | Back out one step, then the menu |
 
@@ -115,8 +136,10 @@ hidden keys speed things up:
 ## Settings (title screen or Pause → Settings)
 
 Text size (Laptop · Couch · TV), animation speed for your own turns (1× · 2× · Instant), AI speed
-(Watch · Fast · Skip), sound volume, mute, music (a quiet ambient bed, off by default), territory
-names on the board, show win chance, **Hide cards between turns** (a pass-the-device cover between two
+(Watch · Fast · Skip), sound volume, mute, **ambient score** (a soft generative score under the game,
+on by default at about a third of the effects' level, seeded by each game; switch and volume in
+Settings), **living board** (the slow drift of mist and ink at rest, on by default; reduce motion turns
+it off too), territory names on the board, show win chance, **Hide cards between turns** (a pass-the-device cover between two
 humans; off by default on a laptop or TV, where everyone can see anyway, and on by default on phones and
 tablets, which get passed around), return camera home each turn, and reduce motion (also follows the
 system setting). On a phone, Text size steps are smaller (1.0 · 1.1 · 1.2) and live in Settings only.
@@ -150,7 +173,9 @@ system setting). On a phone, Text size steps are smaller (1.0 · 1.1 · 1.2) and
 | `npm run verify:map` | Checks board geometry against the classic borders and writes `artifacts/map/preview.png` |
 | `npm run verify:audio` | Offline + live checks of the synthesized sound effects |
 | `npm run gallery` | The HUD fixture gallery (`ui-gallery.html`) |
+| `npx tsx tests/e2e/screens.ts [out] [targets]` | The ink screenshot sweep (desktop sizes and phones: title → victory, a drawn stroke, the verdict, the smoke and flood, 4 idle frames; server on `RISK_URL`) into `artifacts/ink/final/` |
 | `npx tsx tests/e2e/mobile-screens.ts [out] [devices]` | Screenshot sweep of every state on emulated phones / tablets (server on `RISK_URL`) |
+| `npx tsx scripts/units.ts` | Re-pack the unit sprites (`_claude/sprites/*-1.png`) into `public/units/atlas.webp` |
 | `npx tsx tests/e2e/pwa-icons.ts` | Re-render the app icons in `public/icons/` from `icon.svg` |
 
 Mobile: layouts are chosen by capability, never the user agent (`src/ui/layout.ts`): a phone-sized
@@ -163,6 +188,7 @@ production builds.
 
 Dev pages: `render-sandbox.html` (the board alone, with an AI game and every animation on buttons),
 `audio.html` (every sound), `ui-gallery.html` (every HUD state). `window.__risk` is the test API
-(SPEC §9). The design lives in `docs/SPEC.md` (what) and `docs/UX.md` (how it feels); `docs/ROUND2.md`
-(the Turn Track, board clicks select / buttons commit, the full-screen board, sculpted pieces) overrides
-both where they differ, and `docs/MOBILE.md` overrides all three on touch devices.
+(SPEC §9). Start with `SOUL.md` (what War Table is and how it should feel; it outranks every spec).
+The build spec for the look, motion and sound is `docs/INK.md`; the rules and flows are in
+`docs/SPEC.md`, with `docs/ROUND2.md` (the Turn Track, board clicks select / buttons commit) and
+`docs/MOBILE.md` (touch devices) still binding where INK.md doesn't change them.

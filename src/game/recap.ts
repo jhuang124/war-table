@@ -29,20 +29,28 @@ function joinNames(names: string[]): string {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
+/** The grudge line's cap: past it, names give way to counts. */
+export const RECAP_MAX = 60;
+
 /**
- * One line, only if the seat lost territory since its last turn: 'Cobalt took Ural',
- * 'Cobalt took 2 of yours', 'Cobalt and Amber took 3 of yours'. null when nothing was lost.
+ * The grudge line (docs/INK.md A5), only if the seat lost territory since its last turn, naming who and
+ * what: 'Sam took Ural and Siberia from you' · 'Sam took Ural, Priya took Peru' · when names don't fit in
+ * 60 characters, 'Sam took 4 of yours' / 'Sam and Priya took 5 of yours'. null when nothing was lost.
  */
 export function buildRecap(entry: RecapEntry | undefined, state: GameState): string | null {
   if (!entry) return null;
   const attackers = Object.entries(entry.lost)
-    .map(([a, ts]) => ({ a: Number(a), ts }))
+    .map(([a, ts]) => ({ a: Number(a), ts: [...new Set(ts)] }))
     .filter((x) => x.ts.length > 0)
-    .sort((x, y) => y.ts.length - x.ts.length);
+    .sort((x, y) => y.ts.length - x.ts.length || x.a - y.a);
   if (!attackers.length) return null;
   const total = attackers.reduce((n, x) => n + x.ts.length, 0);
+  const named =
+    attackers.length === 1
+      ? `${pName(state, attackers[0].a)} took ${joinNames(attackers[0].ts.map(tName))} from you`
+      : attackers.map((x) => `${pName(state, x.a)} took ${joinNames(x.ts.map(tName))}`).join(', ');
+  if (named.length <= RECAP_MAX) return named;
   const who = joinNames(attackers.map((x) => pName(state, x.a)));
-  if (total === 1) return `${who} took ${tName(attackers[0].ts[0])}`;
   return `${who} took ${total} of yours`;
 }
 

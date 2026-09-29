@@ -1,12 +1,12 @@
 // Phone-only HUD pieces (docs/MOBILE.md §1, §3):
-//   RotatePill — the one-time `Rotate for the full map` pill on a portrait phone (dismiss with ×, by
-//                rotating, or it fades after 9 s; never shown again).
+//   RotatePill — the one-time `Rotate for the full map` line on a portrait phone, in the dock's line
+//                slot; it dries after 4 s, at the first touch, or on rotating; never shown again.
 //   NameCard   — the long-press card above the finger: territory, continent + bonus, owner, armies.
 //                Driven by the board's long-press callback through GameVM.nameCard; releasing hides it.
 
 import type { NameCardVM } from '../../game/viewModel';
 import { PLAYER_COLORS } from '../../shared/palette';
-import { animateIn, animateOut, emblem, h, setStyle, setText, toggle } from '../dom';
+import { animateIn, animateOut, drawIn, EASE_IN_QUAD, emblem, h, motion, setStyle, setText, toggle } from '../dom';
 
 const ROTATE_KEY = 'risk3d.rotateHint.v1';
 
@@ -25,47 +25,88 @@ function markSeen(): void {
   }
 }
 
+/** The hint waits this long after the slot is claimed, so whatever was on the line has dried first. */
+const HINT_ENTER_MS = 320;
+/** It dries by itself after this long on the paper (or at the first touch). */
+const HINT_HOLD_MS = 4000;
+
+/**
+ * The one-time rotate hint (INK F3): one serif line on the paper in the dock's line slot, never a pill
+ * over the board. Shown once per device, on the first portrait game screen that has nothing else to
+ * say (no turn line, roll, hand-off, sheet or victory); it dries out after 4 s, at the first touch, or
+ * when any of those arrive. No ×: drying is the dismissal.
+ */
 export class RotatePill {
   readonly el: HTMLDivElement;
+  private text: HTMLSpanElement;
   private shown = false;
   private timer = 0;
+  private enterT = 0;
+  private out: Animation | null = null;
+  /** True while the hint owns the line slot (the strip's own line steps aside). */
+  onShow: ((on: boolean) => void) | null = null;
+  private onTouch = () => this.dismiss();
 
   constructor() {
-    this.el = h('div', 'rotate-pill hidden');
+    this.el = h('div', 'rotate-hint hidden');
     this.el.setAttribute('role', 'status');
     this.el.dataset.testid = 'rotate-pill';
-    const icon = h('span', 'rp-icon');
-    icon.setAttribute('aria-hidden', 'true');
-    // A phone turning a quarter
-    icon.innerHTML =
-      '<svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.2"/><path d="M20.5 9.5a8.5 8.5 0 0 0-5-6.2M20.5 9.5l-.3-3.1M20.5 9.5l-3 .5"/></svg>';
-    const close = h('button', 'rp-close nofocus');
-    close.type = 'button';
-    close.dataset.testid = 'rotate-pill-close';
-    close.setAttribute('aria-label', 'Dismiss');
-    close.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>';
-    close.addEventListener('click', () => this.dismiss());
-    this.el.append(icon, h('span', 'rp-text', 'Rotate for the full map'), close);
+    this.text = h('span', 'rh-text', 'Rotate for the full map');
+    this.el.append(this.text);
   }
 
-  /** Call whenever the game screen / orientation changes. */
-  update(inGame: boolean, phonePortrait: boolean): void {
-    if (this.shown && !phonePortrait) return this.dismiss();
-    if (this.shown || !inGame || !phonePortrait || seen()) return;
+  /** Something (the hint or a drying hint) is in the line slot. */
+  get busy(): boolean {
+    return this.shown || this.out?.playState === 'running';
+  }
+
+  /**
+   * Call on every render. `quiet`: the game screen with nothing else happening in the slot or on the
+   * board; `phonePortrait`: the layout. Anything else arriving dries the hint.
+   */
+  update(quiet: boolean, phonePortrait: boolean): void {
+    if (this.shown) {
+      if (!quiet || !phonePortrait) this.dismiss();
+      return;
+    }
+    if (!quiet || !phonePortrait || seen()) return;
     this.shown = true;
     markSeen();
+    // Claim the slot now (the strip's line dries, 160 ms); brush in once it has gone.
+    this.onShow?.(true);
+    this.out?.cancel();
+    this.out = null;
     this.el.classList.remove('hidden');
-    animateIn(this.el, { dy: -8, ms: 260 });
-    this.timer = window.setTimeout(() => this.dismiss(), 9000);
+    this.text.style.opacity = '0';
+    window.clearTimeout(this.enterT);
+    this.enterT = window.setTimeout(() => {
+      if (!this.shown) return;
+      this.text.style.opacity = '';
+      drawIn(this.text, 300);
+      this.timer = window.setTimeout(() => this.dismiss(), HINT_HOLD_MS);
+      window.addEventListener('pointerdown', this.onTouch, { capture: true, passive: true });
+    }, motion.reduced ? 0 : HINT_ENTER_MS);
   }
 
   dismiss(): void {
     if (!this.shown) return;
     this.shown = false;
     window.clearTimeout(this.timer);
-    animateOut(this.el, { dy: -6, remove: false }, () => {
-      if (!this.shown) this.el.classList.add('hidden');
-    });
+    window.clearTimeout(this.enterT);
+    window.removeEventListener('pointerdown', this.onTouch, { capture: true });
+    const done = () => {
+      this.el.classList.add('hidden');
+      this.text.style.opacity = '';
+      this.onShow?.(false);
+    };
+    if (motion.reduced || this.text.style.opacity === '0' || typeof this.el.animate !== 'function') return done();
+    // It dries (easeInQuad), then the strip's line comes back.
+    const a = (this.out = this.el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 240, easing: EASE_IN_QUAD, fill: 'forwards' }));
+    a.onfinish = () => {
+      if (this.shown) return;
+      a.cancel();
+      done();
+    };
   }
 }
 

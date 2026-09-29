@@ -3,6 +3,7 @@
 //   &text=tv|couch     override the text size
 //   &debug=1           outline the reported viewport insets and battle band
 //   &bg=render         use artifacts/render/home-WxH.png as the backdrop
+//   &bg=stand          the old tilted stand-in slab (default: the chosen moodboard painting)
 // The index of every fixture is hidden by default; open it with ?index=1 or the "i" key.
 
 import { createAudio } from '../../audio';
@@ -41,6 +42,13 @@ stage.append(slab);
 table.append(stage);
 boardHost.append(table);
 
+// &bg=mood: the chosen moodboard painting as the board (its own mock UI cropped off the bottom), for
+// judging the ink HUD against the look it is meant to sit on.
+if ((params.get('bg') ?? 'mood') === 'mood') {
+  table.classList.add('g-shot');
+  table.style.background = `#101a30 url(/_claude/moodboard/chosen-silver-ink-board.png) center top / auto ${Math.round(H / 0.83)}px no-repeat`;
+  slab.style.display = 'none';
+}
 // &bg=render: use the renderer's own home-view screenshot as a flat backdrop instead of the stand-in.
 if (params.get('bg') === 'render') {
   table.classList.add('g-shot');

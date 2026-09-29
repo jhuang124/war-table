@@ -7,10 +7,13 @@ import { FRAME_W } from './scene';
 
 const DEG = Math.PI / 180;
 /**
- * Home pitch (docs/ROUND2.md §C): steep enough that the far row (Alaska, Greenland, Siberia) keeps its size
- * and the land trapezoid fills the screen; the pieces lean to the camera, so they still read as figures.
+ * Home pitch (docs/INK.md B §3): ~80°, a painting on a table seen nearly from above — the far row keeps its
+ * size and the washes read flat. The player may tilt 70–85° and turn ±10°.
  */
-export const HOME_PITCH = 70;
+export const HOME_PITCH = 80;
+export const PITCH_MIN = 70;
+export const PITCH_MAX = 85;
+export const AZ_MAX = 10;
 /** Clearance between the land (and every piece) and the HUD-free region's edges, CSS px. */
 export const HOME_CLEAR_PX = 12;
 const BASE_FOV = 36;
@@ -42,6 +45,7 @@ export class CameraRig {
   attract = false;
   private attractT = 0;
   private attractBlend = 0;
+  /** (The attract orbit is cut; kept so old callers type-check.) */
   insets: ViewportInsets = { top: 0, right: 0, bottom: 0, left: 0, trayBand: 0 };
   W = 1;
   H = 1;
@@ -519,8 +523,8 @@ export class CameraRig {
   orbit(dxPx: number, dyPx: number): void {
     this.cancelAuto();
     this.userMoved = true;
-    this.goal.az = clamp(this.goal.az - dxPx * 0.2, -25, 25);
-    this.goal.pitch = clamp(this.goal.pitch + dyPx * 0.18, 35, 80);
+    this.goal.az = clamp(this.goal.az - dxPx * 0.08, -AZ_MAX, AZ_MAX);
+    this.goal.pitch = clamp(this.goal.pitch + dyPx * 0.08, PITCH_MIN, PITCH_MAX);
   }
 
   /** Ground point under a canvas pixel at the given pose (or current camera). */
@@ -866,44 +870,22 @@ export class CameraRig {
     this.goal = { ...p };
   }
 
+  /**
+   * The title / victory view (docs/INK.md B §7: the attract orbit is cut): the flat painting at home. `on`
+   * eases home once (unless the player has moved the view); the camera never orbits by itself.
+   */
   setAttract(on: boolean, returnHome = true): void {
-    if (this.attract === on) return;
-    this.attract = on;
-    if (on) {
-      this.attractT = 0;
-      this.attractBlend = 0;
-    } else {
-      // continue from wherever the orbit is
-      this.goal = { ...this.cur };
-      if (returnHome) void this.moveTo({ ...this.home }, 900);
-    }
+    this.attract = false;
+    this.attractT = 0;
+    this.attractBlend = 0;
+    if (on && returnHome && !this.isHome(0.01, 0.5)) void this.goHome(900);
   }
 
   // --- per frame --------------------------------------------------------------
 
   update(dtMs: number): void {
     const dt = Math.min(dtMs, 50);
-    if (this.attract) {
-      this.attractT += dt / 1000;
-      this.attractBlend = Math.min(1, this.attractBlend + dt / 1500);
-      // Slow sway (peak 4°/s) with a gentle dolly; stays inside the table.
-      // ±18° at a 28.5 s period: peak 3.97°/s (UX: attract orbit at 4°/s).
-      const period = 28.5;
-      const ang = Math.sin((this.attractT / period) * Math.PI * 2) * 18;
-      const target: Pose = {
-        tx: this.home.tx,
-        tz: this.home.tz,
-        dist: this.home.dist * (0.97 + 0.03 * Math.sin((this.attractT / 23) * Math.PI * 2)),
-        pitch: 51 + 3 * Math.sin((this.attractT / 29) * Math.PI * 2),
-        az: ang,
-      };
-      const k = 1 - Math.pow(1 - 0.03, dt / 16.67);
-      const b = this.attractBlend;
-      for (const key of ['tx', 'tz', 'dist', 'pitch', 'az'] as const) {
-        this.cur[key] = lerp(this.cur[key], target[key], k * b + (1 - b) * k * 0.5);
-      }
-      this.goal = { ...this.cur };
-    } else if (this.auto) {
+    if (this.auto) {
       const a = this.auto;
       a.t = Math.min(a.dur, a.t + dt);
       const e = ease.inOutCubic(a.t / a.dur);

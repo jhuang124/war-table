@@ -3,8 +3,19 @@
 // Board clicks only select; buttons commit; the track is the only way to change phase (plus the
 // fortify `Move N · end turn`, which says so). Pure: built from the displayed state + the selection.
 
-import { attackSources, attackTargets, fortifySources, fortifyTargets, winProbability, type GameState, type TerritoryId } from '../engine';
-import { Click, SEP, armies, click, pName, pct, poss, seatRef, tName } from './copy';
+import {
+  CONTINENTS,
+  TERRITORIES,
+  attackSources,
+  attackTargets,
+  fortifySources,
+  fortifyTargets,
+  territoryCount,
+  winProbability,
+  type GameState,
+  type TerritoryId,
+} from '../engine';
+import { Click, SEP, armies, cName, click, pName, pct, poss, seatRef, tName } from './copy';
 import { bestSet, oddsWord } from './helpers';
 import type { ButtonId, ButtonVM, CountVM, StripVM, TrackSegId, TrackSegVM, TrackVM } from './viewModel';
 
@@ -213,14 +224,42 @@ export interface StripInput {
 
 const btn = (id: ButtonId, label: string, primary = false): ButtonVM => ({ id, label, primary });
 
-/** 'Ural → Siberia · 82%' ('· likely' when the win chance is hidden). */
+/** The armed line's hard cap (docs/INK.md B2.11): a stake that doesn't fit is dropped, never truncated. */
+export const ATTACK_LINE_MAX = 60;
+
+/**
+ * What taking `to` would mean, at most one stake, biggest first: 'knocks out Sam' (their last territory),
+ * 'takes North America' (completes a continent), "breaks Sam's Asia" (ends their bonus). null = none.
+ */
+export function attackStake(s: GameState, from: TerritoryId, to: TerritoryId): string | null {
+  const me = s.territories[from].owner;
+  const them = s.territories[to].owner;
+  if (me < 0 || them < 0 || me === them) return null;
+  if (territoryCount(s, them) === 1) return `knocks out ${pName(s, them)}`;
+  const c = TERRITORIES[to].continent;
+  const others = CONTINENTS[c].territories.filter((t) => t !== to);
+  if (others.every((t) => s.territories[t].owner === me)) return `takes ${cName(c)}`;
+  if (others.every((t) => s.territories[t].owner === them)) return `breaks ${poss(pName(s, them))} ${cName(c)}`;
+  return null;
+}
+
+/**
+ * The armed line (docs/INK.md B2.11): 'Kamchatka → Alaska · 64% · likely', plus at most one stake
+ * ('· takes North America', '· knocks out Sam'); '· likely' alone when the win chance is hidden. ≤ 60
+ * characters: with long names the word gives way first (the number says it), then the stake.
+ */
 export function attackLine(s: GameState, from: TerritoryId, to: TerritoryId, showWinChance: boolean): string {
   const head = `${tName(from)} → ${tName(to)}`;
   const a = s.territories[from].armies;
   const d = s.territories[to].armies;
   if (a < 2 || d < 1) return head;
   const p = winProbability(a, d);
-  return `${head}${SEP}${showWinChance ? `${pct(p)}%` : oddsWord(p)}`;
+  const num = showWinChance ? `${head}${SEP}${pct(p)}%` : head;
+  const odds = `${num}${SEP}${oddsWord(p)}`;
+  const stake = attackStake(s, from, to);
+  // Too long for everything: the stake outranks the word (the number already says the odds).
+  const tries = stake ? [`${odds}${SEP}${stake}`, ...(showWinChance ? [`${num}${SEP}${stake}`] : []), odds, num] : [odds, num];
+  return tries.find((x) => x.length <= ATTACK_LINE_MAX) ?? head;
 }
 
 /** 'Ural 1 · Siberia 15': the two totals after moving `n` (the board-less preview). */

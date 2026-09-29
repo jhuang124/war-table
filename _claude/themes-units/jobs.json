@@ -1,0 +1,49 @@
+{
+ "jobs": [
+  {
+   "id": "board",
+   "prompt": "Match the reference image exactly in style: deep indigo-navy washi-paper ground, coastlines as feathered dry-brush strokes in silver-ivory ink, territory colors as soft muted ink washes (muted coral, slate blue, pale gold, sage), sparse calligraphic brush-stroke waves in the ocean, one elegant serif typeface, gold used only for the active element, the thin gold rule with a brushed ens\u014d in the center, and the rounded pill control. This is 'War Table', a minimalist world-conquest strategy board game. UNITS: every territory now holds one army unit drawn as a sumi-e brush-ink figure in silver-ivory ink with a touch of its owner's color wash: a foot soldier with a spear for small armies, a horse and rider for medium armies, a cannon for large armies. Each unit is drawn in a few confident brush strokes, like a zen ink painting, standing on its territory beside a small serif number in a brushed ens\u014d circle. Units must be clearly readable but elegant and restrained. No seals, no fake characters, no taglines, no scenery clutter. Wide 16:9 desktop view of the whole board mid-game with a unit on every territory, four players' territories mixed realistically across all continents. The bottom pill control reads 'Place  Attack  Fortify  End turn' with 'Attack' lit.",
+   "out": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/themes-units/board.png",
+   "refs": [
+    "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/themes-nightink/1-silver-A.png"
+   ],
+   "aspect": "16:9"
+  },
+  {
+   "id": "attack",
+   "prompt": "Match the reference image exactly in style: deep indigo-navy washi-paper ground, coastlines as feathered dry-brush strokes in silver-ivory ink, territory colors as soft muted ink washes (muted coral, slate blue, pale gold, sage), sparse calligraphic brush-stroke waves in the ocean, one elegant serif typeface, gold used only for the active element, the thin gold rule with a brushed ens\u014d in the center, and the rounded pill control. This is 'War Table', a minimalist world-conquest strategy board game. UNITS: every territory now holds one army unit drawn as a sumi-e brush-ink figure in silver-ivory ink with a touch of its owner's color wash: a foot soldier with a spear for small armies, a horse and rider for medium armies, a cannon for large armies. Each unit is drawn in a few confident brush strokes, like a zen ink painting, standing on its territory beside a small serif number in a brushed ens\u014d circle. Units must be clearly readable but elegant and restrained. No seals, no fake characters, no taglines, no scenery clutter. Close-up 16:9 cinematic moment of an attack between two neighboring territories: a coral horse-and-rider unit charging from its territory along a single fluid gold brush-stroke arrow toward a slate-blue spear soldier who braces; a burst of splattered ink where they meet; below, a small dark lacquer dice tray with three coral dice and two slate dice just landed, pips in ivory; everything else on the board softly dimmed.",
+   "out": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/themes-units/attack.png",
+   "refs": [
+    "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/themes-nightink/1-silver-A.png"
+   ],
+   "aspect": "16:9"
+  },
+  {
+   "id": "storyboard",
+   "prompt": "Match the reference image exactly in style: deep indigo-navy washi-paper ground, coastlines as feathered dry-brush strokes in silver-ivory ink, territory colors as soft muted ink washes (muted coral, slate blue, pale gold, sage), sparse calligraphic brush-stroke waves in the ocean, one elegant serif typeface, gold used only for the active element, the thin gold rule with a brushed ens\u014d in the center, and the rounded pill control. This is 'War Table', a minimalist world-conquest strategy board game. UNITS: every territory now holds one army unit drawn as a sumi-e brush-ink figure in silver-ivory ink with a touch of its owner's color wash: a foot soldier with a spear for small armies, a horse and rider for medium armies, a cannon for large armies. Each unit is drawn in a few confident brush strokes, like a zen ink painting, standing on its territory beside a small serif number in a brushed ens\u014d circle. Units must be clearly readable but elegant and restrained. No seals, no fake characters, no taglines, no scenery clutter. A clean 16:9 animation storyboard sheet with four equal panels in a row, each a zoomed moment of the same attack, with a tiny serif caption under each: '1 \u00b7 Arrow draws' \u2014 a single gold brush stroke sweeps from the attacker toward the defender; '2 \u00b7 Dice land' \u2014 dice settle in the tray; '3 \u00b7 Defender falls' \u2014 the defending unit dissolves into drifting ink smoke; '4 \u00b7 Ink floods' \u2014 the conquered territory's color floods outward from the border as a spreading wet ink wash and the attacker's unit steps in. Same style and palette in all panels.",
+   "out": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/themes-units/storyboard.png",
+   "refs": [
+    "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/themes-nightink/1-silver-A.png"
+   ],
+   "aspect": "16:9"
+  },
+  {
+   "id": "place",
+   "prompt": "Match the reference image exactly in style: deep indigo-navy washi-paper ground, coastlines as feathered dry-brush strokes in silver-ivory ink, territory colors as soft muted ink washes (muted coral, slate blue, pale gold, sage), sparse calligraphic brush-stroke waves in the ocean, one elegant serif typeface, gold used only for the active element, the thin gold rule with a brushed ens\u014d in the center, and the rounded pill control. This is 'War Table', a minimalist world-conquest strategy board game. UNITS: every territory now holds one army unit drawn as a sumi-e brush-ink figure in silver-ivory ink with a touch of its owner's color wash: a foot soldier with a spear for small armies, a horse and rider for medium armies, a cannon for large armies. Each unit is drawn in a few confident brush strokes, like a zen ink painting, standing on its territory beside a small serif number in a brushed ens\u014d circle. Units must be clearly readable but elegant and restrained. No seals, no fake characters, no taglines, no scenery clutter. Close-up 16:9 of reinforcement placement: a pale-gold territory selected with a soft gold glow along its brush border; three new units appearing as drops of ink that bloom outward on the paper into brushed soldier figures; a small '+3' in the serif beside the ens\u014d number; the bottom bar shows a minimal stepper '\u2212 3 +' and a 'Place 3' button.",
+   "out": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/themes-units/place.png",
+   "refs": [
+    "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/themes-nightink/1-silver-A.png"
+   ],
+   "aspect": "16:9"
+  },
+  {
+   "id": "phone",
+   "prompt": "Match the reference image exactly in style: deep indigo-navy washi-paper ground, coastlines as feathered dry-brush strokes in silver-ivory ink, territory colors as soft muted ink washes (muted coral, slate blue, pale gold, sage), sparse calligraphic brush-stroke waves in the ocean, one elegant serif typeface, gold used only for the active element, the thin gold rule with a brushed ens\u014d in the center, and the rounded pill control. This is 'War Table', a minimalist world-conquest strategy board game. UNITS: every territory now holds one army unit drawn as a sumi-e brush-ink figure in silver-ivory ink with a touch of its owner's color wash: a foot soldier with a spear for small armies, a horse and rider for medium armies, a cannon for large armies. Each unit is drawn in a few confident brush strokes, like a zen ink painting, standing on its territory beside a small serif number in a brushed ens\u014d circle. Units must be clearly readable but elegant and restrained. No seals, no fake characters, no taglines, no scenery clutter. Tall portrait 9:16 smartphone screenshot of the same game mid-game with units on the territories, the map filling the screen, four tiny player markers at the top, and a minimal bottom pill control 'Place  Attack  Fortify  End' with one 'Blitz' button.",
+   "out": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/themes-units/phone.png",
+   "refs": [
+    "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/themes-nightink/1-silver-A.png"
+   ],
+   "aspect": "9:16"
+  }
+ ]
+}

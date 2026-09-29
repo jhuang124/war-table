@@ -153,7 +153,7 @@ describe('R1-05 / R1-11 the tray header and the line across a conquest', () => {
     const { c, fb } = await resume(s);
     fb.click('indonesia'); // arm
     await vi.advanceTimersByTimeAsync(30);
-    expect(c.hooks.ui().line).toMatch(/^New Guinea → Indonesia · \d+%$/);
+    expect(c.hooks.ui().line).toMatch(/^New Guinea → Indonesia · \d+% · [a-z ]+( · .+)?$/);
     fb.click('indonesia'); // the armed target again: still armed, nothing rolls
     await vi.advanceTimersByTimeAsync(30);
     expect(c.hooks.getState()!.territories.indonesia.owner).not.toBe(0);
@@ -232,7 +232,8 @@ describe('ROUND2 §A Enter is the one brass thing', () => {
     c.handleKey('Enter');
     await until(() => c.hooks.isIdle(), 4000);
     expect(c.hooks.getState()!.phase.kind).toBe('attack');
-    expect(c.hooks.ui().brass).toEqual([]);
+    // Nothing to commit: the one gold falls back to the current segment (INK B2.1), which Enter never presses.
+    expect(c.hooks.ui().brass).toEqual(['Attack']);
     expect(c.hooks.ui().recommended).toBeNull();
     c.handleKey('Escape'); // clear the chained source
     c.handleKey('Enter');

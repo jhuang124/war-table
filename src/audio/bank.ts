@@ -11,15 +11,16 @@ import type { Rand, SfxName, SfxVariant } from './types';
 
 /** Variations kept per key. Rare, long cues keep fewer. */
 function variationsFor(name: SfxName): number {
-  if (name === 'victory' || name === 'eliminated' || name === 'continent') return 2;
-  if (name === 'turnStart' || name === 'cardTrade') return 3;
+  // bowls are long (4–7 s of buffer each) and rare: keep memory small on phones
+  if (name === 'victory' || name === 'eliminated') return 1;
+  if (name === 'continent') return 2;
+  if (name === 'turnStart' || name === 'cardTrade' || name === 'conquer') return 3;
   return 5;
 }
 
 /** Warm-up order: what the first minutes of a game need first. */
 export const WARM_ORDER: { name: SfxName; variant?: SfxVariant }[] = [
   { name: 'uiClick' },
-  { name: 'uiHover' },
   { name: 'place' },
   { name: 'unplace' },
   { name: 'turnStart' },
@@ -102,7 +103,7 @@ export class SoundBank {
   }
 
   warmAll(): void {
-    for (const w of WARM_ORDER) this.request(w.name, w.variant, SFX[w.name].duration?.[2]);
+    for (const w of WARM_ORDER) if (!SFX[w.name].silent) this.request(w.name, w.variant, SFX[w.name].duration?.[2]);
   }
 
   /** Render and store the variations of a key now (awaitable; used by tests). */

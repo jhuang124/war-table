@@ -42,6 +42,8 @@ async function trayAndBand(page: Page) {
         return { top: Math.min(...rs.map((x) => x.top)), bottom: Math.max(...rs.map((x) => x.bottom)) };
       })(),
       bar: r('[data-testid="strip"]'),
+      // The chrome starts at the gold rule: the one line above it sits on the paper, with no panel (INK B5).
+      rule: r('.strip .st-rule'),
       top: r('[data-testid="topstrip"]'),
       words: ['.topstrip', '.strip', '.battle:not(.hidden)']
         .map((q) => document.querySelector(q) as HTMLElement | null)
@@ -68,6 +70,7 @@ for (const vp of [
     settings: { textSize: vp.text },
   });
   await clickT(page, 'siberia');
+  await page.waitForTimeout(400); // the line's swap (the old line's ghost) and the dismissed turn line settle
   const armedWords = (await trayAndBand(page)).words;
   if (vp.text === 'laptop') check(armedWords <= 25, `${tag}: ${armedWords} words on screen in an armed Attack state (≤ 25)`, results);
   await clickBtn(page, 'btn-roll');
@@ -79,7 +82,10 @@ for (const vp of [
   check(!!g.band && g.tray.top >= g.band.top - tol && g.tray.bottom <= g.band.bottom + tol, `${tag}: tray ${Math.round(g.tray.top)}–${Math.round(g.tray.bottom)} inside band ${Math.round(g.band!.top)}–${Math.round(g.band!.bottom)}`, results);
   check(!!g.headerText && g.headerText.bottom <= g.tray.top + tol && g.headerText.bottom >= g.tray.top - 24 && !!g.top && g.headerText.top >= g.top.bottom, `${tag}: header line ${Math.round(g.headerText!.top)}–${Math.round(g.headerText!.bottom)} sits above the tray (${Math.round(g.tray.top)})`, results);
   check(!!g.bar && g.tray.bottom <= g.bar.top + tol, `${tag}: the tray clears the bottom strip (${Math.round(g.tray.bottom)} ≤ ${Math.round(g.bar!.top)})`, results);
-  check(!!g.top && g.top.bottom <= 0.07 * g.H && !!g.bar && g.H - g.bar.top <= 0.11 * g.H, `${tag}: chrome is two thin strips (top ${Math.round(g.top!.bottom)} px, bottom ${Math.round(g.H - g.bar!.top)} px)`, results);
+  // Bottom chrome = the rule and the pill row under it (the moodboard's is ~14% of the height); TV text is larger.
+  const bottomMax = vp.text === 'tv' ? 0.16 : 0.14;
+  const topMax = vp.text === 'tv' ? 0.085 : 0.075;
+  check(!!g.top && g.top.bottom <= topMax * g.H && !!g.rule && g.H - g.rule.top <= bottomMax * g.H, `${tag}: chrome is two thin strips (top ${Math.round(g.top!.bottom)} px, bottom from the rule ${Math.round(g.H - (g.rule?.top ?? 0))} px ≤ ${Math.round(bottomMax * g.H)})`, results);
   check(Math.abs((g.tray.left + g.tray.right) / 2 - vp.width / 2) < 1 && Math.abs((g.band!.left + g.band!.right) / 2 - vp.width / 2) < 1, `${tag}: tray and band share the centre line`, results);
   check(g.tray.die >= 56, `${tag}: die ${Math.round(g.tray.die)} px (≥ 56)`, results);
   if (vp.text === 'tv') {
@@ -197,7 +203,7 @@ for (const vp of [
   const distinct = new Set(Object.values(rects));
   check(distinct.size === 1, `bottom strip rect identical across ${Object.keys(rects).join(', ')}: ${[...distinct].join(' | ')}`, results);
   const trackSet = new Set(Object.values(tracks));
-  check(trackSet.size === 1 && [...trackSet][0].startsWith('Place|Attack|Fortify|End turn @'), `Turn Track identical across ${Object.keys(tracks).join(', ')}: ${[...trackSet].join(' | ')}`, results);
+  check(trackSet.size === 1 && [...trackSet][0].startsWith('Place|Attack|Fortify|End turn @'), `Turn Track identical across ${Object.keys(tracks).join(', ')}: ${trackSet.size === 1 ? [...trackSet][0] : Object.entries(tracks).map(([k, v]) => `${k} ${v.split('@ ')[1]}`).join(' | ')}`, results);
   await browser.close();
   if (errors.length) results.push(`FAIL console errors: ${errors.join(' | ')}`);
 }

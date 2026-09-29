@@ -1,0 +1,43 @@
+{
+  "ok": true,
+  "backend": "direct",
+  "images": [
+    {
+      "path": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/sprites/soldier-1.png",
+      "bytes": 537885,
+      "width": 1254,
+      "height": 1254,
+      "revisedPrompt": null,
+      "sidecar": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/sprites/soldier-1.json",
+      "attempts": 1,
+      "durationMs": 44249,
+      "backend": "direct",
+      "reportedQuality": "medium"
+    },
+    {
+      "path": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/sprites/soldier-2.png",
+      "bytes": 520703,
+      "width": 1254,
+      "height": 1254,
+      "revisedPrompt": null,
+      "sidecar": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/sprites/soldier-2.json",
+      "attempts": 1,
+      "durationMs": 40793,
+      "backend": "direct",
+      "reportedQuality": "medium"
+    }
+  ],
+  "failures": [],
+  "session": null,
+  "quota": {
+    "planType": "pro",
+    "usedPercent": 5,
+    "windowMinutes": 10080,
+    "resetsAt": "2026-10-03T17:03:43.000Z",
+    "fiveHour": null,
+    "activeLimit": "premium",
+    "asOf": "2026-09-28T17:02:08.976Z",
+    "source": "direct-headers"
+  },
+  "model": "gpt-image-2 (service-selected)"
+}

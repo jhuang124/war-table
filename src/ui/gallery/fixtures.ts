@@ -21,9 +21,9 @@ import type {
 import type { PlayerStats, TimelinePoint } from '../../engine/types';
 
 export const JOHN: SeatRef = { id: 0, name: 'John', color: 'crimson', kind: 'human' };
-export const COBALT: SeatRef = { id: 1, name: 'Cobalt', color: 'cobalt', kind: 'ai' };
-export const AMBER: SeatRef = { id: 2, name: 'Amber', color: 'amber', kind: 'ai' };
-export const EMERALD: SeatRef = { id: 3, name: 'Emerald', color: 'emerald', kind: 'ai' };
+export const COBALT: SeatRef = { id: 1, name: 'Slate', color: 'cobalt', kind: 'ai' };
+export const AMBER: SeatRef = { id: 2, name: 'Ochre', color: 'amber', kind: 'ai' };
+export const EMERALD: SeatRef = { id: 3, name: 'Sage', color: 'emerald', kind: 'ai' };
 export const SAM: SeatRef = { id: 1, name: 'Sam', color: 'cobalt', kind: 'human' };
 const SEATS = [JOHN, COBALT, AMBER, EMERALD];
 
@@ -35,7 +35,9 @@ export const SETTINGS: Settings = {
   hideCardsBetweenTurns: false,
   sfxVolume: 0.8,
   muted: false,
-  music: false,
+  music: true,
+  musicVolume: 0.7,
+  ambient: true,
   reduceMotion: false,
   showWinChance: true,
   autoCamera: true,
@@ -69,9 +71,9 @@ export const NEW_GAME_4: NewGameVM = {
   ...NEW_GAME,
   seats: [
     { name: 'John', color: 'crimson', kind: 'human', difficulty: 'normal' },
-    { name: 'Cobalt', color: 'cobalt', kind: 'ai', difficulty: 'normal' },
-    { name: 'Amber', color: 'amber', kind: 'ai', difficulty: 'normal' },
-    { name: 'Emerald', color: 'emerald', kind: 'ai', difficulty: 'hard' },
+    { name: 'Slate', color: 'cobalt', kind: 'ai', difficulty: 'normal' },
+    { name: 'Ochre', color: 'amber', kind: 'ai', difficulty: 'normal' },
+    { name: 'Sage', color: 'emerald', kind: 'ai', difficulty: 'hard' },
   ],
   lengthOptions: [
     { id: 'quick', label: 'Quick', detail: '60% or 12 rounds', estimate: '~40 min' },
@@ -92,7 +94,7 @@ export const NEW_GAME_PROBLEMS: NewGameVM = {
   ],
   canStart: false,
   canAddSeat: true,
-  problems: ['Two seats share Cobalt', 'Seat 3 needs a name'],
+  problems: ['Two seats share Slate', 'Seat 3 needs a name'],
 };
 
 // ---- in game --------------------------------------------------------------
@@ -144,15 +146,15 @@ export const STRIPS: Record<string, StripVM> = {
   'setup-place': strip({ mode: 'setup', track: track('setup', { states: { done: 'locked' } }), line: 'Place on Ural', count: { control: 'stepper', value: 6, min: 1, max: 6 }, buttons: [btn('undo', 'Undo'), btn('place', 'Place 6', true)] }),
   'setup-done': strip({ mode: 'setup', track: track('setup', { recommended: 'done', primary: true }), line: 'All 10 placed · click Done', buttons: [btn('undo', 'Undo')] }),
   attack: strip({ mode: 'attack', track: track('attack'), line: 'Click an enemy territory to attack' }),
-  'attack-armed': strip({ mode: 'attack', track: track('attack'), line: 'Ural → Siberia · 82%', buttons: [btn('roll', 'Roll'), btn('blitz', 'Blitz', true)] }),
-  'attack-rolling': strip({ mode: 'attack', track: track('attack', { disabled: true }), line: 'Ural → Siberia · 91%', buttons: [btn('roll', 'Roll'), btn('blitz', 'Blitz', true)] }),
+  'attack-armed': strip({ mode: 'attack', track: track('attack'), line: 'Ural → Siberia · 82% · likely', buttons: [btn('roll', 'Roll'), btn('blitz', 'Blitz', true)] }),
+  'attack-rolling': strip({ mode: 'attack', track: track('attack', { disabled: true }), line: 'Ural → Siberia · 91% · almost sure', buttons: [btn('roll', 'Roll'), btn('blitz', 'Blitz', true)] }),
   'attack-none': strip({ mode: 'attack', track: track('attack', { recommended: 'endTurn', primary: true }), line: 'No attacks left · end your turn' }),
   rejection: strip({ mode: 'attack', track: track('attack'), line: "Peru doesn't border any of yours", lineKind: 'rejection', lineKey: 7 }),
   occupy: strip({ mode: 'occupy', track: track('attack', { states: { fortify: 'locked', endTurn: 'locked' }, disabled: true }), line: 'Move into Siberia', count: { control: 'stepper', value: 8, min: 3, max: 8 }, buttons: [btn('move', 'Move 8', true)] }),
   'occupy-totals': strip({ mode: 'occupy', track: track('attack', { states: { fortify: 'locked', endTurn: 'locked' }, disabled: true }), line: 'Ural 1 · Siberia 14', count: { control: 'slider', value: 14, min: 3, max: 14 }, buttons: [btn('move', 'Move 14', true)] }),
   fortify: strip({ mode: 'fortify', track: track('fortify', { recommended: 'endTurn', primary: true }), line: 'Move armies once, or end your turn' }),
   'fortify-picked': strip({ mode: 'fortify', track: track('fortify', { recommended: 'endTurn' }), line: 'Move from Ural to Siberia', count: { control: 'slider', value: 8, min: 1, max: 8 }, buttons: [btn('move', 'Move 8 · end turn', true)] }),
-  'ai-turn': strip({ mode: 'watching', track: track('attack', { seat: COBALT, live: false, turnKey: '6:1' }), accent: 'cobalt', line: 'Cobalt attacks Siam', lineKind: 'narration' }),
+  'ai-turn': strip({ mode: 'watching', track: track('attack', { seat: COBALT, live: false, turnKey: '6:1' }), accent: 'cobalt', line: 'Slate attacks Siam', lineKind: 'narration' }),
   'humans-out': strip({ mode: 'watching', track: track('fortify', { seat: AMBER, live: false, turnKey: '9:2' }), accent: 'amber', line: 'All humans are out', buttons: [btn('callGame', 'End game'), btn('watchAis', 'Watch to the end', true)] }),
   handoff: strip({ mode: 'watching', track: track('place', { seat: SAM, live: false, turnKey: '6:1' }), accent: 'cobalt', line: 'Pass to Sam' }),
 };
@@ -176,11 +178,11 @@ const CARDS: CardsVM = {
 };
 
 const LOG: LogLineVM[] = [
-  { id: 1, round: 6, seat: AMBER, kind: 'engagement', text: 'Amber blitzed Siam from India: 9 vs 3 → took it, lost 2' },
-  { id: 2, round: 6, seat: AMBER, kind: 'continent', text: 'Amber holds Australia · +2 a turn' },
-  { id: 3, round: 6, seat: EMERALD, kind: 'engagement', text: 'Emerald attacked Ukraine from Scandinavia: 4 vs 2 → Cobalt held, Emerald lost 3 · an upset (Emerald had 76%)' },
+  { id: 1, round: 6, seat: AMBER, kind: 'engagement', text: 'Ochre blitzed Siam from India: 9 vs 3 → took it, lost 2' },
+  { id: 2, round: 6, seat: AMBER, kind: 'continent', text: 'Ochre holds Australia · +2 a turn' },
+  { id: 3, round: 6, seat: EMERALD, kind: 'engagement', text: 'Sage attacked Ukraine from Scandinavia: 4 vs 2 → Slate held, Sage lost 3 · an upset (Sage had 76%)' },
   { id: 4, round: 7, seat: JOHN, kind: 'turn', text: "Round 7 · John's turn · +9" },
-  { id: 5, round: 7, seat: JOHN, kind: 'recap', text: 'Amber took 2 of yours' },
+  { id: 5, round: 7, seat: JOHN, kind: 'recap', text: 'Ochre took Siam and India from you' },
   { id: 6, round: 7, seat: JOHN, kind: 'card', text: 'John traded 3 cards for +8' },
   { id: 7, round: 7, seat: JOHN, kind: 'engagement', text: 'John blitzed Siberia from Ural: 12 vs 5 → took it, lost 3' },
 ];
@@ -198,7 +200,7 @@ export const BASE_GAME: GameVM = {
   viewMoved: false,
 };
 
-const banner = (o: Partial<BannerVM>): BannerVM => ({ id: 1, kind: 'turn', title: "JOHN'S TURN", sub: '+9 armies', recap: null, seat: JOHN, holdMs: 1000, ...o });
+const banner = (o: Partial<BannerVM>): BannerVM => ({ id: 1, kind: 'turn', line: 'John · 9 armies', title: "JOHN'S TURN", sub: '+9 armies', recap: null, seat: JOHN, holdMs: 1000, ...o });
 
 // ---- victory --------------------------------------------------------------
 
@@ -230,11 +232,11 @@ const stats = (a: Partial<PlayerStats>): PlayerStats => ({
 
 export const VICTORY: VictoryVM = {
   winner: JOHN,
-  title: 'CRIMSON RULES THE WORLD',
-  subline: 'Round 13 · 70% of the world',
+  title: 'John holds the world',
+  subline: 'Round 13 · 31 territories',
   awards: [
-    { id: 'nemesis', title: 'Nemesis', text: 'John took 11 territories from Sam', seat: JOHN },
-    { id: 'cursedDice', title: 'Cursed dice', text: 'Amber: −5 armies of pure bad luck', seat: AMBER },
+    { id: 'nemesis', title: 'Nemesis', text: 'John took 11 territories from Slate', seat: JOHN },
+    { id: 'cursedDice', title: 'Cursed dice', text: 'Ochre: −5 armies of pure bad luck', seat: AMBER },
     { id: 'cashIn', title: 'Biggest cash-in', text: '+20 · round 11', seat: COBALT },
   ],
   seats: SEATS,
@@ -274,7 +276,20 @@ const root = (o: Partial<ViewModel>): ViewModel => ({
   rulesNotes: RULES,
   ...o,
 });
-const game = (o: Partial<GameVM>, r: Partial<ViewModel> = {}): ViewModel => root({ game: { ...BASE_GAME, ...o }, ...r });
+/** GameVM.gold as the controller picks it: hand-off → the open Cards sheet's trade → the pending commit → the recommended segment → the current one. */
+function goldOf(g: GameVM): GameVM['gold'] {
+  if (g.handoff) return { kind: 'handoff' };
+  if (g.cards?.open && g.cards.trade) return { kind: 'cardsTrade' };
+  const b = g.strip.buttons.find((x) => x.primary);
+  if (b) return { kind: 'button', id: b.id };
+  if (g.strip.track.recommended) return { kind: 'segment', seg: g.strip.track.recommended };
+  const cur = g.strip.track.segments.find((x) => x.state === 'current');
+  return cur ? { kind: 'segment', seg: cur.id } : null;
+}
+const game = (o: Partial<GameVM>, r: Partial<ViewModel> = {}): ViewModel => {
+  const g: GameVM = { ...BASE_GAME, ...o };
+  return root({ game: { ...g, gold: o.gold !== undefined ? o.gold : goldOf(g) }, ...r });
+};
 
 export function fixtures(_W: number, _H: number): Fixture[] {
   const F: Fixture[] = [];
@@ -317,7 +332,7 @@ export function fixtures(_W: number, _H: number): Fixture[] {
   // Attack
   add('attack', 'Attack', 'Attack · nothing armed', game({ strip: STRIPS.attack, cards: null }));
   add('attack-armed', 'Attack', 'Attack · armed', game({ strip: STRIPS['attack-armed'], battle: ARMED, cards: null }), { dice: null });
-  add('attack-rolling', 'Attack', 'Attack · rolling', game({ strip: STRIPS['attack-rolling'], battle: { ...ARMED, attacker: { ...ARMED.attacker, armies: 11 }, defender: { ...ARMED.defender, armies: 3 }, rolling: true }, cards: null }), { dice: [[6, 5, 2], [4, 3]] });
+  add('attack-rolling', 'Attack', 'Attack · rolling', game({ strip: STRIPS['attack-rolling'], battle: { ...ARMED, attacker: { ...ARMED.attacker, armies: 11 }, defender: { ...ARMED.defender, armies: 3 }, rolling: true, tray: true }, cards: null }), { dice: [[6, 5, 2], [4, 3]] });
   add('attack-none', 'Attack', 'Attack · nothing left to attack', game({ strip: STRIPS['attack-none'], cards: null }));
   add('rejection', 'Attack', 'Refused click', game({ strip: STRIPS.rejection, cards: null }));
   add('captured', 'Attack', 'Conquest · tray header', game({ strip: STRIPS.occupy, battle: { ...ARMED, attacker: { ...ARMED.attacker, armies: 9 }, defender: { ...ARMED.defender, armies: 0 }, captured: 'Siberia captured' }, cards: null, seats: chips(0, { 0: { territories: 15 }, 1: { territories: 10 } }) }));
@@ -329,15 +344,15 @@ export function fixtures(_W: number, _H: number): Fixture[] {
   add('fortify-picked', 'Fortify', 'Fortify · Ural → Siberia', game({ strip: STRIPS['fortify-picked'], cards: null }));
 
   // Watching
-  add('ai-turn', 'Watching', 'AI turn · narration', game({ strip: STRIPS['ai-turn'], seats: chips(1), cards: null, battle: { attacker: { seat: COBALT, territory: 'India', armies: 9 }, defender: { seat: AMBER, territory: 'Siam', armies: 3 }, rolling: true, captured: null } }), { dice: [[5, 5, 1], [2, 1]] });
-  add('humans-out', 'Watching', 'All humans out', game({ strip: STRIPS['humans-out'], seats: chips(2, { 0: { eliminated: true, territories: 0 } }), cards: null }));
+  add('ai-turn', 'Watching', 'AI turn · narration', game({ strip: STRIPS['ai-turn'], seats: chips(1), cards: null, battle: { attacker: { seat: COBALT, territory: 'India', armies: 9 }, defender: { seat: AMBER, territory: 'Siam', armies: 3 }, rolling: true, captured: null, tray: true } }), { dice: [[5, 5, 1], [2, 1]] });
+  add('humans-out', 'Watching', 'All humans out', game({ strip: STRIPS['humans-out'], seats: chips(2, { 0: { eliminated: true, territories: 0, out: { by: AMBER, round: 11 } } }), cards: null }));
   add('handoff', 'Watching', 'Hand-off cover', game({ strip: STRIPS.handoff, handoff: { seat: SAM, subline: '+9 armies waiting · 3 cards · set ready' }, cards: null }));
 
   // Banners
   add('turn-banner', 'Banners', 'Turn banner', game({ banner: banner({}) }));
-  add('turn-banner-recap', 'Banners', 'Turn banner with recap', game({ banner: banner({ id: 2, recap: 'Cobalt took 2 of yours', holdMs: 1200 }) }));
-  add('banner-continent', 'Banners', 'Continent captured', game({ banner: banner({ id: 3, kind: 'continent', title: 'JOHN HOLDS ASIA · +7', sub: '', holdMs: 1200 }), strip: STRIPS.attack, cards: null }));
-  add('banner-out', 'Banners', 'Elimination', game({ banner: banner({ id: 4, kind: 'elimination', title: 'EMERALD IS OUT', sub: '', holdMs: 1600 }), seats: chips(0, { 3: { eliminated: true, territories: 0 } }), strip: STRIPS.attack, cards: null }));
+  add('turn-banner-recap', 'Banners', 'Turn banner with recap', game({ banner: banner({ id: 2, recap: 'Slate took Ural and Siberia from you', holdMs: 1600 }) }));
+  add('banner-continent', 'Banners', 'Continent captured', game({ banner: banner({ id: 3, kind: 'continent', line: 'John holds Asia · +7', title: 'JOHN HOLDS ASIA · +7', sub: '', holdMs: 1200 }), strip: STRIPS.attack, cards: null }));
+  add('banner-out', 'Banners', 'Elimination', game({ banner: banner({ id: 4, kind: 'elimination', line: 'Sage · taken by John · round 9', title: 'SAGE IS OUT', sub: '', seat: EMERALD, holdMs: 1600 }), seats: chips(0, { 3: { eliminated: true, territories: 0, out: { by: JOHN, round: 9 } } }), strip: STRIPS.attack, cards: null }));
 
   // Menu
   add('menu', 'Menu', 'Menu', game({ strip: STRIPS.attack, cards: null }, { overlay: 'pause' }));

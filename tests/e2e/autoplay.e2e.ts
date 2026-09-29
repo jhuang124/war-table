@@ -69,10 +69,10 @@ await page.waitForTimeout(1800);
 const vic = await page.evaluate(() => {
   const el = document.querySelector('[data-testid="victory"]');
   const text = el ? (el.textContent ?? '') : document.getElementById('ui')?.innerText ?? '';
-  const m = text.match(/[A-Z' ]+RULES THE WORLD/);
+  const m = text.match(/[A-Za-z' ]+ holds the world/);
   return m ? m[0] : text.slice(0, 200);
 });
-check(/RULES THE WORLD/.test(vic), `victory screen: ${vic.trim()}`, results);
+check(/ holds the world/.test(vic), `victory screen: ${vic.trim()}`, results);
 await page.screenshot({ path: `artifacts/e2e/autoplay-victory${query.includes('debughud') ? '' : '-ui'}.png` });
 await browser.close();
 finish(results, errors);

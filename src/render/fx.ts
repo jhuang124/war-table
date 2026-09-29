@@ -1,216 +1,199 @@
-// Sea lanes, the attack arrow, the fortify route, dust puffs and ripple rings.
+// Brush strokes on the board (docs/INK.md B §4, A2): the attack arrow as one gold dry-brush stroke (tip
+// first, thick → thin, a brushed wedge for a head), the live stroke that follows a finger or mouse in
+// draw-to-attack, and the fortify route as a dotted ink line. They lie flat on the paper; nothing glows.
+// (Sea lanes are ink dabs in the ink layer now; dust and ripple rings are cut.)
 import * as THREE from 'three';
-import { Line2 } from 'three/examples/jsm/lines/Line2.js';
-import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
-import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-import type { BoardGeometry } from '../map/types';
 import type { TerritoryId } from '../engine/types';
 import { seaLaneBetween } from '../map';
 import { Animator, ease, type Run } from './anim';
-import { IVORY, TILE_TOP, setColor, toWorld, type RGB } from './util';
-import { softDotTexture } from './textures';
+import { GOLD, IVORY, TILE_TOP, hexToRgb, toWorld, type RGB } from './util';
 import type { TileSet } from './tiles';
 
-// ---------------------------------------------------------------------------
-// Sea lanes
-// ---------------------------------------------------------------------------
+const STROKE_Y = TILE_TOP + 0.34;
 
-export class SeaLanes {
-  group = new THREE.Group();
-  mats: LineMaterial[] = [];
-  private geos: LineGeometry[] = [];
-
-  constructor(g: BoardGeometry) {
-    const dash = new LineMaterial({
-      color: new THREE.Color(IVORY).getHex(),
-      linewidth: 1.7,
-      transparent: true,
-      opacity: 0.62,
-      dashed: true,
-      dashSize: 0.3,
-      gapSize: 0.22,
-      depthWrite: false,
-    });
-    const glow = new LineMaterial({
-      color: new THREE.Color('#f7eed8').getHex(),
-      linewidth: 6,
-      transparent: true,
-      opacity: 0.07,
-      depthWrite: false,
-    });
-    this.mats.push(dash, glow);
-    for (const lane of g.seaLanes) {
-      for (const seg of lane.segments) {
-        const n = seg.length;
-        let len = 0;
-        for (let i = 1; i < n; i++) len += Math.hypot(seg[i][0] - seg[i - 1][0], seg[i][1] - seg[i - 1][1]);
-        const lift = Math.min(0.45, 0.08 + len * 0.06);
-        const pts: number[] = [];
-        seg.forEach(([x, y], i) => {
-          const t = n > 1 ? i / (n - 1) : 0;
-          const w = toWorld(x, y, 0.07 + Math.sin(Math.PI * t) * (lane.wrap ? lift * 0.3 : lift));
-          pts.push(w.x, w.y, w.z);
-        });
-        const geo = new LineGeometry();
-        geo.setPositions(pts);
-        this.geos.push(geo);
-        const gl = new Line2(geo, glow);
-        gl.renderOrder = 1;
-        const dl = new Line2(geo, dash);
-        dl.computeLineDistances();
-        dl.renderOrder = 2;
-        this.group.add(gl, dl);
-      }
-    }
-  }
-
-  dispose(): void {
-    this.geos.forEach((g) => g.dispose());
-    this.mats.forEach((m) => m.dispose());
-  }
+const BRUSH_VERT = /* glsl */ `
+attribute vec2 aUV;
+varying vec2 vUV;
+void main() {
+  vUV = aUV;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
+`;
+const BRUSH_FRAG = /* glsl */ `
+uniform sampler2D uNoise;
+uniform vec3 uColor;
+uniform float uOpacity;
+uniform float uProgress;
+uniform float uTail;
+uniform float uLen;
+uniform float uDots;
+uniform float uSeed;
+uniform float uDry;
+uniform float uDryK;
+varying vec2 vUV;
+void main() {
+  float u = vUV.x;
+  float v = vUV.y;
+  float s = u * uLen;
+  // reveal (tip first): a soft brush front
+  float rev = 1.0 - smoothstep(uProgress - 0.012, uProgress + 0.002, u);
+  vec4 n = texture2D(uNoise, vec2(s / 7.5 + uSeed, v * 0.17 + 0.5));
+  vec4 e = texture2D(uNoise, vec2(s / 2.6 + uSeed * 1.3, 0.21 + v * 0.015));
+  float bristle = n.b;
+  // ragged, feathered edges
+  float halfW = 1.0 - 0.3 * e.g;
+  float a = 1.0 - smoothstep(halfW - 0.22, halfW, abs(v));
+  // dry streaks: more toward the thin end, and wherever the brush is running out
+  float dryness = clamp((0.3 + 0.45 * u + uDry * (1.0 - u)) * uDryK, 0.0, 1.0);
+  a *= mix(1.0, smoothstep(0.24, 0.56, bristle), dryness * 0.65);
+  // the tail dries first
+  if (uTail > 0.0) a *= smoothstep(uTail, uTail + 0.14, u + 0.14 * (bristle - 0.5));
+  if (uDots > 0.5) {
+    float d = abs(fract(s / 0.46) - 0.5) * 2.0;
+    a *= 1.0 - smoothstep(0.38, 0.62, d);
+  }
+  a *= rev * uOpacity;
+  if (a < 0.004) discard;
+  vec3 col = uColor * (0.86 + 0.26 * bristle);
+  gl_FragColor = vec4(col, a);
+}
+`;
 
-// ---------------------------------------------------------------------------
-// Attack arrow: a ribbon in the attacker's color with an ivory core, grown along an arc.
-// ---------------------------------------------------------------------------
-
-const RIB_N = 64;
-
-class Ribbon {
+/** A flat ribbon along a world-space path, drawn by the brush shader. */
+class BrushRibbon {
   mesh: THREE.Mesh;
+  mat: THREE.ShaderMaterial;
   private pos: Float32Array;
+  private uv: Float32Array;
   private geo: THREE.BufferGeometry;
   constructor(
-    material: THREE.Material,
-    private width: number,
-    private headW: number,
-    private headL: number,
-    private yOff: number,
+    noise: THREE.Texture,
+    color: RGB,
+    private max = 200,
+    dots = false,
   ) {
-    const segs = 2; // up to two curve pieces (edge wrap)
-    const verts = segs * (RIB_N + 1) * 2 + 3;
-    this.pos = new Float32Array(verts * 3);
+    this.pos = new Float32Array(max * 2 * 3);
+    this.uv = new Float32Array(max * 2 * 2);
     this.geo = new THREE.BufferGeometry();
     this.geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
+    this.geo.setAttribute('aUV', new THREE.BufferAttribute(this.uv, 2).setUsage(THREE.DynamicDrawUsage));
     const idx: number[] = [];
-    for (let s = 0; s < segs; s++) {
-      const b = s * (RIB_N + 1) * 2;
-      for (let i = 0; i < RIB_N; i++) {
-        const a = b + i * 2;
-        idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
-      }
+    for (let i = 0; i < max - 1; i++) {
+      const a = i * 2;
+      idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
     }
-    const h = segs * (RIB_N + 1) * 2;
-    idx.push(h, h + 1, h + 2);
     this.geo.setIndex(idx);
-    this.mesh = new THREE.Mesh(this.geo, material);
+    this.geo.setDrawRange(0, 0);
+    this.mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uNoise: { value: noise },
+        uColor: { value: new THREE.Vector3(color[0], color[1], color[2]) },
+        uOpacity: { value: 1 },
+        uProgress: { value: 1 },
+        uTail: { value: 0 },
+        uLen: { value: 1 },
+        uDots: { value: dots ? 1 : 0 },
+        uSeed: { value: Math.random() },
+        uDry: { value: 0 },
+        uDryK: { value: 1 },
+      },
+      vertexShader: BRUSH_VERT,
+      fragmentShader: BRUSH_FRAG,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    this.mesh = new THREE.Mesh(this.geo, this.mat);
     this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = 20;
   }
 
-  /** curves: sampled point arrays (world). progress 0..1 over their total length. */
-  build(curves: THREE.Vector3[][], progress: number): void {
-    const lens = curves.map((c) => {
-      let l = 0;
-      for (let i = 1; i < c.length; i++) l += c[i].distanceTo(c[i - 1]);
-      return l;
-    });
-    const total = lens.reduce((a, b) => a + b, 0) || 1;
-    let remain = total * progress;
-    const up = new THREE.Vector3(0, 1, 0);
-    const side = new THREE.Vector3();
-    const tan = new THREE.Vector3();
-    const p = new THREE.Vector3();
-    let tip: THREE.Vector3 | null = null;
-    let tipTan = new THREE.Vector3(1, 0, 0);
-    const P = this.pos;
-    P.fill(0);
-    curves.forEach((c, s) => {
-      const segLen = lens[s];
-      const use = Math.max(0, Math.min(segLen, remain));
-      remain -= segLen;
-      const base = s * (RIB_N + 1) * 2;
-      if (use <= 1e-4) return;
-      // resample c up to `use` length
-      const frac = use / segLen;
-      for (let i = 0; i <= RIB_N; i++) {
-        const u = (i / RIB_N) * frac;
-        samplePath(c, u, p, tan);
-        side.crossVectors(tan, up).normalize();
-        const along = (s === 0 ? u * (segLen / total) : 1) as number;
-        const taper = s === 0 ? Math.min(1, 0.35 + along * 3.5) : 1;
-        const endPinch = i === RIB_N ? 0.55 : 1;
-        const w = (this.width / 2) * taper * endPinch;
-        const o = (base + i * 2) * 3;
-        P[o] = p.x + side.x * w;
-        P[o + 1] = p.y + this.yOff;
-        P[o + 2] = p.z + side.z * w;
-        P[o + 3] = p.x - side.x * w;
-        P[o + 4] = p.y + this.yOff;
-        P[o + 5] = p.z - side.z * w;
-        if (i === RIB_N) {
-          tip = p.clone();
-          tipTan = tan.clone();
-        }
-      }
-    });
-    const h = curves.length * 0 + 2 * (RIB_N + 1) * 2;
-    if (tip) {
-      const t = tip as THREE.Vector3;
-      side.crossVectors(tipTan, up).normalize();
-      const o = h * 3;
-      const back = t.clone().addScaledVector(tipTan, -this.headL * 0.25);
-      const front = t.clone().addScaledVector(tipTan, this.headL * 0.75);
-      P[o] = back.x + side.x * this.headW * 0.5;
-      P[o + 1] = back.y + this.yOff;
-      P[o + 2] = back.z + side.z * this.headW * 0.5;
-      P[o + 3] = back.x - side.x * this.headW * 0.5;
-      P[o + 4] = back.y + this.yOff;
-      P[o + 5] = back.z - side.z * this.headW * 0.5;
-      P[o + 6] = front.x;
-      P[o + 7] = front.y + this.yOff;
-      P[o + 8] = front.z;
+  get u(): Record<string, THREE.IUniform> {
+    return this.mat.uniforms;
+  }
+
+  /** Lay the ribbon along `pts` (world; y ignored → STROKE_Y) with half-width `w(u)` in board units. */
+  set(pts: THREE.Vector3[], w: (u: number) => number): number {
+    const n = Math.min(this.max, pts.length);
+    if (n < 2) {
+      this.geo.setDrawRange(0, 0);
+      return 0;
+    }
+    const cum = [0];
+    for (let i = 1; i < n; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z));
+    const L = cum[n - 1] || 1;
+    for (let i = 0; i < n; i++) {
+      const a = pts[Math.max(0, i - 1)];
+      const b = pts[Math.min(n - 1, i + 1)];
+      let tx = b.x - a.x;
+      let tz = b.z - a.z;
+      const tl = Math.hypot(tx, tz) || 1;
+      tx /= tl;
+      tz /= tl;
+      const u = cum[i] / L;
+      const hw = w(u);
+      const nx = -tz * hw;
+      const nz = tx * hw;
+      const o = i * 6;
+      this.pos[o] = pts[i].x + nx;
+      this.pos[o + 1] = STROKE_Y;
+      this.pos[o + 2] = pts[i].z + nz;
+      this.pos[o + 3] = pts[i].x - nx;
+      this.pos[o + 4] = STROKE_Y;
+      this.pos[o + 5] = pts[i].z - nz;
+      const q = i * 4;
+      this.uv[q] = u;
+      this.uv[q + 1] = 1;
+      this.uv[q + 2] = u;
+      this.uv[q + 3] = -1;
     }
     (this.geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
-    this.geo.computeVertexNormals();
+    (this.geo.attributes.aUV as THREE.BufferAttribute).needsUpdate = true;
+    this.geo.setDrawRange(0, (n - 1) * 6);
+    this.mat.uniforms.uLen.value = L;
+    return L;
   }
 
   dispose(): void {
     this.geo.dispose();
+    this.mat.dispose();
   }
 }
 
-function samplePath(c: THREE.Vector3[], u: number, out: THREE.Vector3, tan: THREE.Vector3): void {
-  const f = Math.min(0.99999, Math.max(0, u)) * (c.length - 1);
-  const i = Math.floor(f);
-  const t = f - i;
-  out.lerpVectors(c[i], c[i + 1], t);
-  tan.subVectors(c[i + 1], c[i]).normalize();
+function bezier(a: THREE.Vector3, c: THREE.Vector3, b: THREE.Vector3, n: number): THREE.Vector3[] {
+  const out: THREE.Vector3[] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const m = 1 - t;
+    out.push(new THREE.Vector3(m * m * a.x + 2 * m * t * c.x + t * t * b.x, STROKE_Y, m * m * a.z + 2 * m * t * c.z + t * t * b.z));
+  }
+  return out;
 }
 
-function arc(a: THREE.Vector3, b: THREE.Vector3, height: number, n = 48, side = 0): THREE.Vector3[] {
-  const mid = a.clone().add(b).multiplyScalar(0.5);
-  mid.y += height;
-  if (side) {
-    // Bow sideways (perpendicular on the board plane) as well as up.
-    const dx = b.x - a.x;
-    const dz = b.z - a.z;
-    const len = Math.hypot(dx, dz) || 1;
-    mid.x += (-dz / len) * side;
-    mid.z += (dx / len) * side;
-  }
-  const curve = new THREE.QuadraticBezierCurve3(a, mid, b);
-  return curve.getSpacedPoints(n);
+/** A gentle bow between two board points (always to the stroke's left), as a brush would arc. */
+function bow(a: THREE.Vector3, b: THREE.Vector3, k: number, n = 48): THREE.Vector3[] {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const len = Math.hypot(dx, dz) || 1;
+  const c = new THREE.Vector3((a.x + b.x) / 2 - (dz / len) * len * k, STROKE_Y, (a.z + b.z) / 2 + (dx / len) * len * k);
+  return bezier(a, c, b, n);
 }
+
+// ---------------------------------------------------------------------------
+// Attack arrow: one gold dry-brush stroke
+// ---------------------------------------------------------------------------
 
 export class AttackArrow {
   group = new THREE.Group();
-  private outerMat: THREE.MeshStandardMaterial;
-  private coreMat: THREE.MeshBasicMaterial;
-  private outer: Ribbon;
-  private core: Ribbon;
-  private edge: Ribbon;
-  private edgeMat: THREE.MeshBasicMaterial;
-  private curves: THREE.Vector3[][] = [];
+  /** Reduced motion: the stroke fades in whole (150 ms) instead of drawing tip-first. */
+  reduced = false;
+  /** Where a territory's figure stands (world); the stroke runs figure to figure. Default: the anchor. */
+  anchorOf: ((id: TerritoryId) => THREE.Vector3) | null = null;
+  private bodies: BrushRibbon[];
+  private head: BrushRibbon;
+  private lens: number[] = [0, 0];
   progress = 0;
   key = '';
   private ver = 0;
@@ -218,106 +201,165 @@ export class AttackArrow {
   constructor(
     private tiles: TileSet,
     private anim: Animator,
+    noise: THREE.Texture,
   ) {
-    this.outerMat = new THREE.MeshStandardMaterial({
-      color: '#c63d36',
-      emissive: '#c63d36',
-      emissiveIntensity: 0.28,
-      roughness: 0.45,
-      side: THREE.DoubleSide,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-    });
-    this.coreMat = new THREE.MeshBasicMaterial({
-      color: IVORY,
-      side: THREE.DoubleSide,
-      toneMapped: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -4,
-    });
-    this.edgeMat = new THREE.MeshBasicMaterial({
-      color: '#0b0d10',
-      transparent: true,
-      opacity: 0.6,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -1,
-    });
-    // dark edge (reads on a same-colored tile) → attacker color → ivory core
-    this.edge = new Ribbon(this.edgeMat, 1.02, 2.3, 1.85, -0.012);
-    this.outer = new Ribbon(this.outerMat, 0.78, 1.9, 1.55, 0);
-    this.core = new Ribbon(this.coreMat, 0.22, 0.78, 0.8, 0.014);
-    this.outer.mesh.castShadow = true;
-    this.edge.mesh.renderOrder = 4;
-    this.outer.mesh.renderOrder = 5;
-    this.core.mesh.renderOrder = 6;
-    this.group.add(this.edge.mesh, this.outer.mesh, this.core.mesh);
+    const gold = hexToRgb(GOLD);
+    this.bodies = [new BrushRibbon(noise, gold, 80), new BrushRibbon(noise, gold, 80)];
+    this.head = new BrushRibbon(noise, gold, 16);
+    this.head.u.uDry.value = 0;
+    // The armed arrow is the one bright thing on the board: a loaded brush, dry only toward its tail end.
+    for (const r of [...this.bodies, this.head]) r.u.uDryK.value = 0.55;
+    for (const b of this.bodies) this.group.add(b.mesh);
+    this.group.add(this.head.mesh);
     this.group.visible = false;
   }
 
   get materials(): THREE.Material[] {
-    return [this.outerMat, this.coreMat, this.edgeMat];
+    return [...this.bodies.map((b) => b.mat), this.head.mat];
   }
 
-  private makeCurves(from: TerritoryId, to: TerritoryId): THREE.Vector3[][] {
-    const A = this.tiles.get(from).anchorW.clone();
-    const B = this.tiles.get(to).anchorW.clone();
-    A.y = B.y = TILE_TOP + 0.3;
+  private build(from: TerritoryId, to: TerritoryId): void {
+    const A = (this.anchorOf ? this.anchorOf(from) : this.tiles.get(from).anchorW).clone();
+    const B = (this.anchorOf ? this.anchorOf(to) : this.tiles.get(to).anchorW).clone();
     const lane = seaLaneBetween(from, to);
+    let curves: THREE.Vector3[][];
     if (lane && lane.wrap) {
       // Off one edge and back in on the other, following the lane.
       const [s1, s2] = lane.segments;
       const edgeOf = (seg: typeof s1) => {
         const p0 = seg[0];
         const p1 = seg[seg.length - 1];
-        const edge = Math.abs(p0[0] - 50) > Math.abs(p1[0] - 50) ? p0 : p1;
-        return edge;
+        return Math.abs(p0[0] - 50) > Math.abs(p1[0] - 50) ? p0 : p1;
       };
       const e1 = edgeOf(s1);
       const e2 = edgeOf(s2);
-      const aX = this.tiles.get(from).anchorW.x;
-      const [ea, eb] = Math.sign(e1[0] - 50) === Math.sign(aX) ? [e1, e2] : [e2, e1];
-      const EA = toWorld(ea[0] + Math.sign(ea[0] - 50) * 3.2, ea[1], TILE_TOP + 0.6);
-      const EB = toWorld(eb[0] + Math.sign(eb[0] - 50) * 3.2, eb[1], TILE_TOP + 0.6);
-      const B2 = B.clone().lerp(EB, Math.min(0.3, 0.9 / Math.max(1, B.distanceTo(EB))));
-      return [arc(A, EA, 1.2, 40), arc(EB, B2, 1.2, 40)];
+      const [ea, eb] = Math.sign(e1[0] - 50) === Math.sign(A.x) ? [e1, e2] : [e2, e1];
+      const EA = toWorld(ea[0] + Math.sign(ea[0] - 50) * 3.2, ea[1], STROKE_Y);
+      const EB = toWorld(eb[0] + Math.sign(eb[0] - 50) * 3.2, eb[1], STROKE_Y);
+      const B2 = B.clone().lerp(EB, Math.min(0.35, 1.1 / Math.max(1, B.distanceTo(EB))));
+      curves = [bow(A, EA, 0.08, 32), bow(EB, B2, 0.08, 32)];
+    } else {
+      const d = Math.hypot(B.x - A.x, B.z - A.z);
+      // start just off the source's figure, stop short of the target's number
+      const A2 = A.clone().lerp(B, Math.min(0.3, 0.75 / Math.max(d, 0.001)));
+      const B2 = B.clone().lerp(A, Math.min(0.36, 1.45 / Math.max(d, 0.001)));
+      curves = [bow(A2, B2, 0.14, 56), []];
     }
-    const d = A.distanceTo(B);
-    const back = Math.min(0.95, d * 0.22);
-    const B2 = B.clone().lerp(A, back / Math.max(d, 0.001));
-    const A2 = A.clone().lerp(B, Math.min(0.35, d * 0.08) / Math.max(d, 0.001));
-    // A tall arc so the arrow clears the two badges it connects. From the home camera a north–south
-    // pair lines up with its own badges on screen, so those arcs also bow sideways, around them.
-    const ns = Math.abs(B.z - A.z) / Math.max(d, 0.001);
-    const side = ns > 0.55 ? Math.sign(B.z - A.z || 1) * (3 + d * 0.5) * ((ns - 0.55) / 0.45) : 0;
-    return [arc(A2, B2, 1.6 + d * 0.36, 56, side)];
+    const total = (c: THREE.Vector3[]) => {
+      let l = 0;
+      for (let i = 1; i < c.length; i++) l += Math.hypot(c[i].x - c[i - 1].x, c[i].z - c[i - 1].z);
+      return l;
+    };
+    const L0 = total(curves[0]);
+    const L1 = curves[1].length ? total(curves[1]) : 0;
+    const LT = L0 + L1 || 1;
+    // thick → thin across the whole stroke (both pieces of a wrapped one)
+    const width = (g: number) => 0.46 * (1 - 0.5 * g) * (0.8 + 0.2 * Math.min(1, g * 8));
+    this.lens = [L0 / LT, L1 / LT];
+    this.bodies[0].set(curves[0], (u) => width((u * L0) / LT));
+    if (L1 > 0) this.bodies[1].set(curves[1], (u) => width((L0 + u * L1) / LT));
+    else this.bodies[1].set([], () => 0);
+    // the head: a brushed wedge along the last stretch, pressed down then flicked off
+    const last = curves[1].length ? curves[1] : curves[0];
+    const tip = last[last.length - 1];
+    const pre = last[Math.max(0, last.length - 4)];
+    const dir = new THREE.Vector3(tip.x - pre.x, 0, tip.z - pre.z).normalize();
+    const hl = 0.95;
+    const hpts: THREE.Vector3[] = [];
+    for (let i = 0; i <= 10; i++) hpts.push(tip.clone().addScaledVector(dir, -hl * 0.75 + hl * (i / 10)));
+    this.head.set(hpts, (u) => 0.6 * Math.pow(Math.max(0, 1 - u), 0.85) * Math.min(1, 0.55 + u * 4));
   }
 
-  /** Show (grow 240 ms) or re-color the arrow. Returns when grown. */
-  show(from: TerritoryId, to: TerritoryId, color: RGB, run: Run | null = null, growMs = 240): Promise<void> {
+  private setProgress(p: number): void {
+    this.progress = p;
+    const [f0, f1] = this.lens;
+    this.bodies[0].u.uProgress.value = f0 > 0 ? Math.min(1, p / f0) : 0;
+    this.bodies[1].u.uProgress.value = f1 > 0 ? Math.max(0, Math.min(1, (p - f0) / f1)) : 0;
+    this.head.u.uProgress.value = Math.max(0, Math.min(1, (p - 0.86) / 0.14)) * 1.02;
+  }
+
+  private setDry(tail: number, opacity: number): void {
+    for (const r of [...this.bodies, this.head]) {
+      r.u.uTail.value = tail;
+      r.u.uOpacity.value = opacity;
+    }
+  }
+
+  /** Draw the stroke (tip first, `growMs`), from `startAt` of the way if given. Colour is always the gold. */
+  show(from: TerritoryId, to: TerritoryId, _color?: RGB, run: Run | null = null, growMs = 260, startAt = 0): Promise<void> {
     const key = `${from}|${to}`;
-    setColor(this.outerMat.color, color);
-    setColor(this.outerMat.emissive, color);
-    if (this.key === key && this.group.visible && this.progress >= 1) return Promise.resolve();
+    if (this.key === key && this.group.visible && this.progress >= 1) {
+      this.setDry(0, 1);
+      return Promise.resolve();
+    }
     const same = this.key === key && this.group.visible;
     this.key = key;
-    this.curves = this.makeCurves(from, to);
+    this.build(from, to);
     this.group.visible = true;
+    this.setDry(0, 1);
     const ver = ++this.ver;
-    const start = same ? Math.min(this.progress, 1) : 0;
+    const start = same ? Math.min(this.progress, 1) : startAt;
+    if (this.reduced && !same) {
+      this.setProgress(1);
+      this.setDry(0, 0);
+      return this.anim.tween({
+        ms: 150,
+        ease: ease.outQuad,
+        run,
+        update: (v) => {
+          if (ver === this.ver) this.setDry(0, v);
+        },
+      });
+    }
+    this.setProgress(start);
     return this.anim.tween({
       ms: growMs,
-      ease: ease.outCubic,
+      ease: (t) => 1 - Math.pow(1 - t, 2.4),
       run,
       update: (v) => {
         if (ver !== this.ver) return;
-        this.progress = start + (1 - start) * v;
-        this.rebuild();
+        this.setProgress(start + (1 - start) * v);
       },
     });
   }
 
+  private gold = 1;
+  private inkVer = 0;
+  /**
+   * Gold while the fight is in flight (the stroke, the dice deciding); ivory at rest, when the armed
+   * arrow waits and the commit button holds the one gold (INK B2.1 / A9). `ms` 0 = at once.
+   */
+  ink(gold: boolean, ms = 200): void {
+    const to = gold ? 1 : 0;
+    const ver = ++this.inkVer;
+    const G = hexToRgb(GOLD);
+    const I = hexToRgb(IVORY);
+    const apply = (g: number) => {
+      this.gold = g;
+      for (const r of [...this.bodies, this.head]) {
+        const c = r.u.uColor.value as THREE.Vector3;
+        c.set(I[0] + (G[0] - I[0]) * g, I[1] + (G[1] - I[1]) * g, I[2] + (G[2] - I[2]) * g);
+      }
+    };
+    if (ms <= 0 || this.anim.instant || !this.group.visible || this.reduced) return apply(to);
+    const from = this.gold;
+    if (from === to) return;
+    void this.anim.tween({
+      ms,
+      ease: ease.outQuad,
+      update: (v) => {
+        if (ver === this.inkVer) apply(from + (to - from) * v);
+      },
+    });
+  }
+
+  /** The tail dries up to `v` (0..1 of the stroke) — the conquest's traveller walking it. */
+  trail(v: number): void {
+    if (!this.group.visible) return;
+    for (const r of [...this.bodies, this.head]) r.u.uTail.value = Math.max(r.u.uTail.value, v);
+  }
+
+  /** Dry out from the tail (140 ms). */
   hide(immediate = false): void {
     if (!this.group.visible) return;
     this.key = '';
@@ -327,15 +369,132 @@ export class AttackArrow {
       this.progress = 0;
       return;
     }
-    const from = this.progress;
     this.anim.tween({
-      ms: 120,
+      ms: 140,
       ease: ease.inQuad,
       update: (v) => {
         if (ver !== this.ver) return;
-        this.progress = from * (1 - v);
-        if (this.progress <= 0.001) this.group.visible = false;
-        else this.rebuild();
+        this.setDry(v * 1.05, 1 - v * 0.6);
+      },
+      done: () => {
+        if (ver === this.ver) {
+          this.group.visible = false;
+          this.progress = 0;
+        }
+      },
+    });
+  }
+
+  dispose(): void {
+    for (const b of this.bodies) b.dispose();
+    this.head.dispose();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Draw-to-attack: the live stroke under the pointer (docs/INK.md A2)
+// ---------------------------------------------------------------------------
+
+export class LiveStroke {
+  group = new THREE.Group();
+  private body: BrushRibbon;
+  private pts: THREE.Vector3[] = [];
+  active = false;
+  private ver = 0;
+  private startedAt = 0;
+
+  constructor(
+    private anim: Animator,
+    noise: THREE.Texture,
+  ) {
+    this.body = new BrushRibbon(noise, hexToRgb(GOLD), 200);
+    this.group.add(this.body.mesh);
+    this.group.visible = false;
+  }
+
+  get materials(): THREE.Material[] {
+    return [this.body.mat];
+  }
+
+  begin(at: THREE.Vector3): void {
+    ++this.ver;
+    this.active = true;
+    this.pts = [new THREE.Vector3(at.x, STROKE_Y, at.z)];
+    this.startedAt = performance.now();
+    this.body.u.uTail.value = 0;
+    this.body.u.uOpacity.value = 1;
+    this.body.u.uProgress.value = 1.02;
+    this.body.u.uDry.value = 0;
+    this.body.u.uSeed.value = Math.random();
+    this.body.set([], () => 0);
+    this.group.visible = true;
+    // The brush touches down (80 ms) as the HUD's gold steps aside: one gold, never two at once.
+    if (!this.anim.instant) {
+      const ver = this.ver;
+      this.body.u.uOpacity.value = 0;
+      this.anim.tween({
+        ms: 80,
+        unscaled: true,
+        ease: ease.outQuad,
+        update: (v) => {
+          if (ver === this.ver && this.active) this.body.u.uOpacity.value = v;
+        },
+      });
+    }
+  }
+
+  /** Extend to a new pointer point on the board (world). */
+  move(p: THREE.Vector3): void {
+    if (!this.active) return;
+    const last = this.pts[this.pts.length - 1];
+    const d = Math.hypot(p.x - last.x, p.z - last.z);
+    if (d < 0.12) return;
+    // fill long jumps so the ribbon bends smoothly
+    const steps = Math.min(12, Math.ceil(d / 0.35));
+    for (let i = 1; i <= steps; i++) this.pts.push(new THREE.Vector3(last.x + ((p.x - last.x) * i) / steps, STROKE_Y, last.z + ((p.z - last.z) * i) / steps));
+    // keep it bounded: thin out the oldest points
+    while (this.pts.length > 190) this.pts.splice(1, 2);
+    this.rebuild();
+  }
+
+  private rebuild(): void {
+    // one Chaikin pass smooths the hand's wobble
+    const src = this.pts;
+    let pts = src;
+    if (src.length > 3) {
+      pts = [src[0]];
+      for (let i = 0; i < src.length - 1; i++) {
+        const a = src[i];
+        const b = src[i + 1];
+        pts.push(new THREE.Vector3(a.x * 0.75 + b.x * 0.25, STROKE_Y, a.z * 0.75 + b.z * 0.25), new THREE.Vector3(a.x * 0.25 + b.x * 0.75, STROKE_Y, a.z * 0.25 + b.z * 0.75));
+      }
+      pts.push(src[src.length - 1]);
+      if (pts.length > 200) pts = pts.filter((_, i) => i % 2 === 0 || i === pts.length - 1);
+    }
+    const L = this.body.set(pts, (u) => 0.42 * (1 - 0.45 * u) * Math.min(1, 0.35 + u * 10) * (u > 0.94 ? Math.max(0.35, (1 - u) / 0.06) : 1));
+    // the tail dries as the stroke grows
+    this.body.u.uDry.value = Math.min(0.6, L / 30);
+  }
+
+  /** Cancelled: the stroke dries out (200 ms). Settled: it fades as the arrow takes over (160 ms). */
+  end(settle: boolean): void {
+    if (!this.active && !this.group.visible) return;
+    this.active = false;
+    const ver = ++this.ver;
+    if (this.anim.instant) {
+      this.group.visible = false;
+      return;
+    }
+    void this.startedAt;
+    this.anim.tween({
+      // Settling into the arrow is quick: the gold moves on to the commit button (one gold, INK A9).
+      ms: settle ? 120 : 200,
+      unscaled: true,
+      ease: ease.inQuad,
+      update: (v) => {
+        if (ver !== this.ver) return;
+        this.body.u.uTail.value = settle ? 0 : v * 1.05;
+        this.body.u.uOpacity.value = 1 - v * (settle ? 1 : 0.5);
       },
       done: () => {
         if (ver === this.ver) this.group.visible = false;
@@ -343,259 +502,176 @@ export class AttackArrow {
     });
   }
 
-  private rebuild(): void {
-    this.edge.build(this.curves, this.progress);
-    this.outer.build(this.curves, this.progress);
-    this.core.build(this.curves, this.progress);
-  }
-
   dispose(): void {
-    this.edge.dispose();
-    this.outer.dispose();
-    this.core.dispose();
-    this.edgeMat.dispose();
-    this.outerMat.dispose();
-    this.coreMat.dispose();
+    this.body.dispose();
   }
 }
 
 // ---------------------------------------------------------------------------
-// Fortify route: ivory dashed, through the owned chain.
+// Fortify route: a dotted ink line through the owned chain
 // ---------------------------------------------------------------------------
 
 export class FortifyRoute {
   group = new THREE.Group();
-  private geo = new LineGeometry();
-  private under: Line2;
-  private line: Line2;
-  mats: LineMaterial[] = [];
-  private head: THREE.Mesh;
+  /** Reduced motion: the route fades in whole (150 ms). */
+  reduced = false;
+  /** Where a territory's figure stands (world); the route runs figure to figure. Default: the anchor. */
+  anchorOf: ((id: TerritoryId) => THREE.Vector3) | null = null;
+  /** A walk is drawing the route: highlight changes (the controller clearing the armed route) leave it be. */
+  private walking = 0;
+  private line: BrushRibbon;
   key = '';
+  private ver = 0;
+  /** Kept for the view's resize hook (the route is a mesh now, not a screen-space line). */
+  mats: { resolution: THREE.Vector2 }[] = [];
 
-  constructor(private tiles: TileSet) {
-    const ivory = new THREE.Color(IVORY).getHex();
-    const lm = new LineMaterial({
-      color: ivory,
-      linewidth: 3,
-      dashed: true,
-      dashSize: 0.55,
-      gapSize: 0.35,
-      transparent: true,
-      opacity: 0.95,
-      depthWrite: false,
-    });
-    const um = new LineMaterial({ color: 0x0b0d10, linewidth: 5, transparent: true, opacity: 0.5, depthWrite: false });
-    this.mats.push(lm, um);
-    this.geo.setPositions([0, 0, 0, 1, 0, 0]);
-    this.under = new Line2(this.geo, um);
-    this.line = new Line2(this.geo, lm);
-    this.under.renderOrder = 5;
-    this.line.renderOrder = 6;
-    const hs = new THREE.Shape([new THREE.Vector2(-0.4, -0.35), new THREE.Vector2(0.45, 0), new THREE.Vector2(-0.4, 0.35)]);
-    this.head = new THREE.Mesh(
-      new THREE.ShapeGeometry(hs),
-      new THREE.MeshBasicMaterial({ color: IVORY, toneMapped: false, side: THREE.DoubleSide, depthWrite: false }),
-    );
-    this.head.renderOrder = 6;
-    this.group.add(this.under, this.line, this.head);
+  constructor(
+    private tiles: TileSet,
+    private anim: Animator,
+    noise: THREE.Texture,
+  ) {
+    this.line = new BrushRibbon(noise, hexToRgb(IVORY), 200, true);
+    this.group.add(this.line.mesh);
     this.group.visible = false;
   }
 
+  get materials(): THREE.Material[] {
+    return [this.line.mat];
+  }
+
   show(path: TerritoryId[]): void {
+    if (this.walking) return;
     const key = path.join('>');
     if (key === this.key && this.group.visible) return;
     this.key = key;
+    this.layout(path);
+    const ver = ++this.ver;
+    if (this.anim.instant) {
+      this.line.u.uProgress.value = 1.02;
+      return;
+    }
+    if (this.reduced) {
+      this.line.u.uProgress.value = 1.02;
+      this.line.u.uOpacity.value = 0;
+      void this.anim.tween({ ms: 150, unscaled: true, ease: ease.outQuad, update: (v) => ver === this.ver && (this.line.u.uOpacity.value = 0.92 * v) });
+      return;
+    }
+    this.line.u.uProgress.value = 0;
+    void this.anim.tween({
+      ms: Math.min(420, 160 + 60 * path.length),
+      unscaled: true,
+      ease: ease.outCubic,
+      update: (v) => {
+        if (ver === this.ver) this.line.u.uProgress.value = v * 1.02;
+      },
+    });
+  }
+
+  /**
+   * The fortify move (B §4): the dotted route draws a little ahead of the walking figure and dries behind
+   * it, over the walk's `ms`, then is gone. `ease` matches the walker's.
+   */
+  walk(path: TerritoryId[], ms: number, run: Run | null, e: (t: number) => number = ease.inOutSine): Promise<void> {
+    if (this.anim.instant || (run && run.skipped) || path.length < 2) {
+      this.hide();
+      return Promise.resolve();
+    }
+    this.key = `walk:${path.join('>')}`;
+    this.layout(path);
+    const ver = ++this.ver;
+    const w = ++this.walking;
+    const end = () => {
+      if (this.walking === w) this.walking = 0;
+      if (ver === this.ver) this.hide();
+    };
+    const u = this.line.u;
+    if (this.reduced) {
+      u.uProgress.value = 1.02;
+      u.uTail.value = 0;
+      u.uOpacity.value = 0.92;
+      return this.anim.tween({ ms, run, update: () => undefined }).then(end);
+    }
+    u.uProgress.value = 0.34;
+    u.uTail.value = 0;
+    u.uOpacity.value = 0.92;
+    return this.anim
+      .tween({
+        ms,
+        ease: ease.linear,
+        run,
+        update: (raw) => {
+          if (ver !== this.ver) return;
+          const v = e(raw);
+          u.uProgress.value = Math.min(1.02, v * 1.02 + 0.34);
+          u.uTail.value = Math.max(0, v - 0.24);
+        },
+      })
+      .then(end);
+  }
+
+  private layout(path: TerritoryId[]): void {
     const pts: THREE.Vector3[] = [];
     for (let i = 0; i < path.length; i++) {
-      const a = this.tiles.get(path[i]).anchorW.clone();
-      a.y = TILE_TOP + 0.2;
+      const a = (this.anchorOf ? this.anchorOf(path[i]) : this.tiles.get(path[i]).anchorW).clone();
+      a.y = STROKE_Y;
       if (i > 0) {
         const prev = pts[pts.length - 1];
+        const dx = a.x - prev.x;
+        const dz = a.z - prev.z;
         const mid = prev.clone().add(a).multiplyScalar(0.5);
-        mid.y += 0.25 + prev.distanceTo(a) * 0.05;
+        mid.x -= dz * 0.1;
+        mid.z += dx * 0.1;
         pts.push(mid);
       }
       pts.push(a);
     }
-    // stop short of the destination badge
-    const last = pts[pts.length - 1];
-    const prev = pts[pts.length - 2] ?? last;
-    const dir = last.clone().sub(prev);
-    const dl = dir.length();
-    if (dl > 0.01) last.addScaledVector(dir.normalize(), -Math.min(0.8, dl * 0.4));
+    // stop short of both numbers
+    const trim = (p: THREE.Vector3, q: THREE.Vector3, d: number) => {
+      const v = q.clone().sub(p);
+      const l = v.length();
+      if (l > 0.01) p.addScaledVector(v.normalize(), Math.min(d, l * 0.4));
+    };
+    if (pts.length >= 2) {
+      trim(pts[0], pts[1], 0.7);
+      trim(pts[pts.length - 1], pts[pts.length - 2], 0.9);
+    }
     const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
-    const sp = curve.getSpacedPoints(Math.max(24, path.length * 24));
-    const flat: number[] = [];
-    for (const p of sp) flat.push(p.x, p.y, p.z);
-    this.geo.dispose();
-    this.geo = new LineGeometry();
-    this.geo.setPositions(flat);
-    this.line.geometry = this.geo;
-    this.under.geometry = this.geo;
-    this.line.computeLineDistances();
-    const tip = sp[sp.length - 1];
-    const before = sp[sp.length - 3] ?? sp[0];
-    this.head.position.copy(tip);
-    this.head.rotation.set(-Math.PI / 2, 0, Math.atan2(-(tip.z - before.z), tip.x - before.x));
+    const sp = curve.getSpacedPoints(Math.min(190, Math.max(24, path.length * 24)));
+    this.line.set(sp, () => 0.13);
+    this.line.u.uTail.value = 0;
+    this.line.u.uOpacity.value = 0.92;
     this.group.visible = true;
   }
 
   hide(): void {
-    this.group.visible = false;
+    if (this.walking) return;
+    if (!this.group.visible) {
+      this.key = '';
+      return;
+    }
     this.key = '';
-  }
-
-  dispose(): void {
-    this.geo.dispose();
-    this.mats.forEach((m) => m.dispose());
-    this.head.geometry.dispose();
-    (this.head.material as THREE.Material).dispose();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Dust (≤ 40 particles alive) and ripple rings
-// ---------------------------------------------------------------------------
-
-const MAX_P = 40;
-
-export class Particles {
-  points: THREE.Points;
-  private pos = new Float32Array(MAX_P * 3);
-  private alpha = new Float32Array(MAX_P);
-  private size = new Float32Array(MAX_P);
-  private vel = new Float32Array(MAX_P * 3);
-  private life = new Float32Array(MAX_P);
-  private maxLife = new Float32Array(MAX_P);
-  alive = 0;
-  material: THREE.ShaderMaterial;
-
-  constructor() {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
-    g.setAttribute('aAlpha', new THREE.BufferAttribute(this.alpha, 1).setUsage(THREE.DynamicDrawUsage));
-    g.setAttribute('aSize', new THREE.BufferAttribute(this.size, 1).setUsage(THREE.DynamicDrawUsage));
-    this.material = new THREE.ShaderMaterial({
-      uniforms: { uMap: { value: softDotTexture() }, uColor: { value: new THREE.Color('#e9dcc0') }, uScale: { value: 400 } },
-      vertexShader: `attribute float aAlpha; attribute float aSize; varying float vA; uniform float uScale;
-        void main(){ vA = aAlpha; vec4 mv = modelViewMatrix * vec4(position,1.0); gl_Position = projectionMatrix * mv;
-        gl_PointSize = aSize * uScale / -mv.z; }`,
-      fragmentShader: `uniform sampler2D uMap; uniform vec3 uColor; varying float vA;
-        void main(){ vec4 t = texture2D(uMap, gl_PointCoord); gl_FragColor = vec4(uColor, t.a * vA); if (gl_FragColor.a < 0.01) discard; }`,
-      transparent: true,
-      depthWrite: false,
-    });
-    this.points = new THREE.Points(g, this.material);
-    this.points.frustumCulled = false;
-    this.points.renderOrder = 7;
-  }
-
-  burst(at: THREE.Vector3, n = 6): void {
-    for (let k = 0; k < n; k++) {
-      let i = -1;
-      for (let j = 0; j < MAX_P; j++)
-        if (this.life[j] <= 0) {
-          i = j;
-          break;
-        }
-      if (i < 0) return;
-      const a = Math.random() * Math.PI * 2;
-      const r = 0.15 + Math.random() * 0.2;
-      this.pos[i * 3] = at.x + Math.cos(a) * r;
-      this.pos[i * 3 + 1] = at.y + 0.03;
-      this.pos[i * 3 + 2] = at.z + Math.sin(a) * r;
-      const sp = 0.9 + Math.random() * 0.8;
-      this.vel[i * 3] = Math.cos(a) * sp;
-      this.vel[i * 3 + 1] = 0.35 + Math.random() * 0.3;
-      this.vel[i * 3 + 2] = Math.sin(a) * sp;
-      this.maxLife[i] = this.life[i] = 0.35;
-      this.size[i] = 0.35 + Math.random() * 0.25;
+    const ver = ++this.ver;
+    if (this.anim.instant) {
+      this.group.visible = false;
+      return;
     }
-  }
-
-  update(dt: number): void {
-    let alive = 0;
-    for (let i = 0; i < MAX_P; i++) {
-      if (this.life[i] <= 0) {
-        this.alpha[i] = 0;
-        continue;
-      }
-      this.life[i] -= dt;
-      const t = 1 - Math.max(0, this.life[i]) / this.maxLife[i];
-      const drag = Math.exp(-dt * 7);
-      this.vel[i * 3] *= drag;
-      this.vel[i * 3 + 1] *= drag;
-      this.vel[i * 3 + 2] *= drag;
-      this.pos[i * 3] += this.vel[i * 3] * dt;
-      this.pos[i * 3 + 1] += this.vel[i * 3 + 1] * dt;
-      this.pos[i * 3 + 2] += this.vel[i * 3 + 2] * dt;
-      this.alpha[i] = this.life[i] > 0 ? 0.55 * (1 - t) : 0;
-      this.size[i] *= 1 + dt * 1.2;
-      if (this.life[i] > 0) alive++;
-    }
-    this.alive = alive;
-    const g = this.points.geometry;
-    (g.attributes.position as THREE.BufferAttribute).needsUpdate = true;
-    (g.attributes.aAlpha as THREE.BufferAttribute).needsUpdate = true;
-    (g.attributes.aSize as THREE.BufferAttribute).needsUpdate = true;
-  }
-
-  setViewportHeight(h: number, fovDeg: number): void {
-    this.material.uniforms.uScale.value = h / (2 * Math.tan((fovDeg * Math.PI) / 360));
-  }
-
-  dispose(): void {
-    this.points.geometry.dispose();
-    this.material.uniforms.uMap.value.dispose();
-    this.material.dispose();
-  }
-}
-
-export class Ripples {
-  group = new THREE.Group();
-  private rings: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; busy: boolean }[] = [];
-  constructor(private anim: Animator) {
-    const geo = new THREE.RingGeometry(0.86, 1, 64);
-    geo.rotateX(-Math.PI / 2);
-    for (let i = 0; i < 4; i++) {
-      const mat = new THREE.MeshBasicMaterial({ color: IVORY, transparent: true, opacity: 0, depthWrite: false, toneMapped: false });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.visible = false;
-      mesh.renderOrder = 6;
-      this.group.add(mesh);
-      this.rings.push({ mesh, mat, busy: false });
-    }
-  }
-
-  ring(at: THREE.Vector3, maxR: number, color: RGB, ms = 500, run: Run | null = null): void {
-    const r = this.rings.find((x) => !x.busy);
-    if (!r || this.anim.instant) return;
-    r.busy = true;
-    r.mesh.visible = true;
-    r.mesh.position.copy(at);
-    setColor(r.mat.color, color);
-    this.anim.tween({
-      ms,
-      ease: ease.outCubic,
-      run,
+    void this.anim.tween({
+      ms: 150,
+      unscaled: true,
+      ease: ease.inQuad,
       update: (v) => {
-        const s = 0.3 + (maxR - 0.3) * v;
-        r.mesh.scale.set(s, 1, s);
-        r.mat.opacity = 0.85 * (1 - v);
+        if (ver === this.ver) {
+          this.line.u.uTail.value = v;
+          this.line.u.uOpacity.value = 0.92 * (1 - v);
+        }
       },
       done: () => {
-        r.mesh.visible = false;
-        r.busy = false;
+        if (ver === this.ver) this.group.visible = false;
       },
     });
   }
 
-  get materials(): THREE.Material[] {
-    return this.rings.map((r) => r.mat);
-  }
-
   dispose(): void {
-    this.rings[0]?.mesh.geometry.dispose();
-    this.rings.forEach((r) => r.mat.dispose());
+    this.line.dispose();
   }
 }

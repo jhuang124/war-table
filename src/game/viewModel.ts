@@ -32,7 +32,15 @@ export interface Settings {
   hideCardsBetweenTurns: boolean; // hand-off cover: default off, on for touch devices (docs/MOBILE.md §5)
   sfxVolume: number; // 0..1
   muted: boolean;
-  music: boolean; // default false
+  /** The soft ambient score (docs/INK.md A4). Default on since settings v4. */
+  music: boolean;
+  /** Additive (ink overhaul): the score's level, 0..1 (default 0.7; the audio engine mixes it under the effects). Always set by the controller (optional only so older fixtures still type-check). */
+  musicVolume?: number;
+  /**
+   * Additive (ink overhaul, docs/INK.md A1): the living board (mist, coastline and wash breath). Default on.
+   * The board gets `ambient && !reducedMotion`: reduced motion (the setting or the OS) always stills it.
+   */
+  ambient?: boolean;
   reduceMotion: boolean; // user setting; effective value is ViewModel.reducedMotion
   showWinChance: boolean; // default true
   autoCamera: boolean; // return home at turn start if displaced, default true
@@ -94,6 +102,13 @@ export interface SeatChipVM {
   /** Struck through and dimmed. */
   eliminated: boolean;
   territories: number;
+  /**
+   * Additive (ink overhaul, docs/INK.md A5 "your seat ring dims for 300 ms"): bumps each time this seat
+   * loses a territory on the displayed board (as the conquest plays), so the UI can re-run the dim. 0 = never.
+   */
+  lostKey?: number;
+  /** Additive (ink overhaul, A5): who knocked this seat out and when, for the empty / cracked ring. */
+  out?: { by: SeatRef; round: number } | null;
 }
 
 /**
@@ -230,18 +245,43 @@ export interface LogLineVM {
 
 /** The one banner slot (docs/SIMPLIFY.md §5). */
 export interface BannerVM {
+  /**
+   * Additive (ink overhaul, docs/INK.md B2.6/A5): the one serif line to brush onto the paper, plain case.
+   * turn: 'John · 3 armies' ('John' on a resumed mid-turn) · continent: 'John holds Asia · +7' ·
+   * elimination (the epitaph): 'Sam · taken by John · round 9'. `title`/`sub` stay for older HUDs.
+   * The turn's grudge line is `recap` ('John took Ural and Siberia from you'), shown under it.
+   */
+  line?: string;
   id: number;
   kind: 'turn' | 'continent' | 'elimination';
   /** "JOHN'S TURN" / 'JOHN HOLDS ASIA · +7' / 'SAM IS OUT'. */
   title: string;
   /** Turn banner: '+9 armies' ('' on a resumed mid-turn). Others: ''. */
   sub: string;
-  /** Turn banner from round 2, only if you lost territory: 'Cobalt took 2 of yours'. */
+  /**
+   * Turn banner for a human seat from round 2, only if it lost territory since its last turn — the grudge
+   * line (docs/INK.md A5): 'John took Ural and Siberia from you' · 'John took Ural, Sam took Peru' ·
+   * 'John took 4 of yours'. ≤ ~60 characters.
+   */
   recap: string | null;
   seat: SeatRef | null;
   /** Hold time in ms; the controller removes the banner after it. The UI animates in and out. */
   holdMs: number;
 }
+
+/**
+ * Additive (ink overhaul, docs/INK.md B2.1 "one gold"): the single element on screen that carries gold.
+ * Precedence: the Cards sheet's trade (while open) → the pending commit button (the strip's primary) →
+ * the recommended Turn Track segment → the current segment (a live human turn, or the marker an AI moves).
+ * The hand-off cover is its own gold ring. null = nothing gold (game over, setup deal). The UI must draw
+ * gold on this one element only; `ButtonVM.primary` / `TrackVM.primary` agree with it.
+ */
+export type GoldVM =
+  | { kind: 'button'; id: ButtonId }
+  | { kind: 'segment'; seg: TrackSegId }
+  | { kind: 'cardsTrade' }
+  | { kind: 'handoff' }
+  | null;
 
 export interface GameVM {
   seats: SeatChipVM[];
@@ -258,6 +298,13 @@ export interface GameVM {
   seatActions: { seat: SeatRef; label: string; intent: UiIntent }[];
   /** The player orbited / zoomed away from the home view: the `Reset view` pill shows beside ≡. */
   viewMoved: boolean;
+  /** Additive (ink overhaul): the one gold element (see GoldVM). */
+  gold?: GoldVM;
+  /**
+   * Additive (ink overhaul, docs/INK.md B3 "the ensō"): the game's seed (state.config.seed). The UI draws
+   * the game's own ensō from it (the gold rule, the menu mark). Absent = the UI hashes the seats instead.
+   */
+  seed?: number;
   /**
    * Additive (mobile pass, docs/MOBILE.md §3): the long-press name card on touch, shown above the finger
    * while it is held (hover doesn't exist on touch). null / absent = none.
@@ -285,12 +332,16 @@ export interface NameCardVM {
 
 export interface VictoryVM {
   winner: SeatRef;
-  title: string; // 'CRIMSON RULES THE WORLD'
-  subline: string; // 'Round 23 · 70% of the world' / 'Called in round 14'
+  /** Plain case since the ink overhaul: 'John holds the world'. */
+  title: string;
+  /** 'Round 14 · 31 territories' / 'Round 20 of 20 · 24 territories' / 'Called in round 14 · 22 territories'. */
+  subline: string;
   awards: { id: 'nemesis' | 'hotDice' | 'cursedDice' | 'cashIn'; title: string; text: string; seat: SeatRef }[];
   seats: SeatRef[];
   timeline: TimelinePoint[];
   standings: { seat: SeatRef; place: number; territories: number; stats: PlayerStats }[];
+  /** Additive (ink overhaul): the game's seed (state.config.seed), so the scroll's ensō is the one drawn all game. */
+  seed?: number;
 }
 
 // ---------------------------------------------------------------------------

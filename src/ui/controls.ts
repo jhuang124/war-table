@@ -1,5 +1,6 @@
-// Reusable controls: action buttons (ButtonVM), plain UI buttons, segmented controls, switches, the
-// volume slider. None of them look like browser defaults; all numerals are tabular Inter (styles.css).
+// Reusable controls: action buttons (ButtonVM), plain UI buttons, segmented words, switches, the volume
+// slider. Ink on paper: hairline outlines, never fills; the one gold thing is a gold outline with gold
+// words (class `gold`; `brass` is kept as an alias for older selectors). One serif, lining figures.
 
 import type { ButtonVM } from '../game/viewModel';
 import { h, setAttr, setText, toggle } from './dom';
@@ -8,7 +9,6 @@ import { h, setAttr, setText, toggle } from './dom';
 export class ActionButton {
   readonly el: HTMLButtonElement;
   private labelEl: HTMLSpanElement;
-  private glyph: HTMLSpanElement | null = null;
   vm: ButtonVM | null = null;
 
   constructor(onPress: (vm: ButtonVM) => void) {
@@ -23,34 +23,28 @@ export class ActionButton {
     });
   }
 
-  update(vm: ButtonVM): void {
-    if (this.vm === vm) return;
+  private gold = false;
+
+  update(vm: ButtonVM, gold = vm.primary): void {
+    if (this.vm === vm && this.gold === gold) return;
     this.vm = vm;
+    this.gold = gold;
     setText(this.labelEl, vm.label);
-    // Phones: `Cards 3` is a card-stack glyph with the count as a badge (styles in mobile.css).
-    if (vm.id === 'cards') {
-      if (!this.glyph) {
-        this.glyph = h('span', 'btn-glyph');
-        this.glyph.setAttribute('aria-hidden', 'true');
-        this.glyph.innerHTML = '<svg viewBox="0 0 24 24"><rect x="8.5" y="3.5" width="10" height="14" rx="1.8"/><path d="M5.5 6.5v12a1.8 1.8 0 0 0 1.8 1.8H15"/></svg><b class="btn-badge num"></b>';
-        this.el.prepend(this.glyph);
-      }
-      setText(this.glyph.querySelector('.btn-badge')!, (/\d+/.exec(vm.label) ?? [''])[0]);
-      this.el.setAttribute('aria-label', vm.label);
-    }
-    this.el.className = `btn nofocus ${vm.primary ? 'role-primary brass' : 'role-secondary'}${vm.busy ? ' is-busy' : ''}`;
+    this.el.className = `btn nofocus ${gold ? 'role-primary gold brass' : vm.primary ? 'role-primary' : 'role-secondary'}${vm.busy ? ' is-busy' : ''}`;
     setAttr(this.el, 'data-id', vm.id);
     setAttr(this.el, 'data-testid', `btn-${vm.id}`);
   }
 }
 
-/** A plain UI button (menus, dialogs). */
-export function uiButton(label: string, cls: string, onClick: () => void, keycap?: string, testid?: string): HTMLButtonElement {
-  const b = h('button', `btn ${cls}`);
+/**
+ * A plain UI button (menus, dialogs). `brass` in `cls` is the gold primary (a `gold` class is added).
+ * Keycaps are gone (the keyboard is a hidden accelerator); the parameter stays for call-site shape.
+ */
+export function uiButton(label: string, cls: string, onClick: () => void, _keycap?: string, testid?: string): HTMLButtonElement {
+  const b = h('button', `btn ${cls}${/\bbrass\b/.test(cls) ? ' gold' : ''}`);
   b.type = 'button';
   if (testid) b.dataset.testid = testid;
   b.append(h('span', 'btn-label', label));
-  if (keycap) b.append(h('kbd', 'kc', keycap));
   b.addEventListener('click', () => {
     if (b.getAttribute('aria-disabled') === 'true') return;
     onClick();

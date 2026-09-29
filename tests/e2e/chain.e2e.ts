@@ -51,7 +51,7 @@ const occ = () =>
   await clickT(page, 'iceland');
   await page.waitForTimeout(80);
   u1 = await ui(page);
-  check(/^Greenland → Iceland · \d+%$/.test(u1.line), `armed from the stack: ${u1.line}`, results);
+  check(/^Greenland → Iceland · \d+%( · .+)?$/.test(u1.line), `armed from the stack: ${u1.line}`, results);
   check(u1.battle?.header === 'GREENLAND 7 vs ICELAND 1', `tray header: ${u1.battle?.header}`, results);
   // Clicking the armed target again does not roll.
   await clickT(page, 'iceland');
@@ -83,7 +83,7 @@ const occ = () =>
   await page.waitForTimeout(300);
   const s2 = (await page.evaluate(() => window.__risk.getState()))!;
   const u2 = await ui(page);
-  check(s2.territories.alberta.owner !== 0 && u2.primary === 'Blitz' && /^Ontario → Alberta · \d+%$/.test(u2.line), `armed and waiting: ${u2.line} · ${u2.primary}`, results);
+  check(s2.territories.alberta.owner !== 0 && u2.primary === 'Blitz' && /^Ontario → Alberta · \d+%( · .+)?$/.test(u2.line), `armed and waiting: ${u2.line} · ${u2.primary}`, results);
 }
 
 // --- R1-05 / R1-11: one roll conquers Indonesia from New Guinea 3 (auto-occupy, then chain) ----------

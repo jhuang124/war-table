@@ -1,10 +1,12 @@
-// New game (UX.md §4.1): seats, length, setup, house rules drawer, summary + Start.
+// New game (UX.md §4.1, INK.md B5): seats, length, setup, house rules drawer, summary + Start, on one paper
+// sheet. Each seat is an ensō ring in its wash (tap → the six washes), a serif name, `Human · AI` and the
+// difficulty as words (the active one underlined in a gold hairline). Start is the gold outline.
 
 import type { AiDifficulty, PlayerColorId, PlayerKind } from '../../engine/types';
 import type { HouseRulesDraft, LengthPreset, NewGameVM, SeatDraft, SetupPreset, UiIntent } from '../../game/viewModel';
 import { PLAYER_COLOR_IDS, PLAYER_COLORS } from '../../shared/palette';
 import { Segmented, Switch, uiButton } from '../controls';
-import { animateIn, emblem, h, setAttr, setEmblem, setStyle, setText, toggle } from '../dom';
+import { animateIn, emblem, ensoEl, h, hashSeed, setAttr, setEmblem, setStyle, setText, toggle } from '../dom';
 import { isPhone, layout } from '../layout';
 import { dragToDismiss, grabHandle, sheetIn } from '../sheet';
 
@@ -35,7 +37,7 @@ class SeatRow {
     this.colorBtn.dataset.testid = `seat-color-${index}`;
     this.colorBtn.setAttribute('aria-haspopup', 'true');
     this.colorBtn.setAttribute('aria-expanded', 'false');
-    this.colorBtn.append(emblem('crimson', 'emb', 'ink'));
+    this.colorBtn.append(ensoEl(hashSeed(`seat${index}`), 'enso sw-ring', { small: true }), emblem('crimson', 'emb', 'light'));
     this.colorBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       this.setOpen(!this.open);
@@ -63,7 +65,8 @@ class SeatRow {
       b.dataset.tip = PLAYER_COLORS[c].name;
       b.dataset.testid = `seat-color-${index}-${c}`;
       setStyle(b, '--seat', PLAYER_COLORS[c].base);
-      b.append(emblem(c, 'emb', 'ink'), h('span', 'sw-name', PLAYER_COLORS[c].name));
+      setStyle(b, '--seat-light', PLAYER_COLORS[c].light);
+      b.append(ensoEl(hashSeed(`sw${c}`), 'enso sw-ring', { small: true }), emblem(c, 'emb', 'light'), h('span', 'sw-name', PLAYER_COLORS[c].name));
       b.addEventListener('click', () => {
         send({ type: 'seat', index: this.index, patch: { color: c } });
         this.setOpen(false);
@@ -113,7 +116,7 @@ class SeatRow {
     this.colorBtn.setAttribute('aria-expanded', String(on));
     if (on) {
       if (isPhone()) sheetIn(this.swSheet, this.pop);
-      else animateIn(this.pop.firstElementChild as HTMLElement, { dx: -6, dy: 0, ms: 160 });
+      else animateIn(this.pop.firstElementChild as HTMLElement, { ms: 160 });
       this.onOpen?.(this);
     }
   }
@@ -126,8 +129,10 @@ class SeatRow {
 
   /** Focus the name with its text selected, so typing replaces the default (UX: people skip it otherwise). */
   focusName(): void {
+    // The caret waits at the end of the name: no selection block on open (typing edits it).
     this.name.focus({ preventScroll: true });
-    this.name.select();
+    const n = this.name.value.length;
+    this.name.setSelectionRange(n, n);
   }
 
   get kindValue(): PlayerKind | null {
@@ -138,7 +143,8 @@ class SeatRow {
     this.seat = seat;
     setStyle(this.el, '--seat', PLAYER_COLORS[seat.color].base);
     setStyle(this.colorBtn, '--seat', PLAYER_COLORS[seat.color].base);
-    setEmblem(this.colorBtn.firstChild as SVGSVGElement, seat.color, 'ink');
+    setStyle(this.colorBtn, '--seat-light', PLAYER_COLORS[seat.color].light);
+    setEmblem(this.colorBtn.querySelector<SVGSVGElement>('.emb')!, seat.color, 'light');
     this.colorBtn.setAttribute('aria-label', `Seat ${this.index + 1} colour: ${PLAYER_COLORS[seat.color].name}`);
     toggle(this.colorBtn, 'clash', clash);
     for (const [c, b] of this.swatches) {
@@ -186,7 +192,7 @@ export class NewGameScreen {
     this.el = h('section', 'screen newgame-screen');
     const sheet = h('div', 'sheet ng-sheet');
     const head = h('div', 'sheet-head');
-    head.append(h('h1', 'sheet-title', 'New game'), uiButton('Back', 'role-exit', () => send({ type: 'nav', screen: 'title' }), 'Esc', 'ng-back'));
+    head.append(h('h1', 'sheet-title', 'New game'), uiButton('Back', 'role-exit', () => send({ type: 'nav', screen: 'title' }), undefined, 'ng-back'));
 
     const grid = h('div', 'ng-grid');
     // Seats
@@ -208,7 +214,7 @@ export class NewGameScreen {
     this.houseBtn.dataset.houseToggle = '';
     this.houseBtn.dataset.testid = 'house-toggle';
     this.houseBtn.innerHTML =
-      '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg><span>House rules</span><span class="house-sum"></span>';
+      '<span>House rules</span><span class="house-sum"></span>';
     this.houseBtn.addEventListener('click', () => this.setHouseOpen(!this.houseOpen));
     this.house = h('div', 'house hidden');
     const patch = (p: Partial<HouseRulesDraft>) => send({ type: 'house', patch: p });
@@ -293,7 +299,7 @@ export class NewGameScreen {
     toggle(this.houseBtn, 'open', on);
     this.houseBtn.setAttribute('aria-expanded', String(on));
     toggle(this.house, 'hidden', !on);
-    if (on) animateIn(this.house, { dy: -6 });
+    if (on) animateIn(this.house);
   }
 
   /** On entering the screen: the first human seat's name, selected. */
@@ -312,7 +318,7 @@ export class NewGameScreen {
       r.onOpen = (me) => this.rows.forEach((x) => x !== me && x.setOpen(false));
       this.rows.push(r);
       this.seatsWrap.append(r.el);
-      if (this.rows.length > 2) animateIn(r.el, { dy: -6 });
+      if (this.rows.length > 2) animateIn(r.el);
     }
     while (this.rows.length > vm.seats.length) this.rows.pop()!.el.remove();
     const counts = new Map<PlayerColorId, number>();

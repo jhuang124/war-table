@@ -1,7 +1,12 @@
-// DOM overlay above the canvas: the army number on each token, the +N ghost while a placement is
-// staged, −N loss chips, traveler numbers, and territory names (hidden unless hovered, picked, or
-// the "Territory names" setting is on). Text is laid out at its real size (no CSS scale at rest), so
-// it stays crisp at DPR 1 and 2. All writes are batched once per frame, and only when they change.
+// DOM overlay above the canvas: the army count beside each figure in a brushed ensō ring (docs/INK.md
+// B §3), the +N staged beside it while a placement is staged, −N as a loss re-inks, the travellers'
+// counts, and territory names (hidden unless hovered, picked, or the "Territory names" setting is on).
+// Text is laid out at its real size (no CSS scale at rest), so it stays crisp at DPR 1 and 2. All writes
+// are batched once per frame, and only when they change.
+//
+// The rings are the shared seeded ensō (src/shared/enso.ts): a few brush variants per seat, each ring
+// turned its own way, so no two read the same (wabi-sabi); the numbers are plain, crisp Cormorant
+// Garamond 600 with lining, tabular figures, ivory on the owner's deep ink.
 import * as THREE from 'three';
 import type { TerritoryId } from '../engine/types';
 import { TERRITORY_IDS, TERRITORIES } from '../engine/mapData';
@@ -12,38 +17,69 @@ import type { TokenSystem } from './tokens';
 import { Animator, ease } from './anim';
 import { hexToRgb } from './util';
 import { PLAYER_COLORS } from '../shared/palette';
+import { ensoPath } from '../shared/enso';
 
+const SERIF = "'Cormorant Garamond Variable','Cormorant Garamond',Georgia,serif";
 const CSS = `
 .rb-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;user-select:none;-webkit-user-select:none;contain:strict;--ui:1;--lab:1}
-.rb-vignette{position:absolute;inset:0;background:radial-gradient(ellipse 82% 80% at 50% 47%,rgba(0,0,0,0) 72%,rgba(4,5,7,.34) 100%)}
-.rb-badge,.rb-trav{position:absolute;left:0;top:0;width:24px;height:24px;display:flex;align-items:center;justify-content:center;
-  box-sizing:border-box;color:#f3ead8;font:700 14px/1 'Inter Variable',Inter,system-ui,sans-serif;background:#2a2f36;border-radius:7px;
-  box-shadow:inset 0 0 0 1px rgba(243,234,216,.34),inset 0 1px 0 rgba(255,255,255,.16),0 1px 2px rgba(0,0,0,.55),0 2px 5px rgba(0,0,0,.28);
-  text-shadow:0 1px 1px rgba(0,0,0,.45);
-  font-variant-numeric:tabular-nums lining-nums;letter-spacing:-.02em;white-space:nowrap;
-  will-change:transform;transform-origin:50% 50%;visibility:hidden;transition:opacity 180ms ease-out}
-.rb-badge .n,.rb-trav .n{display:block;padding-top:.06em}
+.rb-badge,.rb-trav{position:absolute;left:0;top:0;width:28px;height:28px;display:flex;align-items:center;justify-content:center;
+  box-sizing:border-box;color:#f2ede2;font:600 19px/1 ${SERIF};font-variant-numeric:lining-nums tabular-nums;font-feature-settings:'lnum' 1,'tnum' 1;
+  letter-spacing:0;white-space:nowrap;will-change:transform;visibility:hidden;transition:opacity 180ms ease-out}
+.rb-ring{position:absolute;inset:0;background-size:100% 100%;background-repeat:no-repeat}
+.rb-badge .n,.rb-trav .n{position:relative;display:block;transform:translateY(-.05em)}
 .rb-badge.dim{opacity:.8}
 .rb-badge.ghosted{z-index:2}
-.rb-ghost{position:absolute;left:calc(100% + 3px);top:50%;transform:translateY(-50%);height:calc(17px * var(--ui));padding:0 calc(5px * var(--ui));
-  border-radius:calc(9px * var(--ui));background:#f3ead8;color:#12151a;font:700 calc(12px * var(--ui))/calc(17px * var(--ui)) 'Inter Variable',Inter,system-ui,sans-serif;
-  font-variant-numeric:tabular-nums lining-nums;letter-spacing:0;box-shadow:0 0 0 1px rgba(12,14,18,.8),0 2px 6px rgba(0,0,0,.45);display:none}
-.rb-loss{position:absolute;left:0;top:0;height:calc(19px * var(--ui));padding:0 calc(6px * var(--ui));border-radius:calc(10px * var(--ui));background:rgba(18,21,26,.94);
-  color:#f3ead8;font:700 calc(13px * var(--ui))/calc(19px * var(--ui)) 'Inter Variable',Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums lining-nums;
-  box-shadow:0 0 0 1px rgba(243,234,216,.35),0 2px 6px rgba(0,0,0,.5);will-change:transform,opacity;white-space:nowrap}
-.rb-label{position:absolute;left:0;top:0;color:rgba(243,234,216,.92);font:650 calc(9.5px * var(--lab))/1.05 'Inter Variable',Inter,system-ui,sans-serif;
-  letter-spacing:.07em;text-transform:uppercase;text-align:center;white-space:pre;will-change:transform;
-  text-shadow:0 1px 2px rgba(0,0,0,.95),0 0 3px rgba(0,0,0,.9),0 0 6px rgba(0,0,0,.6);visibility:hidden;opacity:0;transition:opacity 120ms ease-out}
-.rb-label.focus{font-size:calc(11.5px * var(--lab));letter-spacing:.08em;color:#f7f0e0;z-index:3;
-  text-shadow:0 1px 2px rgba(0,0,0,1),0 0 4px rgba(0,0,0,.95),0 0 9px rgba(0,0,0,.7)}
+.rb-ghost{position:absolute;left:calc(100% + 2px);top:50%;transform:translateY(-54%);color:#f2ede2;
+  font:600 calc(18px * var(--ui))/1 ${SERIF};font-variant-numeric:lining-nums tabular-nums;letter-spacing:0;display:none}
+.rb-loss{position:absolute;left:0;top:0;color:#f2ede2;font:600 calc(18px * var(--ui))/1 ${SERIF};font-variant-numeric:lining-nums tabular-nums;
+  will-change:transform,opacity;white-space:nowrap}
+.rb-label{position:absolute;left:0;top:0;color:rgba(242,237,226,.94);font:600 calc(13.5px * var(--lab))/1.02 ${SERIF};
+  letter-spacing:.09em;font-variant-caps:all-small-caps;text-align:center;white-space:pre;will-change:transform;
+  visibility:hidden;opacity:0;transition:opacity 120ms ease-out}
+.rb-label.focus{font-size:calc(15px * var(--lab));color:#f7f2e8;z-index:3}
 .rb-label.on{opacity:1}
-.rb-cut{position:absolute;inset:0;background:#0c0f13;opacity:0}
+.rb-cut{position:absolute;inset:0;background:#0b1224;opacity:0}
 `;
+
+/** Ring variants per seat (each ring also turns its own way). */
+const RING_VARIANTS = 6;
+const ringCache = new Map<string, string>();
+/** The ring for a seat: a brushed ensō in a pale seat-tinted ivory round a disc of the seat's deep ink. */
+function ringImage(pal: PlayerPalette, variant: number): string {
+  const key = `${pal.id}:${variant}`;
+  let url = ringCache.get(key);
+  if (!url) {
+    const e = ensoPath(9173 + variant * 131 + pal.id.length * 17, { bristles: 4, samples: 60, weight: 1.05 });
+    const [lr, lg, lb] = hexToRgb(pal.light);
+    const ivory = [0.95, 0.93, 0.886];
+    const mix = (a: number, b: number) => Math.round((a * 0.62 + b * 0.38) * 255);
+    const stroke = `rgb(${mix(ivory[0], lr)},${mix(ivory[1], lg)},${mix(ivory[2], lb)})`;
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="7 7 86 86">` +
+      `<circle cx="50" cy="50" r="37" fill="${pal.deep}" fill-opacity=".9"/>` +
+      `<path d="${e.d}" fill="${stroke}"/></svg>`;
+    url = `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}")`;
+    ringCache.set(key, url);
+  }
+  return url;
+}
+const hash01 = (s: string) => {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return (h >>> 0) / 4294967296;
+};
 
 interface Badge {
   id: TerritoryId;
   el: HTMLDivElement;
+  ring: HTMLElement;
   num: HTMLSpanElement;
+  /** The ring's variant and turn (stable per territory). */
+  variant: number;
+  turn: number;
+  lastOp: number;
+  /** A hidden badge dries out (opacity) before it leaves the layout. */
+  hideAt: number;
   ghost: HTMLSpanElement;
   shown: number; // displayed number
   visible: boolean;
@@ -57,14 +93,14 @@ interface Badge {
   /** Container px. */
   cx: number;
   cy: number;
-  /** Projected base diameter, px. */
+  /** Ring diameter, px. */
   diam: number;
   /** Plaque centre / size (container px). */
   px: number;
   py: number;
   ph: number;
   pw: number;
-  /** The whole piece's screen box (figure top → plaque bottom), container px. */
+  /** The whole piece's screen box (figure and ring), container px. */
   box: [number, number, number, number];
   lastW: number;
   lastDigits: number;
@@ -93,6 +129,7 @@ interface Chip {
 
 interface TravEl {
   el: HTMLDivElement;
+  ring: HTMLElement;
   num: HTMLSpanElement;
   used: boolean;
   lastT: string;
@@ -103,12 +140,6 @@ interface TravEl {
 
 const dpr = () => Math.min(2, window.devicePixelRatio || 1);
 const snap = (v: number, r: number) => Math.round(v * r) / r;
-
-function shadowFor(ink: string): string {
-  const [r, g, b] = hexToRgb(ink);
-  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  return lum > 0.5 ? '0 1px 1px rgba(0,0,0,.42)' : '0 1px 0 rgba(255,255,255,.3)';
-}
 
 export class Overlay {
   root: HTMLDivElement;
@@ -133,6 +164,7 @@ export class Overlay {
   relax = false;
   private pos = new Float64Array(TERRITORY_IDS.length * 6);
   private off = new Float64Array(TERRITORY_IDS.length * 2);
+  private hw = new Float64Array(TERRITORY_IDS.length);
   private labelsDirty = true;
   /** Names need a re-layout (the board's render-on-demand loop asks). */
   get dirty(): boolean {
@@ -177,16 +209,26 @@ export class Overlay {
       const el = document.createElement('div');
       el.className = 'rb-badge';
       el.dataset.t = id;
+      const ring = document.createElement('i');
+      ring.className = 'rb-ring';
+      const h = hash01(id);
+      const turn = Math.round(h * 360);
+      ring.style.transform = `rotate(${turn}deg)`;
       const num = document.createElement('span');
       num.className = 'n';
       const ghost = document.createElement('span');
       ghost.className = 'rb-ghost';
-      el.append(num, ghost);
+      el.append(ring, num, ghost);
       badgeLayer.appendChild(el);
       const b: Badge = {
         id,
         el,
+        ring,
         num,
+        variant: Math.floor(hash01(id + '~') * RING_VARIANTS),
+        turn,
+        lastOp: 1,
+        hideAt: 0,
         ghost,
         shown: -1,
         visible: false,
@@ -213,7 +255,7 @@ export class Overlay {
 
       const lab = document.createElement('div');
       lab.className = 'rb-label';
-      lab.textContent = splitName(TERRITORIES[id].name.toUpperCase());
+      lab.textContent = splitName(TERRITORIES[id].name);
       labelLayer.appendChild(lab);
       this.labels.push({ id, el: lab, lastT: '', w: 0, h: 0, on: false, focus: false });
     }
@@ -235,6 +277,8 @@ export class Overlay {
       b.visible = vis;
       if (!vis) b.el.style.visibility = 'hidden';
       b.lastT = '';
+      b.hideAt = 0;
+      b.lastOp = -1;
       this.labelsDirty = true;
     }
     if (!pal) return;
@@ -244,9 +288,8 @@ export class Overlay {
       b.shown = n;
     }
     if (b.lastInk !== pal.id) {
-      // The plaque is enamelled in the owner's deep colour with an ivory numeral (readable on any tile).
-      b.el.style.background = pal.deep;
-      b.el.style.color = '#f6efe0';
+      // The ring: the seat's deep ink inside a brushed ensō, the numeral ivory (readable on any wash).
+      b.ring.style.backgroundImage = ringImage(pal, b.variant);
       b.lastInk = pal.id;
     }
     if (pop) this.pop(id);
@@ -258,10 +301,19 @@ export class Overlay {
     if (b.el.classList.contains('dim') !== on) b.el.classList.toggle('dim', on);
   }
 
+  /** The ring dries out (180 ms) and leaves; at instant speed it goes at once. */
   hideBadge(id: TerritoryId): void {
     const b = this.badges.get(id)!;
+    if (!b.visible) return;
     b.visible = false;
-    b.el.style.visibility = 'hidden';
+    if (this.anim.instant || b.lastT === '' || b.lastT === 'off') {
+      b.el.style.visibility = 'hidden';
+      b.hideAt = 0;
+    } else {
+      b.el.style.opacity = '0';
+      b.lastOp = 0;
+      b.hideAt = performance.now() + 190;
+    }
     this.labelsDirty = true;
   }
 
@@ -282,7 +334,7 @@ export class Overlay {
     } else b.ghost.style.display = 'none';
   }
 
-  /** A rising "−N" chip beside a territory's token (700 ms). */
+  /** "−N" beside a territory's ring: it rises a little and dries out (700 ms). */
   lossChip(id: TerritoryId, n: number, side: -1 | 1 = 1): void {
     if (n <= 0) return;
     const el = document.createElement('div');
@@ -406,16 +458,17 @@ export class Overlay {
     return o.on && x > o.x0 && x < o.x1 && y > o.y0 && y < o.y1;
   }
 
-  /** Projected centre (container px) and diameter of a disc of radius R at a world point. */
-  private disc(p: THREE.Vector3, R: number, camera: THREE.Camera): [number, number, number, number] {
+  /** Projected feet (container px, depth) and the figure's screen height, px. */
+  private figure(feet: THREE.Vector3, top: THREE.Vector3, camera: THREE.Camera): [number, number, number, number] {
     const W = this.width;
     const H = this.height;
-    this.v.copy(p).project(camera);
+    this.v.copy(feet).project(camera);
     const x = (this.v.x * 0.5 + 0.5) * W;
     const y = (-this.v.y * 0.5 + 0.5) * H;
-    this.v2.set(p.x + R, p.y, p.z).project(camera);
-    const d = 2 * Math.hypot((this.v2.x - this.v.x) * 0.5 * W, (this.v2.y - this.v.y) * 0.5 * H);
-    return [x, y, d, this.v.z];
+    const z = this.v.z;
+    this.v2.copy(top).project(camera);
+    const h = Math.hypot((this.v2.x - this.v.x) * 0.5 * W, (this.v2.y - this.v.y) * 0.5 * H);
+    return [x, y, h, z];
   }
 
   private proj(p: THREE.Vector3, camera: THREE.Camera): [number, number] {
@@ -423,13 +476,21 @@ export class Overlay {
     return [(this.v.x * 0.5 + 0.5) * this.width, (-this.v.y * 0.5 + 0.5) * this.height];
   }
 
-  /** Plaque height for a projected base diameter: ~0.74 of the base, never under 22 px (× text size). */
-  plaqueH(diam: number): number {
+  /**
+   * Ring diameter for a figure `figH` px tall: ~0.74 of the soldier's height (≈ 30 px at the 1440 home),
+   * never under 22 px (20 on phones) × the text size, and never over 38.
+   */
+  plaqueH(figH: number): number {
     const soft = 1 + (this._ui - 1) * 0.8;
-    return Math.max(this.minPlaque * soft, Math.min(40 * soft, diam * 0.74));
+    return Math.max(this.minPlaque * soft, Math.min(38 * soft, figH * 0.74));
   }
+  /** Rings are round; a 3-digit count gets a slightly wider ring. */
   private plaqueW(h: number, digits: number): number {
-    return digits >= 3 ? h * 1.62 : digits === 2 ? h * 1.28 : h;
+    return digits >= 3 ? h * 1.18 : h;
+  }
+  /** Where the ring sits for a figure (container px): beside it, to its right, its foot at the figure's. */
+  private ringAt(fx: number, fy: number, hwPx: number, figH: number, d: number): [number, number] {
+    return [fx + hwPx + d * 0.36, fy - Math.max(d * 0.5, figH * 0.3) + d * 0.08];
   }
 
   /**
@@ -463,22 +524,24 @@ export class Overlay {
     const W = this.width;
     const H = this.height;
     const r = dpr();
-    const R = this.tokens.radius;
+    const now = performance.now();
     let moved = false;
     const list = this.badgeList;
     const n = list.length;
     const P = this.pos;
     for (let i = 0; i < n; i++) {
       const b = list[i];
-      const [x, y, d, z] = this.disc(this.tokens.top(b.id), R, camera);
-      const [px, py0] = this.proj(this.tokens.plaquePoint(b.id), camera);
-      const [, fy] = this.proj(this.tokens.figTop(b.id), camera);
-      // the plaque hangs from the base's front rim, its top just over the rim
-      const ph = this.plaqueH(d);
-      const py = py0 + ph * 0.18;
+      const feet = this.tokens.top(b.id);
+      const top = this.tokens.figTop(b.id);
+      const [x, y, fh, z] = this.figure(feet, top, camera);
+      // the soldier's height sets the ring size for every figure (a cannon is squat, its count isn't)
+      const ph = this.plaqueH(fh * (this.tokens.figH[0] / Math.max(0.01, this.tokens.figH[this.tokens.denom(b.id)])));
+      const upx = fh / Math.max(0.01, feet.distanceTo(top));
+      const hw = this.tokens.halfWidth(b.id) * upx;
+      const [px, py] = this.ringAt(x, y, hw, fh, ph);
       b.cx = x;
       b.cy = y;
-      b.diam = d;
+      b.diam = ph;
       b.x = x + rect.left;
       b.y = y + rect.top;
       b.onScreen = z < 1 && x > -20 && x < W + 20 && y > -20 && y < H + 20;
@@ -488,8 +551,10 @@ export class Overlay {
       P[o + 1] = py;
       P[o + 2] = this.plaqueW(ph, digits);
       P[o + 3] = ph;
-      P[o + 4] = fy;
+      P[o + 4] = y - fh;
       P[o + 5] = b.visible && b.onScreen && this.tokens.visual(b.id) >= 0.05 ? 1 : 0;
+      // (the figure's own half-width, for the box below)
+      this.hw[i] = hw;
     }
     if (this.relax) this.relaxPlaques(n);
     for (let i = 0; i < n; i++) {
@@ -501,21 +566,25 @@ export class Overlay {
       const ph = P[o + 3];
       const fy = P[o + 4];
       const x = b.cx;
-      const d = b.diam;
       const digits = String(Math.max(0, b.shown)).length;
       if (Math.abs(px - b.px) > 0.25 || Math.abs(py - b.py) > 0.25 || Math.abs(fy - b.box[1]) > 0.25) moved = true;
       b.px = px;
       b.py = py;
       b.ph = ph;
       b.pw = pw;
-      const hw = Math.max((this.tokens.halfWidth(b.id) / R) * (d / 2), pw / 2);
-      // (A nudged plaque widens its piece's box, so a tap on the number still picks its own territory.)
-      b.box = this.relax
-        ? [Math.min(x - hw, px - pw / 2), Math.min(fy, py - ph / 2), Math.max(x + hw, px + pw / 2), py + ph / 2]
-        : [x - hw, Math.min(fy, py - ph / 2), x + hw, py + ph / 2];
-      if (!b.visible) continue;
+      const hw = this.hw[i];
+      // The piece: the figure (feet to head, its width) and its ring.
+      b.box = [Math.min(x - hw, px - pw / 2), Math.min(fy, py - ph / 2), Math.max(x + hw, px + pw / 2), Math.max(b.cy + 3, py + ph / 2)];
+      if (!b.visible) {
+        if (b.hideAt && now >= b.hideAt) {
+          b.hideAt = 0;
+          b.el.style.visibility = 'hidden';
+          b.lastT = 'off';
+        }
+        continue;
+      }
       const vis = this.tokens.visual(b.id);
-      // Any part of the plaque over the dice tray, or behind the HUD's fight header just above it, hides it
+      // Any part of the ring over the dice tray, or behind the HUD's fight header just above it, hides it
       // (a number straddling the tray's rim or cut by the header strip reads as broken).
       const tray = this.overTray(px - pw / 2, py - ph / 2, px + pw / 2, py + ph / 2, this.headerBand);
       if (!b.onScreen || vis < 0.05 || tray) {
@@ -531,23 +600,24 @@ export class Overlay {
         b.lastD = hq;
         b.lastW = wq;
         b.lastDigits = digits;
-        const fs = hq * (digits >= 3 ? 0.56 : 0.64);
+        const fs = hq * (digits >= 3 ? 0.56 : digits === 2 ? 0.66 : 0.72);
         b.el.style.width = `${wq}px`;
         b.el.style.height = `${hq}px`;
-        b.el.style.borderRadius = `${Math.round(hq * 0.3)}px`;
         b.el.style.fontSize = `${Math.round(fs * 2) / 2}px`;
       }
-      const flip = this.tiles.get(b.id).pivot.scale.x;
-      const sx = vis * flip;
-      const sc = Math.abs(sx - 1) > 0.004 || Math.abs(vis - 1) > 0.004 ? ` scale(${sx.toFixed(3)},${vis.toFixed(3)})` : '';
-      const tr = `translate3d(${snap(px - wq / 2, r)}px,${snap(py - hq / 2, r)}px,0)${sc}`;
+      const op = Math.round(Math.min(1, vis) * 20) / 20;
+      if (op !== b.lastOp) {
+        b.lastOp = op;
+        b.el.style.opacity = op >= 1 ? '' : String(op);
+      }
+      const tr = `translate3d(${snap(px - wq / 2, r)}px,${snap(py - hq / 2, r)}px,0)`;
       if (tr !== b.lastT) {
         if (b.lastT === '' || b.lastT === 'off') b.el.style.visibility = 'visible';
         b.el.style.transform = tr;
         b.lastT = tr;
       }
     }
-    this.updateTravelers(camera, R, r);
+    this.updateTravelers(camera, r);
     if (this.occluder.on !== this.trayWasOn) {
       this.trayWasOn = this.occluder.on;
       this.labelsDirty = true;
@@ -556,11 +626,11 @@ export class Overlay {
     for (const c of this.chips) {
       const b = this.badges.get(c.id)!;
       const e = ease.outCubic(Math.min(1, c.t));
-      const op = c.t < 0.6 ? 1 : 1 - (c.t - 0.6) / 0.4;
-      const hw = (b.box[2] - b.box[0]) / 2;
-      const x = b.cx + c.side * (Math.min(hw, b.diam * 0.7) + 14 * this._ui);
-      const y = b.box[1] + 10 * this._ui - 18 * e * this._ui;
-      const tr = `translate3d(${snap(x, r)}px,${snap(y, r)}px,0) translate(-50%,-50%)`;
+      const op = c.t < 0.55 ? 1 : 1 - (c.t - 0.55) / 0.45;
+      // −N beside the ring (the right of the piece), rising a little as it dries
+      const x = b.px + b.pw / 2 + 4 * this._ui;
+      const y = b.py - 2 * this._ui - 14 * e * this._ui;
+      const tr = `translate3d(${snap(x, r)}px,${snap(y, r)}px,0) translate(0,-50%)`;
       if (tr !== c.lastT) {
         if (!c.lastT) c.el.style.visibility = 'visible';
         c.el.style.transform = tr;
@@ -570,7 +640,7 @@ export class Overlay {
     }
   }
 
-  private updateTravelers(camera: THREE.Camera, R: number, r: number): void {
+  private updateTravelers(camera: THREE.Camera, r: number): void {
     const list = this.tokens.travelers;
     for (const t of this.travs) t.used = false;
     for (let i = 0; i < list.length; i++) {
@@ -579,11 +649,14 @@ export class Overlay {
       if (!e) {
         const el = document.createElement('div');
         el.className = 'rb-trav';
+        const ring = document.createElement('i');
+        ring.className = 'rb-ring';
+        ring.style.transform = `rotate(${Math.round(i * 97) % 360}deg)`;
         const num = document.createElement('span');
         num.className = 'n';
-        el.appendChild(num);
+        el.append(ring, num);
         this.travLayer.appendChild(el);
-        e = { el, num, used: false, lastT: '', lastD: 0, n: -1, owner: '' };
+        e = { el, ring, num, used: false, lastT: '', lastD: 0, n: -1, owner: '' };
         this.travs.push(e);
       }
       e.used = true;
@@ -595,21 +668,19 @@ export class Overlay {
       if (e.owner !== tr.owner) {
         e.owner = tr.owner;
         const pal = PLAYER_COLORS[tr.owner as keyof typeof PLAYER_COLORS];
-        e.el.style.background = pal ? pal.deep : '#2a2f36';
-        e.el.style.color = '#f6efe0';
+        e.ring.style.backgroundImage = pal ? ringImage(pal, i % RING_VARIANTS) : 'none';
       }
-      const [, , d] = this.disc(tr.top, R, camera);
-      const [x, y0] = this.proj(tr.plaque, camera);
-      const h = Math.round(this.plaqueH(d) * 2) / 2;
-      const y = y0 + h * 0.18;
+      const [fx, fy, fh] = this.figure(tr.top, tr.figTop, camera);
+      const h = Math.round(this.plaqueH(fh * (this.tokens.figH[0] / this.tokens.figH[tr.denom])) * 2) / 2;
+      const upx = fh / Math.max(0.01, tr.top.distanceTo(tr.figTop));
+      const [x, y] = this.ringAt(fx, fy, tr.halfW * upx, fh, h);
       const digits = String(tr.n).length;
       const w = Math.round(this.plaqueW(h, digits) * 2) / 2;
       if (h !== e.lastD) {
         e.lastD = h;
         e.el.style.width = `${w}px`;
         e.el.style.height = `${h}px`;
-        e.el.style.borderRadius = `${Math.round(h * 0.3)}px`;
-        e.el.style.fontSize = `${Math.round(h * (digits >= 3 ? 0.56 : 0.64) * 2) / 2}px`;
+        e.el.style.fontSize = `${Math.round(h * (digits >= 3 ? 0.56 : digits === 2 ? 0.66 : 0.72) * 2) / 2}px`;
       }
       const t = `translate3d(${snap(x - w / 2, r)}px,${snap(y - h / 2, r)}px,0)`;
       if (t !== e.lastT || e.el.style.visibility !== 'visible') {
