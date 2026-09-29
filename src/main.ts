@@ -48,9 +48,15 @@ function installShell(): void {
   });
 }
 
-/** Offline play after the first visit (production only; the dev server and e2e never register it). */
+/**
+ * The e2e build (`npm run test:e2e` builds with VITE_E2E=1): a production bundle that keeps the dev-only
+ * test hooks (window.__board, window.__audio) and never registers the service worker. Never shipped.
+ */
+const E2E_BUILD = !!import.meta.env.VITE_E2E;
+
+/** Offline play after the first visit (production only; the dev server and the e2e build never register it). */
 function registerServiceWorker(): void {
-  if (!import.meta.env.PROD || !('serviceWorker' in navigator) || location.protocol === 'file:') return;
+  if (!import.meta.env.PROD || E2E_BUILD || !('serviceWorker' in navigator) || location.protocol === 'file:') return;
   if (new URLSearchParams(location.search).has('nosw')) return;
   window.addEventListener('load', () => {
     // Relative to the page, so it works at / and under the Pages subpath (/war-table/).
@@ -61,9 +67,9 @@ function registerServiceWorker(): void {
 declare global {
   interface Window {
     __risk: RiskHooks;
-    /** Dev builds only: the BoardView itself (e2e layout checks read its `__debug`). */
+    /** Dev and e2e builds only: the BoardView itself (e2e layout checks read its `__debug`). */
     __board?: BoardView;
-    /** Dev builds only: the audio engine (e2e reads stats().played). */
+    /** Dev and e2e builds only: the audio engine (e2e reads stats().played). */
     __audio?: AudioEngine;
   }
 }
@@ -113,7 +119,7 @@ async function boot(): Promise<void> {
   onLayout((l) => (board as BoardView & TouchModeBoard).setTouchMode?.(l.touch));
   const controller = createController({ board, audio, menuKeys: mountUi === mountDebugHud, touch: layout.touch });
   window.__risk = controller.hooks;
-  if (import.meta.env.DEV) {
+  if (import.meta.env.DEV || E2E_BUILD) {
     window.__board = board;
     window.__audio = audio;
   }

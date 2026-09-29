@@ -9,13 +9,27 @@ Read SOUL.md first, and run its "Before you plan" checklist before you plan, del
 ## Commands
 - `npm run dev` — dev server at http://127.0.0.1:5273
 - `npm test` — vitest (engine, controller, pure helpers)
-- `npm run test:e2e [flow ...]` — every Playwright flow in `tests/e2e/` on the real board + HUD (own
-  server on :5290, no HMR; logs in `artifacts/e2e/`). Tools, not in the suite: `tests/e2e/screens.ts`
-  (screenshot sweep), `tests/e2e/perf.ts` (frame times); both need a server on `RISK_URL`.
+- `npm run test:e2e:quick` — the quick tier (smoke, a full human turn, setup, resume; about a minute).
+- `npm run test:e2e [flow ...]` — every Playwright flow in `tests/e2e/` (or just the named ones) on the
+  real board + HUD: builds the game with its test hooks (`VITE_E2E=1`), serves it on a free port, runs
+  the logic lane in parallel at instant speed, then the timing lane one flow at a time at real speed
+  (lanes in `tests/e2e/lanes.ts`; logs and `summary.txt` in `artifacts/e2e/`). `--serial` runs one flow
+  at a time, `--dev` uses the Vite dev server instead of the build; `E2E_CONCURRENCY` / `E2E_PORT`
+  override. Tools, not in the suite: `tests/e2e/screens.ts` (screenshot sweep), `tests/e2e/perf.ts`
+  (frame times); both need a server on `RISK_URL`.
 - `npm run typecheck` — tsc
 - `npm run build:map` / `npm run verify:map` — regenerate / check `src/map/board.json`
 - `npm run sim [games]` — AI-vs-AI soak + rounds-to-threshold table (paste into `src/game/presets.ts`)
 - `npm run build` — production build to `dist/`
+
+## Test tiers
+- Iterate with `npm run test:e2e:quick`; run the full `npm run test:e2e` at integration and when you
+  verify a build. Both leave the machine quiet for the timing lane, so don't run two suites at once.
+- A new flow goes in `tests/e2e/lanes.ts`. `logic` (parallel, instant speed) is for anything that doesn't
+  assert on wall-clock time; `timing` (serial, real speed) is for ms / fps / tempo budgets. A logic flow
+  that needs one real animation calls `realtime(page)` from `tests/e2e/lib.ts`. Unlisted flows run as timing.
+- A flow run by hand (`npx tsx tests/e2e/<flow>.e2e.ts`, server on `RISK_URL`) runs at its lane's speed;
+  `E2E_SPEED=real` watches a logic flow at 1×.
 
 ## Rules for agents working here
 - Stay inside the files your brief says you own. Need a change elsewhere? Put it under
