@@ -106,7 +106,8 @@ async function run(dev: DeviceName): Promise<void> {
   const portrait = page.viewportSize()!.height > page.viewportSize()!.width;
   if (portrait) {
     check(await visible(ctx, 'rotate-pill'), `${tag} portrait: "Rotate for the full map" shows`, results);
-    await tapId(page, 'rotate-pill-close');
+    // No ×: the line dries at the first touch (INK F3), so touch the line itself.
+    await tapId(page, 'rotate-pill');
     check(await gone(ctx, 'rotate-pill'), `${tag} … and dismisses`, results);
   }
   await tapId(page, 'menu');

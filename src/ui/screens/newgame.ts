@@ -127,7 +127,7 @@ class SeatRow {
 
   onOpen: ((row: SeatRow) => void) | null = null;
 
-  /** Focus the name with its text selected, so typing replaces the default (UX: people skip it otherwise). */
+  /** Focus the name so typing edits it (UX: people skip naming otherwise); caret at the end, nothing selected (INK F8). */
   focusName(): void {
     // The caret waits at the end of the name: no selection block on open (typing edits it).
     this.name.focus({ preventScroll: true });
@@ -302,7 +302,7 @@ export class NewGameScreen {
     if (on) animateIn(this.house);
   }
 
-  /** On entering the screen: the first human seat's name, selected. */
+  /** On entering the screen: the first human seat's name, focused. */
   focusFirstName(): void {
     // Touch: focusing a field raises the on-screen keyboard over the screen; the player taps a name to edit.
     if (layout.touch || isPhone()) return;

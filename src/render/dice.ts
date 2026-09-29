@@ -1,19 +1,27 @@
-// The battle tray (docs/INK.md B §4 "Attack 2 · dice land"): a black lacquer tray that rises out of the
-// southern ocean just above the bottom strip, drawn in its own pass (depth cleared, after the board) with a
-// pixel-mapped camera, so it sits at a fixed CSS-px spot in the battle band. Dice in the seats' wash
-// colours with ivory pips, keyframed (no physics) onto the engine's faces:
+// The battle tray (docs/INK.md B §4 "Attack 2 · dice land"): a slim, translucent indigo lacquer tray that
+// rises out of the southern ocean just above the bottom strip, drawn in its own pass (depth cleared, after
+// the board) with a pixel-mapped camera, so it sits at a fixed CSS-px spot in the battle band. The paper shows
+// through its floor; its rim is a thin matte lacquer edge with one ivory hairline. Matte dice in the seats'
+// wash colours with ivory pips, keyframed (no physics) onto the engine's faces:
 //   shake → tumble → settle → 250 ms of stillness → the verdict: each compared pair is joined by an
 //   ivory hairline, drawn from the winner; the loser dims to half under a splash of ink.
 // (The hairline is ivory, not gold: while a fight is on, the gold stroke on the board is the one gold.)
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { Animator, ease, type Run } from './anim';
-import { inkDiceFaceTexture, inkSplashTexture, lacquerTexture } from './textures';
+import { inkDiceFaceTexture, inkSplashTexture } from './textures';
 import { IVORY } from './util';
 import type { PlayerPalette } from '../shared/palette';
-import { boardTrayGeometry } from '../shared/tray';
-// The tray the board draws (full width on narrow screens) lives in src/shared/tray.ts; re-exported here.
-export { boardTrayGeometry };
+import { boardTrayGeometry, inkTrayGeometry, inkTrayTop, INK_TRAY_MID_GAP, INK_TRAY_PAD, INK_TRAY_STEP } from '../shared/tray';
+// The HUD's tray band (src/shared/tray.ts) is re-exported here; the tray actually drawn is the slimmer
+// `inkTrayGeometry`, placed by `inkTrayTop` (shared with the HUD, so the fight header sits on its rim).
+export { boardTrayGeometry, inkTrayGeometry };
+
+/** Die spacing (in die edges): the gap between the two sides' inner dice, and die to die within a side. */
+const MID_GAP = INK_TRAY_MID_GAP;
+const STEP = INK_TRAY_STEP;
+/** Padding from the outermost die to the tray's inner rim, in die edges. */
+const PAD = INK_TRAY_PAD;
 
 // BoxGeometry material groups: +x, −x, +y, −y, +z, −z. +z faces the viewer (felt normal).
 const FACE_VALUES = [3, 4, 2, 5, 1, 6];
@@ -120,8 +128,8 @@ export class DiceTray {
   private faceCache = new Map<string, THREE.Texture[]>();
   private floor: THREE.Mesh | null = null;
   private rimMesh: THREE.Mesh | null = null;
-  private trayMats: THREE.MeshStandardMaterial[] = [];
-  private lacquer = lacquerTexture();
+  private hairMesh: THREE.Mesh | null = null;
+  private trayMats: THREE.Material[] = [];
   private splashTex = inkSplashTexture();
   private hairs: { mesh: THREE.Mesh; mat: THREE.ShaderMaterial }[] = [];
   private opacity = 0;
@@ -147,9 +155,10 @@ export class DiceTray {
   ) {
     void walnut;
     this.scene.environment = env;
-    this.scene.environmentIntensity = 0.3;
-    // a cool, soft key from the top left: the lacquer takes one long highlight, the dice a gentle shade
-    const key = new THREE.DirectionalLight('#e8e4dc', 1.35);
+    this.scene.environmentIntensity = 0.12;
+    // A soft, low key from the top left: the dice are lit about as the washes are (matte bone and pigment,
+    // not bright plastic), the rim takes one soft highlight.
+    const key = new THREE.DirectionalLight('#e8e4dc', 0.95);
     key.position.set(-300, 480, 900);
     key.castShadow = true;
     key.shadow.mapSize.set(1024, 1024);
@@ -163,18 +172,18 @@ export class DiceTray {
     key.shadow.bias = -0.0005;
     key.shadow.radius = 5;
     this.light = key;
-    const fill = new THREE.DirectionalLight('#9fb2d6', 0.3);
+    const fill = new THREE.DirectionalLight('#9fb2d6', 0.2);
     fill.position.set(400, -100, 600);
-    const hemi = new THREE.HemisphereLight('#c9d0de', '#0b1224', 0.4);
+    const hemi = new THREE.HemisphereLight('#c9d0de', '#0b1224', 0.34);
     this.root.add(key, key.target, fill, hemi);
     this.scene.add(this.root);
     this.root.add(this.tray);
     this.tray.rotation.x = TILT;
 
-    const geo = new RoundedBoxGeometry(1, 1, 1, 4, 0.16);
+    const geo = new RoundedBoxGeometry(1, 1, 1, 4, 0.12);
     const splashGeo = new THREE.PlaneGeometry(0.9, 0.9);
     for (let i = 0; i < 5; i++) {
-      const mats = FACE_VALUES.map(() => new THREE.MeshStandardMaterial({ roughness: 0.74, metalness: 0.0, transparent: true, envMapIntensity: 0.18 }));
+      const mats = FACE_VALUES.map(() => new THREE.MeshStandardMaterial({ roughness: 0.93, metalness: 0.0, transparent: true, envMapIntensity: 0.04 }));
       const mesh = new THREE.Mesh(geo, mats);
       mesh.castShadow = true;
       const rimMat = new THREE.MeshBasicMaterial({ color: IVORY, transparent: true, opacity: 0, depthWrite: false, toneMapped: false });
@@ -247,13 +256,14 @@ export class DiceTray {
     this.W = W;
     this.H = H;
     // Shared with the HUD's battle band (src/shared/tray.ts), so the text strips always clear the tray.
-    const { trayW, die: s, trayH } = boardTrayGeometry(W, H, bandH, uiScale);
+    const { trayW, die: s, trayH } = inkTrayGeometry(W, H, bandH, uiScale);
     const changed = Math.abs(trayW - this.trayW) > 0.5 || Math.abs(trayH - this.trayH) > 0.5 || Math.abs(s - this.size) > 0.5;
     this.size = s;
     this.trayW = trayW;
     this.trayH = trayH;
     this.cx = W / 2;
-    this.cy = bandTop + bandH / 2;
+    // Placed by the shared rule (the HUD's header sits just above this top), so the header rests on the rim.
+    this.cy = bandTop + bandH - inkTrayTop(W, H, bandH, uiScale) + trayH / 2;
     const fov = 20;
     this.camera.fov = fov;
     this.camera.aspect = W / H;
@@ -276,15 +286,16 @@ export class DiceTray {
 
   private buildTray(): void {
     if (this.floor) {
-      this.tray.remove(this.floor, this.rimMesh!);
+      this.tray.remove(this.floor, this.rimMesh!, this.hairMesh!);
       this.floor.geometry.dispose();
       this.rimMesh!.geometry.dispose();
+      this.hairMesh!.geometry.dispose();
     }
     const w = this.trayW;
     const h = this.trayH / Math.cos(TILT);
-    const rim = Math.max(9, this.size * 0.2);
-    // a soft stadium: the ends round, like a lacquered dice tray
-    const r = Math.min(h * 0.46, 48);
+    // A thin lacquer tray, not a slab: a narrow, low rim and softly rounded corners.
+    const rim = Math.max(3, this.size * 0.085);
+    const r = Math.min(h * 0.28, 16);
     const rr = (W: number, H: number, R: number) => {
       const s = new THREE.Shape();
       s.moveTo(-W / 2 + R, -H / 2);
@@ -299,32 +310,44 @@ export class DiceTray {
       return s;
     };
     if (!this.trayMats.length) {
-      this.lacquer.repeat.set(1 / 240, 1 / 240);
-      // the floor is matte black (the room's environment would grey a standard material at this angle)
-      const floorMat = new THREE.MeshLambertMaterial({ color: '#08090c', transparent: true }) as unknown as THREE.MeshStandardMaterial;
-      const rimMat = new THREE.MeshStandardMaterial({ color: '#ffffff', map: this.lacquer, roughness: 0.24, metalness: 0, envMapIntensity: 0.32, transparent: true });
-      this.trayMats.push(floorMat, rimMat);
-      this.materials.push(floorMat, rimMat);
+      // Floor: a pale veil of the deep paper colour (Lambert, so the dice still cast soft shadows on it);
+      // the ocean's paper and fibres show through, so the tray reads as part of the painting.
+      // Its mean luminance sits within ~15 % of the open ocean's (a pale wash band, not a dark slab).
+      const floorMat = new THREE.MeshLambertMaterial({ color: '#223052', transparent: true, depthWrite: false });
+      floorMat.userData.base = 0.5;
+      // Rim: matte indigo lacquer (one soft highlight at most), and a single ivory hairline on its top.
+      const rimMat = new THREE.MeshStandardMaterial({ color: '#1c2745', roughness: 0.62, metalness: 0, envMapIntensity: 0.08, transparent: true });
+      rimMat.userData.base = 0.9;
+      const hairMat = new THREE.MeshBasicMaterial({ color: IVORY, transparent: true, depthWrite: false, toneMapped: false });
+      hairMat.userData.base = 0.4;
+      this.trayMats.push(floorMat, rimMat, hairMat);
+      this.materials.push(floorMat, rimMat, hairMat);
     }
-    const floorGeo = new THREE.ShapeGeometry(rr(w - rim * 1.2, h - rim * 1.2, r * 0.8), 8);
+    const floorGeo = new THREE.ShapeGeometry(rr(w - rim, h - rim, Math.max(2, r - rim * 0.5)), 8);
     this.floor = new THREE.Mesh(floorGeo, this.trayMats[0]);
     this.floor.receiveShadow = true;
     const outer = rr(w, h, r);
-    outer.holes.push(rr(w - rim * 2, h - rim * 2, Math.max(4, r - rim)) as unknown as THREE.Path);
+    outer.holes.push(rr(w - rim * 2, h - rim * 2, Math.max(2, r - rim)) as unknown as THREE.Path);
+    const depth = rim * 0.9;
     const rimGeo = new THREE.ExtrudeGeometry(outer, {
-      depth: rim * 0.85,
+      depth,
       bevelEnabled: true,
-      bevelThickness: rim * 0.32,
-      bevelSize: rim * 0.34,
-      bevelOffset: -rim * 0.34,
-      bevelSegments: 4,
+      bevelThickness: rim * 0.22,
+      bevelSize: rim * 0.22,
+      bevelOffset: -rim * 0.22,
+      bevelSegments: 2,
       curveSegments: 10,
     });
-    rimGeo.translate(0, 0, -rim * 0.3);
     this.rimMesh = new THREE.Mesh(rimGeo, this.trayMats[1]);
-    this.rimMesh.castShadow = true;
     this.rimMesh.receiveShadow = true;
-    this.tray.add(this.floor, this.rimMesh);
+    // the hairline: ~1.2 px of ivory along the middle of the rim's top
+    const hw = 0.6;
+    const ring = rr(w - rim + hw * 2, h - rim + hw * 2, Math.max(2, r - rim * 0.5 + hw));
+    ring.holes.push(rr(w - rim - hw * 2, h - rim - hw * 2, Math.max(2, r - rim * 0.5 - hw)) as unknown as THREE.Path);
+    this.hairMesh = new THREE.Mesh(new THREE.ShapeGeometry(ring, 10), this.trayMats[2]);
+    this.hairMesh.position.z = depth + rim * 0.22 + 0.2;
+    this.hairMesh.renderOrder = 2;
+    this.tray.add(this.floor, this.rimMesh, this.hairMesh);
   }
 
   private faces(p: PlayerPalette): THREE.Texture[] {
@@ -338,7 +361,7 @@ export class DiceTray {
 
   private slotX(side: -1 | 1, i: number): number {
     const s = this.size;
-    return side * (0.72 * s + s / 2 + i * s * 1.28);
+    return side * (MID_GAP * s + s / 2 + i * s * STEP);
   }
 
   private applyDie(d: Die): void {
@@ -362,7 +385,7 @@ export class DiceTray {
 
   private setFade(v: number): void {
     this.opacity = v;
-    for (const m of this.trayMats) m.opacity = v;
+    for (const m of this.trayMats) m.opacity = v * ((m.userData.base as number | undefined) ?? 1);
     for (const d of this.dice) this.applyDie(d);
     for (const h of this.hairs) h.mat.uniforms.uOpacity.value = Math.min(h.mat.uniforms.uOpacity.value, v * 0.8);
     this.root.visible = v > 0.002;
@@ -757,10 +780,10 @@ export class DiceTray {
   dispose(): void {
     for (const m of this.materials) m.dispose();
     for (const f of this.faceCache.values()) f.forEach((t) => t.dispose());
-    this.lacquer.dispose();
     this.splashTex.dispose();
     this.floor?.geometry.dispose();
     this.rimMesh?.geometry.dispose();
+    this.hairMesh?.geometry.dispose();
     this.dice[0]?.mesh.geometry.dispose();
     this.dice[0]?.splash.geometry.dispose();
     for (const h of this.hairs) h.mesh.geometry.dispose();

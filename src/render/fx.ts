@@ -30,6 +30,10 @@ uniform float uDots;
 uniform float uSeed;
 uniform float uDry;
 uniform float uDryK;
+uniform float uStyle;
+uniform float uDryAt;
+uniform float uFadeIn;
+uniform float uFadeOut;
 varying vec2 vUV;
 void main() {
   float u = vUV.x;
@@ -40,14 +44,31 @@ void main() {
   vec4 n = texture2D(uNoise, vec2(s / 7.5 + uSeed, v * 0.17 + 0.5));
   vec4 e = texture2D(uNoise, vec2(s / 2.6 + uSeed * 1.3, 0.21 + v * 0.015));
   float bristle = n.b;
-  // ragged, feathered edges
-  float halfW = 1.0 - 0.3 * e.g;
-  float a = 1.0 - smoothstep(halfW - 0.22, halfW, abs(v));
-  // dry streaks: more toward the thin end, and wherever the brush is running out
-  float dryness = clamp((0.3 + 0.45 * u + uDry * (1.0 - u)) * uDryK, 0.0, 1.0);
-  a *= mix(1.0, smoothstep(0.24, 0.56, bristle), dryness * 0.65);
+  float a;
+  if (uStyle > 0.5) {
+    // Dry brush (the attack stroke): bristle streaks run along the stroke; the tail end (uDryAt 0 = u 0)
+    // runs out of ink, so it streaks and frays; the loaded end stays solid.
+    float tailness = uDryAt > 0.5 ? u : 1.0 - u;
+    vec4 st = texture2D(uNoise, vec2(s / 19.0 + uSeed, v * 0.62 + 0.5));
+    vec4 st2 = texture2D(uNoise, vec2(s / 6.0 + uSeed * 2.1, v * 1.3 + 0.13));
+    bristle = st.b * 0.65 + st2.a * 0.35;
+    float halfW = 1.0 - (0.18 + 0.42 * tailness * tailness) * e.g;
+    a = 1.0 - smoothstep(halfW - 0.2, halfW, abs(v));
+    float dryness = clamp((0.08 + 0.95 * pow(tailness, 1.6) + uDry * tailness) * uDryK, 0.0, 1.0);
+    a *= mix(1.0, smoothstep(0.3, 0.6, bristle), dryness);
+  } else {
+    // ragged, feathered edges
+    float halfW = 1.0 - 0.3 * e.g;
+    a = 1.0 - smoothstep(halfW - 0.22, halfW, abs(v));
+    // dry streaks: more toward the thin end, and wherever the brush is running out
+    float dryness = clamp((0.3 + 0.45 * u + uDry * (1.0 - u)) * uDryK, 0.0, 1.0);
+    a *= mix(1.0, smoothstep(0.24, 0.56, bristle), dryness * 0.65);
+  }
   // the tail dries first
   if (uTail > 0.0) a *= smoothstep(uTail, uTail + 0.14, u + 0.14 * (bristle - 0.5));
+  // a stroke that leaves (or enters) over the board's edge fades out into the paper there
+  if (uFadeIn > 0.0) a *= smoothstep(0.0, uFadeIn, u + 0.05 * (bristle - 0.5));
+  if (uFadeOut > 0.0) a *= smoothstep(0.0, uFadeOut, 1.0 - u + 0.05 * (bristle - 0.5));
   if (uDots > 0.5) {
     float d = abs(fract(s / 0.46) - 0.5) * 2.0;
     a *= 1.0 - smoothstep(0.38, 0.62, d);
@@ -96,6 +117,10 @@ class BrushRibbon {
         uSeed: { value: Math.random() },
         uDry: { value: 0 },
         uDryK: { value: 1 },
+        uStyle: { value: 0 },
+        uDryAt: { value: 0 },
+        uFadeIn: { value: 0 },
+        uFadeOut: { value: 0 },
       },
       vertexShader: BRUSH_VERT,
       fragmentShader: BRUSH_FRAG,
@@ -194,6 +219,8 @@ export class AttackArrow {
   private bodies: BrushRibbon[];
   private head: BrushRibbon;
   private lens: number[] = [0, 0];
+  /** Board units per CSS px at the home view (set on layout): the stroke's weight is set in screen px. */
+  pxUnit = 0.08;
   progress = 0;
   key = '';
   private ver = 0;
@@ -207,8 +234,13 @@ export class AttackArrow {
     this.bodies = [new BrushRibbon(noise, gold, 80), new BrushRibbon(noise, gold, 80)];
     this.head = new BrushRibbon(noise, gold, 16);
     this.head.u.uDry.value = 0;
-    // The armed arrow is the one bright thing on the board: a loaded brush, dry only toward its tail end.
-    for (const r of [...this.bodies, this.head]) r.u.uDryK.value = 0.55;
+    // A loaded dry brush: solid where it presses down toward the target, streaked and frayed at the tail
+    // where it ran out of ink; the flick at the head dries toward its own end.
+    for (const r of [...this.bodies, this.head]) {
+      r.u.uStyle.value = 1;
+      r.u.uDryK.value = 0.9;
+    }
+    this.head.u.uDryAt.value = 1;
     for (const b of this.bodies) this.group.add(b.mesh);
     this.group.add(this.head.mesh);
     this.group.visible = false;
@@ -218,13 +250,27 @@ export class AttackArrow {
     return [...this.bodies.map((b) => b.mat), this.head.mat];
   }
 
+  /** Re-lay the stroke at a new screen scale (a resize while armed), keeping its progress and ink. */
+  relayout(): void {
+    if (!this.group.visible || !this.key) return;
+    const [from, to] = this.key.split('|') as [TerritoryId, TerritoryId];
+    const p = this.progress;
+    this.build(from, to);
+    this.setProgress(p);
+  }
+
   private build(from: TerritoryId, to: TerritoryId): void {
     const A = (this.anchorOf ? this.anchorOf(from) : this.tiles.get(from).anchorW).clone();
     const B = (this.anchorOf ? this.anchorOf(to) : this.tiles.get(to).anchorW).clone();
     const lane = seaLaneBetween(from, to);
+    const px = this.pxUnit;
     let curves: THREE.Vector3[][];
+    let wrapped = false;
     if (lane && lane.wrap) {
-      // Off one edge and back in on the other, following the lane.
+      // Across the date line: two short strokes, one leaving the source over its nearest board edge and one
+      // arriving at the target from the opposite edge, each arcing a little toward the pole and fading into
+      // the paper at the edge (never a bar across the board).
+      wrapped = true;
       const [s1, s2] = lane.segments;
       const edgeOf = (seg: typeof s1) => {
         const p0 = seg[0];
@@ -234,10 +280,13 @@ export class AttackArrow {
       const e1 = edgeOf(s1);
       const e2 = edgeOf(s2);
       const [ea, eb] = Math.sign(e1[0] - 50) === Math.sign(A.x) ? [e1, e2] : [e2, e1];
-      const EA = toWorld(ea[0] + Math.sign(ea[0] - 50) * 3.2, ea[1], STROKE_Y);
-      const EB = toWorld(eb[0] + Math.sign(eb[0] - 50) * 3.2, eb[1], STROKE_Y);
-      const B2 = B.clone().lerp(EB, Math.min(0.35, 1.1 / Math.max(1, B.distanceTo(EB))));
-      curves = [bow(A, EA, 0.08, 32), bow(EB, B2, 0.08, 32)];
+      const EA = toWorld(ea[0] + Math.sign(ea[0] - 50) * 0.6, ea[1], STROKE_Y);
+      const EB = toWorld(eb[0] + Math.sign(eb[0] - 50) * 0.6, eb[1], STROKE_Y);
+      const A2 = A.clone().lerp(EA, Math.min(0.3, 0.75 / Math.max(1, A.distanceTo(EA))));
+      const B2 = B.clone().lerp(EB, Math.min(0.36, 1.45 / Math.max(1, B.distanceTo(EB))));
+      // both arcs bow the same way on screen (north), so the pair reads as one stroke over the edge
+      const k = (a: THREE.Vector3, b: THREE.Vector3) => (Math.sign(b.x - a.x) || 1) * 0.16;
+      curves = [bow(A2, EA, k(A2, EA), 32), bow(EB, B2, k(EB, B2), 32)];
     } else {
       const d = Math.hypot(B.x - A.x, B.z - A.z);
       // start just off the source's figure, stop short of the target's number
@@ -253,21 +302,47 @@ export class AttackArrow {
     const L0 = total(curves[0]);
     const L1 = curves[1].length ? total(curves[1]) : 0;
     const LT = L0 + L1 || 1;
-    // thick → thin across the whole stroke (both pieces of a wrapped one)
-    const width = (g: number) => 0.46 * (1 - 0.5 * g) * (0.8 + 0.2 * Math.min(1, g * 8));
+    // The weight, in screen px at the home view (the shader's feathered edge eats ~15 %): a dry tail ~2 px
+    // swelling to ~9 px where the brush presses down near the target, then lifting off to a point.
+    const smooth = (a: number, b: number, x: number) => {
+      const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+      return t * t * (3 - 2 * t);
+    };
+    const width = (g: number) => {
+      const w = 2.2 + 7.6 * Math.pow(smooth(0, 0.8, g), 0.85);
+      const lift = g > 0.84 ? Math.pow(Math.max(0, (1 - g) / 0.16), 0.7) : 1;
+      return ((w * Math.max(0.12, lift)) / 0.85 / 2) * px;
+    };
     this.lens = [L0 / LT, L1 / LT];
     this.bodies[0].set(curves[0], (u) => width((u * L0) / LT));
     if (L1 > 0) this.bodies[1].set(curves[1], (u) => width((L0 + u * L1) / LT));
     else this.bodies[1].set([], () => 0);
-    // the head: a brushed wedge along the last stretch, pressed down then flicked off
+    // wrapped: each piece fades out into the paper over its last ~110 px at the edge
+    const fade = (L: number) => (wrapped && L > 0 ? Math.min(0.7, (110 * px) / L) : 0);
+    this.bodies[0].u.uFadeOut.value = fade(L0);
+    this.bodies[0].u.uFadeIn.value = 0;
+    this.bodies[1].u.uFadeIn.value = fade(L1);
+    this.bodies[1].u.uFadeOut.value = 0;
+    // The head: not a wedge but the brush's flick, off the tip, back along the outside of the arc.
     const last = curves[1].length ? curves[1] : curves[0];
     const tip = last[last.length - 1];
-    const pre = last[Math.max(0, last.length - 4)];
+    const pre = last[Math.max(0, last.length - 5)];
     const dir = new THREE.Vector3(tip.x - pre.x, 0, tip.z - pre.z).normalize();
-    const hl = 0.95;
+    // outside of the arc: the side the curve's middle bulges toward
+    const mid = last[Math.floor(last.length / 2)];
+    const nrm = new THREE.Vector3(-dir.z, 0, dir.x);
+    const side = Math.sign((mid.x - tip.x) * nrm.x + (mid.z - tip.z) * nrm.z) || 1;
+    const back = dir.clone().multiplyScalar(-Math.cos(0.62)).addScaledVector(nrm, side * Math.sin(0.62));
+    const hl = 17 * px;
     const hpts: THREE.Vector3[] = [];
-    for (let i = 0; i <= 10; i++) hpts.push(tip.clone().addScaledVector(dir, -hl * 0.75 + hl * (i / 10)));
-    this.head.set(hpts, (u) => 0.6 * Math.pow(Math.max(0, 1 - u), 0.85) * Math.min(1, 0.55 + u * 4));
+    for (let i = 0; i <= 10; i++) {
+      const t = i / 10;
+      // a slight hook: it leaves the tip steeply and eases back toward the stroke
+      const p = tip.clone().addScaledVector(back, hl * t).addScaledVector(dir, -hl * 0.12 * t * t);
+      p.y = STROKE_Y;
+      hpts.push(p);
+    }
+    this.head.set(hpts, (u) => ((7.2 * Math.pow(Math.max(0, 1 - u), 0.8) * Math.min(1, 0.5 + u * 5)) / 0.85 / 2) * px);
   }
 
   private setProgress(p: number): void {
@@ -399,6 +474,8 @@ export class LiveStroke {
   group = new THREE.Group();
   private body: BrushRibbon;
   private pts: THREE.Vector3[] = [];
+  /** Board units per CSS px at the home view (set on layout), as AttackArrow.pxUnit. */
+  pxUnit = 0.08;
   active = false;
   private ver = 0;
   private startedAt = 0;
@@ -408,6 +485,9 @@ export class LiveStroke {
     noise: THREE.Texture,
   ) {
     this.body = new BrushRibbon(noise, hexToRgb(GOLD), 200);
+    // the same dry brush as the settled arrow: frayed where it left the source, loaded at the finger
+    this.body.u.uStyle.value = 1;
+    this.body.u.uDryK.value = 0.9;
     this.group.add(this.body.mesh);
     this.group.visible = false;
   }
@@ -471,7 +551,14 @@ export class LiveStroke {
       pts.push(src[src.length - 1]);
       if (pts.length > 200) pts = pts.filter((_, i) => i % 2 === 0 || i === pts.length - 1);
     }
-    const L = this.body.set(pts, (u) => 0.42 * (1 - 0.45 * u) * Math.min(1, 0.35 + u * 10) * (u > 0.94 ? Math.max(0.35, (1 - u) / 0.06) : 1));
+    // Weight in screen px at the home view, as the settled arrow: a ~2 px dry tail at the source swelling to
+    // ~9 px under the finger, the tip rounded off (the shader's feathered edge eats ~15 %).
+    const px = this.pxUnit;
+    const L = this.body.set(pts, (u) => {
+      const w = 2.2 + 7.4 * Math.pow(Math.min(1, u / 0.85), 0.9);
+      const tip = u > 0.95 ? Math.max(0.45, (1 - u) / 0.05) : 1;
+      return ((w * tip) / 0.85 / 2) * px;
+    });
     // the tail dries as the stroke grows
     this.body.u.uDry.value = Math.min(0.6, L / 30);
   }

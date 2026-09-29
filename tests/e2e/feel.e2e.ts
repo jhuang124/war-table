@@ -3,7 +3,7 @@
 //     header line above the tray, at 1280×800, 1440×900, 1920×1080 and TV text on 1920×1080
 //   - the only chrome is the two strips (and the tray during a fight); the board spans the window
 //   - ≤ 25 words on screen in an armed Attack state
-//   - dice ≥ 56 px; army tokens ≥ 22 px tall at home on 1280×800
+//   - dice ≥ 34 px; army tokens ≥ 22 px tall at home on 1280×800
 //   - the bottom strip's rect is identical in place / attack / armed / occupy / fortify / watching
 //   - the idle board settles to 0 tweens; a Place click shows its effect within 50 ms
 //   - no frame > 50 ms on the first roll after a cold load
@@ -87,7 +87,8 @@ for (const vp of [
   const topMax = vp.text === 'tv' ? 0.085 : 0.075;
   check(!!g.top && g.top.bottom <= topMax * g.H && !!g.rule && g.H - g.rule.top <= bottomMax * g.H, `${tag}: chrome is two thin strips (top ${Math.round(g.top!.bottom)} px, bottom from the rule ${Math.round(g.H - (g.rule?.top ?? 0))} px ≤ ${Math.round(bottomMax * g.H)})`, results);
   check(Math.abs((g.tray.left + g.tray.right) / 2 - vp.width / 2) < 1 && Math.abs((g.band!.left + g.band!.right) / 2 - vp.width / 2) < 1, `${tag}: tray and band share the centre line`, results);
-  check(g.tray.die >= 56, `${tag}: die ${Math.round(g.tray.die)} px (≥ 56)`, results);
+  // The ink tray is slim and quiet (INK F2: ~0.7× the old lacquer dice); still legible across a room.
+  check(g.tray.die >= 34, `${tag}: die ${Math.round(g.tray.die)} px (≥ 34)`, results);
   if (vp.text === 'tv') {
     // TV text: every visible HUD text ≥ 20 px, no overlap between the fixed HUD panels.
     const tv = await page.evaluate(() => {

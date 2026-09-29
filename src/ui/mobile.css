@@ -403,3 +403,4 @@
 .form-phone.landscape .v-actions { grid-template-columns: 2fr 1fr 1fr 1fr; padding-top: 0.9rem; }
 .form-phone.landscape .v-actions > [data-testid='rematch'] { grid-column: auto; height: 2.875rem; }
 .form-phone.landscape .tl-row { height: 2.2rem; }
+.form-phone.landscape .v-scroll { gap: 0.85rem; }

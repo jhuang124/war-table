@@ -1,7 +1,7 @@
 // Screenshot sweep for the visual review (docs/INK.md A9; a tool, not in test:e2e), on the real board +
 // HUD, desktop sizes and emulated phones: title, new game, place (picked), a drawn attack mid-stroke,
 // the dice at the verdict, a conquest (smoke + flood, a human's territory: the torn rim), an AI turn,
-// the menu sheet, the rules scroll, the victory scroll, and four idle frames 3 s apart (the living
+// the menu sheet, the rules scroll, the victory scroll, and three idle frames 4 s apart (the living
 // calm). Ceremony shots run the board in slow motion (__debug.anim.speed) so the frame is the beat.
 // Also reports the words on screen per state and the idle redraw rate (frames drawn / s).
 // Usage: npx tsx tests/e2e/screens.ts [outDir] [1440x900,1920x1080,iphone,iphone-land]   (server on RISK_URL)
@@ -245,9 +245,9 @@ for (const target of TARGETS) {
     await page.waitForTimeout(2500);
     const f0 = await page.evaluate(() => (window.__board as unknown as { __debug: { drawn: number } }).__debug.drawn);
     const t0 = Date.now();
-    for (let i = 1; i <= 4; i++) {
+    for (let i = 1; i <= 3; i++) {
       await shot(`11-idle-${i}`);
-      if (i < 4) await page.waitForTimeout(3000);
+      if (i < 3) await page.waitForTimeout(4000);
     }
     const f1 = await page.evaluate(() => (window.__board as unknown as { __debug: { drawn: number } }).__debug.drawn);
     const amb = await page.evaluate(() => (window.__board as unknown as { __debug: { ambient: unknown } }).__debug.ambient);

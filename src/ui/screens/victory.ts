@@ -219,6 +219,9 @@ export class VictoryScreen {
       li.append(h('span', 'st-place num', ordinal(st.place)), h('span', 'st-name', st.seat.name), h('span', 'st-terr num', `${st.territories}`));
       this.standings.append(li);
     }
+    // Two seats: the title already names the winner and the timeline ends on both counts, so the
+    // standings line would only repeat them (SOUL pillar 2). Three or more: it carries the ranking.
+    toggle(this.standings, 'hidden', vm.standings.length <= 2);
 
     // Full stats: one row per stat, one column per player (winner first), so it fits the sheet with
     // up to six seats; territories live in the timeline and the standings, not here too.

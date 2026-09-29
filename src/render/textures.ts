@@ -496,15 +496,16 @@ export function inkDiceFaceTexture(value: number, base: string, ink: string, siz
   ctx.fillRect(0, 0, size, size);
   const img = ctx.getImageData(0, 0, size, size);
   const d = img.data;
+  // Matte, bone-like pigment: the seat's wash settled a little toward the paper's deep indigo, with a
+  // soft mottle and a fine tooth (no sheen); it sits inside the board's palette rather than above it.
+  const deep = [11, 18, 36];
   for (let y = 0; y < size; y++)
     for (let x = 0; x < size; x++) {
       const n = fbm(x / 18, y / 18, 71 + value, 3) - 0.5;
       const g = hash(x, y, 5) - 0.5;
-      const k = 1 + n * 0.1 + g * 0.05;
+      const k = 1 + n * 0.14 + g * 0.08;
       const o = (y * size + x) * 4;
-      d[o] = Math.min(255, d[o] * k);
-      d[o + 1] = Math.min(255, d[o + 1] * k);
-      d[o + 2] = Math.min(255, d[o + 2] * k);
+      for (let ch = 0; ch < 3; ch++) d[o + ch] = Math.min(255, (d[o + ch] * 0.9 + deep[ch] * 0.1) * k);
     }
   ctx.putImageData(img, 0, 0);
   // the rounded edge reads a little deeper

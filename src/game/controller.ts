@@ -1482,6 +1482,13 @@ class Controller {
 
   /** A phase change reached the board: an AI's marker clacks softly; a human's gets the board's response. */
   private onPhaseCue(ev: Extract<GameEvent, { type: 'phaseChanged' }>, e: Entry): void {
+    // An AI's fighting is over: its last telegraph dries now, inside its own turn, not over the next
+    // player's turn start (INK F6).
+    if (e.ai && ev.phase === 'fortify' && this.aiHighlights?.arrow?.kind === 'attack') {
+      this.aiHighlights = null;
+      this.aiPreview = null;
+      this.invalidate();
+    }
     if (ev.phase !== 'attack' && ev.phase !== 'fortify') return;
     if (this.isAiDriven(ev.player)) {
       if (e.ai) this.play('place', { rate: 0.82, volume: 0.35 });
@@ -2878,7 +2885,10 @@ class Controller {
       await this.waitCamera();
       if (this.state !== planned) return;
     }
-    this.aiHighlights = { selected: from, targets: [to], arrow: { from, to, kind: 'attack' } };
+    // A snapped fight (AI vs AI past the headline point) plays at once and its own event dries the arrow;
+    // a telegraph set now would land after that and redraw the stroke over the next turn's start (INK F6).
+    const snapped = !full && !vsHuman && pastHeadline;
+    if (!snapped) this.aiHighlights = { selected: from, targets: [to], arrow: { from, to, kind: 'attack' } };
     if (full) {
       this.aiPreview = { from, to };
       this.invalidate();
@@ -2893,7 +2903,7 @@ class Controller {
     if (!full && !vsHuman) {
       ctx.briefCount++;
       if (ctx.briefCount >= ctx.compressFrom && speed === 'watch') boardSpeed = 2;
-      if (pastHeadline) snap = true;
+      if (snapped) snap = true;
     } else if (!full && vsHuman && speed === 'watch') {
       // Past the headline point or the full-fight cap, fights against a human stay visible (arrow, ticks,
       // flip; never snapped) but run at 2×, so a rampage doesn't stall the room. The recap lists them.

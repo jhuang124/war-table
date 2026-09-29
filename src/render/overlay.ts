@@ -173,7 +173,7 @@ export class Overlay {
   width = 1;
   height = 1;
   /** Screen rect (container px) the dice tray covers while it shows; numbers under it hide. */
-  occluder: { x0: number; y0: number; x1: number; y1: number; on: boolean } = { x0: 0, y0: 0, x1: 0, y1: 0, on: false };
+  occluder: { x0: number; y0: number; x1: number; y1: number; on: boolean; hx0?: number; hx1?: number; hy0?: number } = { x0: 0, y0: 0, x1: 0, y1: 0, on: false };
 
   constructor(
     container: HTMLElement,
@@ -394,7 +394,14 @@ export class Overlay {
 
   private overTray(x0: number, y0: number, x1: number, y1: number, above = 0): boolean {
     const o = this.occluder;
-    return o.on && x1 > o.x0 && x0 < o.x1 && y1 > o.y0 - above && y0 < o.y1;
+    if (!o.on) return false;
+    if (x1 > o.x0 && x0 < o.x1 && y1 > o.y0 && y0 < o.y1) return true;
+    if (above <= 0) return false;
+    // The header strip above the tray: only where its words actually are (hx0..hx1 when known), so the
+    // numbers beside a short 'Ural 12 · Siberia 4' stay on the board.
+    const hx0 = o.hx0 ?? o.x0;
+    const hx1 = o.hx1 ?? o.x1;
+    return x1 > hx0 && x0 < hx1 && y1 > (o.hy0 ?? o.y0 - above) && y0 < o.y1;
   }
   /** Height of the HUD's fight header line just above the tray (CSS px). */
   get headerBand(): number {

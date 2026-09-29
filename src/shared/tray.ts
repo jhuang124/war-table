@@ -32,3 +32,43 @@ export function boardTrayGeometry(W: number, H: number, band: number, uiScale: n
   const trayH = Math.min(g.trayH, Math.round(die * 1.9 + 8));
   return { trayW, die, trayH };
 }
+
+/** Ink-tray die spacing (in die edges): the mid gap between the sides, die to die, and the rim padding. */
+export const INK_TRAY_MID_GAP = 0.55;
+export const INK_TRAY_STEP = 1.2;
+export const INK_TRAY_PAD = 0.42;
+
+/**
+ * The tray the board draws (INK review F2): sized to the dice with a little padding, and small — about
+ * 420 × 90 px at 1440 × 900, under half the width on a landscape phone, about two thirds of it in
+ * portrait. Never taller than the HUD's band tray. All CSS px.
+ */
+export function inkTrayGeometry(W: number, H: number, band: number, uiScale: number): TrayGeometry {
+  const hud = boardTrayGeometry(W, H, band, uiScale);
+  const compact = Math.min(W, H) < 520;
+  const maxW = compact ? (W > H ? 0.44 * W : 0.72 * W) : Math.min(560 * uiScale, 0.46 * W);
+  const span = 2 * (INK_TRAY_MID_GAP + 0.5 + 2 * INK_TRAY_STEP + 0.5 + INK_TRAY_PAD); // tray width in die edges
+  let die = compact ? Math.min(W, H) * 0.086 : H * 0.052 * uiScale;
+  die = Math.min(die, (maxW - 8) / span, hud.die, (hud.trayH - 8) / 1.75);
+  die = Math.max(compact ? 26 : 34, die);
+  const trayW = Math.round(die * span + 8);
+  const trayH = Math.min(hud.trayH, Math.round(die * 1.75 + 8));
+  return { trayW, die, trayH };
+}
+
+/** Portrait phones: the drawn tray's bottom sits this far above the band's bottom (the dock's line). */
+const PORTRAIT_TRAY_GAP = 10;
+
+/**
+ * Where the drawn tray sits in the band: the distance from the band's bottom up to the drawn tray's top
+ * edge, CSS px. The renderer places the tray with it and the HUD rests the fight header on it, so the
+ * header always sits on the rim. Usually the drawn tray is top-aligned with the HUD's band tray (centred
+ * in the band). A portrait phone's band is tall (it grows to clear the two-row dock), so there the tray
+ * drops to the band's bottom, into the open southern ocean, instead of floating over Africa.
+ */
+export function inkTrayTop(W: number, H: number, band: number, uiScale: number): number {
+  const ink = inkTrayGeometry(W, H, band, uiScale);
+  if (W < H && W < 520) return Math.min(band, ink.trayH + PORTRAIT_TRAY_GAP);
+  const hud = boardTrayGeometry(W, H, band, uiScale);
+  return Math.floor((band - hud.trayH) / 2) + hud.trayH;
+}

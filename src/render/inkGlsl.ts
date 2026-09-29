@@ -191,11 +191,12 @@ float coastSoft(vec2 bp) {
   return textureLod(uInk, bUV(bp), log2(0.3 * uInkSize.x / uBoard.x)).r;
 }
 
-// Mist veils (A1): large fbm veils, 3-5 on the board at a time, drifting east ~1.0-1.2 % of the board width
+// Mist veils (A1): large fbm veils, 3-5 on the board at a time, drifting east ~0.7 % of the board width
 // a second (the board is 100 units wide) and morphing slowly. x = the veils that keep to the sea (thinner
-// near the coasts), y = the two that cross coasts, so the land breathes too. Peak opacity is 8 %.
+// near the coasts), y = the two that cross coasts, so the land breathes too. Peak opacity is 7-8 %.
 vec2 mistAt(vec2 bp) {
-  float t = uTime;
+  // ~0.8 % of the board width a second: clearly drifting at couch distance, never hurrying
+  float t = uTime * 0.65;
   vec2 w = vec2(nz(bp / 260.0 + vec2(t * 0.0011, -t * 0.0008)).r, nz(bp / 210.0 + vec2(0.41 - t * 0.0009, 0.17 + t * 0.001)).r) - 0.5;
   float f = nz(bp / 26.0 + vec2(-t * 1.1 / 26.0, 0.33)).g - 0.5;
   float m1 = nz(bp / 170.0 + vec2(-t * 1.1 / 170.0, t * 0.1 / 170.0) + w * 0.3).r + 0.05 * f;
@@ -284,7 +285,7 @@ void main() {
   // mist: the sea's own veils thin out near the coasts; the crossing veils run on over the land
   vec2 mv = mistAt(bp);
   float mist = max(mv.x * mix(0.35, 1.0, smoothstep(0.0, 0.8, seaD)), mv.y);
-  c = mix(c, MIST, min(mist, 1.0) * 0.08 * uMist);
+  c = mix(c, MIST, min(mist, 1.0) * 0.072 * uMist);
   c *= vignette();
   gl_FragColor = vec4(c, 1.0);
 }

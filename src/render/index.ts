@@ -1467,9 +1467,17 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     const gen = syncGen;
     const style = o.style ?? 'full';
     switch (e.type) {
+      case 'phaseChanged': {
+        // The fighting is over for this turn: an engagement's arrow dries now, inside the turn that drew
+        // it, so the next player's turn never opens with the last player's stroke on the board (INK F6).
+        if (e.phase !== 'attack' && arrowSource === 'event') {
+          arrow.hide();
+          arrowSource = null;
+        }
+        return;
+      }
       case 'gameStarted':
       case 'setupTurn':
-      case 'phaseChanged':
       case 'cardDrawn':
       case 'cardsCaptured':
       case 'controllerChanged':
@@ -2006,6 +2014,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     // mid-game (it re-homes once, the first time).
     keepBand = Math.max(keepBand, insets.trayBand);
     const kb = keepBand > 0 ? keepBand : nominalBand();
+    // The keep-out follows the HUD's tray band (src/shared/tray.ts), not the slimmer ink tray drawn inside
+    // its top (dice.ts): the home view keeps the round-2 framing, and the drawn tray sits in open ocean below.
     const g = boardTrayGeometry(W, H, kb, uiScale);
     // Every piece (its plaque included) stays above the tray's top with a little air, and clear of its
     // sides. (The HUD's header line is centred and short; southern pieces near the tray's ends sit beside it.)
@@ -2030,6 +2040,9 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     // The coastline breath reaches 0.5 CSS px at the home zoom (A1): in ink texels at this scale.
     const pxPerTexel = (homePxPerUnit() * G.width) / Math.max(1, shared.uInkSize.value.x);
     shared.uWob.value = clamp(0.5 / Math.max(0.05, pxPerTexel), 0.25, 6);
+    // The attack stroke's weight is set in screen px at the home view (INK review F4): ~2 px tail, ~9 px head.
+    arrow.pxUnit = live.pxUnit = 1 / Math.max(1, homePxPerUnit());
+    arrow.relayout();
     invalidate();
   };
   /** CSS px per board unit at the centre of the board, at the home view. */
@@ -2191,6 +2204,27 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       oc.x1 = tray.cx + tray.trayW / 2;
       oc.y0 = tray.cy - tray.trayH / 2 - 4;
       oc.y1 = tray.cy + tray.trayH / 2 + 4;
+      // Phones: the fight header's words (read from the HUD's DOM a few times a second, never written).
+      if (compact && (frameNo % 6 === 0 || oc.hx0 === undefined)) {
+        const kids = document.querySelectorAll<HTMLElement>('[data-testid="battle"] .bt-head > *');
+        let l = Infinity;
+        let r = -Infinity;
+        let t = Infinity;
+        kids.forEach((k) => {
+          const b = k.getBoundingClientRect();
+          if (b.width > 0) {
+            l = Math.min(l, b.left - rect0.left);
+            r = Math.max(r, b.right - rect0.left);
+            t = Math.min(t, b.top - rect0.top);
+          }
+        });
+        const ok = l < r && t < oc.y0;
+        oc.hx0 = ok ? l - 6 : undefined;
+        oc.hx1 = ok ? r + 6 : undefined;
+        oc.hy0 = ok ? t - 4 : undefined;
+      }
+    } else {
+      oc.hx0 = oc.hx1 = oc.hy0 = undefined;
     }
     overlay.update(camera, rect0);
 

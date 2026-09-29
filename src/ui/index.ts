@@ -18,7 +18,7 @@ import './mobile.css';
 import type { GameVM, MountUi, Screen, SeatChipVM, StripVM, UiIntent, ViewModel } from '../game/viewModel';
 import type { ViewportInsets } from '../render/BoardView';
 import { h, hashSeed, motion, setAttr, toggle } from './dom';
-import { boardTrayGeometry as trayGeometry } from '../shared/tray';
+import { boardTrayGeometry as trayGeometry, inkTrayTop } from '../shared/tray';
 import { Announcements } from './hud/announce';
 import { BattleHeader } from './hud/battle';
 import { CardsSheet } from './hud/cards';
@@ -206,11 +206,9 @@ export const mountUi: MountUi = (host, api) => {
     // The board reads a `bottom` of ≥ band + 40 as the round-1 convention (band folded into bottom) and
     // subtracts the band. The portrait phone dock is that tall on its own, so the band grows to stay
     // clear of that rule; the tray stays centred in it and the header follows (same geometry).
-    if (bottomEdge >= band + 40) {
-      band = bottomEdge - 39;
-      const trayH = trayGeometry(W, H, band, scale).trayH;
-      trayTop = Math.floor((band - trayH) / 2) + trayH;
-    }
+    if (bottomEdge >= band + 40) band = bottomEdge - 39;
+    // The header rests on the tray the board draws (src/shared/tray.ts places it; the renderer uses the same rule).
+    trayTop = inkTrayTop(W, H, band, scale);
     root.style.setProperty('--tray', `${band}px`);
     root.style.setProperty('--strip', `${headerStrip}px`);
     root.style.setProperty('--tray-top', `${trayTop}px`);
@@ -314,6 +312,8 @@ export const mountUi: MountUi = (host, api) => {
     const s = g.strip;
     const holder = worldHolder(g);
     if (holder) {
+      // The memo may still hold the deciding fight's line for this same strip object: re-key it.
+      if (fightLine) heldVm = null;
       fightLine = null;
       if (heldFrom !== s || !heldVm) {
         heldFrom = s;
@@ -372,7 +372,8 @@ export const mountUi: MountUi = (host, api) => {
       // A breath line arriving in this very render (a turn start): the strip's line keeps its words
       // while it dries, rather than swapping to the new turn's line and drying that (INK F6).
       if (g.banner && g.banner.id !== prev?.game?.banner?.id && sayInSlot()) strip.setLineAside(true);
-      strip.update(stripFor(g), g.gold);
+      // Once the world is held nothing on the track is 'now': the gold leaves it for the victory beat.
+      strip.update(stripFor(g), worldHolder(g) ? null : g.gold);
       // Ambient motion yields to the strike (INK A1): the rule's glint and breath rest while dice roll.
       toggle(root, 'is-striking', !!g.battle?.rolling);
       battle.update(g.battle);

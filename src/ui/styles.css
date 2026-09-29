@@ -455,8 +455,10 @@
 .bt-head { position: relative; display: flex; align-items: flex-end; justify-content: center; gap: 0.9rem; min-height: 0; padding-bottom: 0.2rem; }
 .bt-head::before {
   content: ''; position: absolute; inset: -0.4rem 18% -0.2rem; z-index: -1;
-  background: radial-gradient(closest-side, rgba(11, 18, 36, 0.62), rgba(11, 18, 36, 0));
+  background: radial-gradient(closest-side, rgba(11, 18, 36, 0.15), rgba(11, 18, 36, 0));
 }
+/* Legibility comes from a tight halo on the words, not a dark band across the board (INK F2). */
+.bt-head { text-shadow: 0 0 0.35em rgba(11, 18, 36, 0.85), 0 0 0.12em rgba(11, 18, 36, 0.9); }
 .bt-side { display: inline-flex; align-items: baseline; gap: 0.5rem; font-weight: 600; font-size: max(2.7vh, 1.5rem); white-space: nowrap; color: var(--seat-light); line-height: 1; }
 .bt-armies { color: var(--ivory); display: inline-block; min-width: 1ch; }
 .bt-vs { font-size: max(2.2vh, 1.25rem); color: var(--ivory-40); line-height: 1; }
@@ -726,7 +728,7 @@
 .stats-table thead th { border-bottom-color: var(--ivory-20); }
 .stats-table .sx-seat { text-align: right; font-weight: 600; color: var(--ivory-78); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stats-table .sx-seat.first { color: var(--ivory); }
-.stats-table .sx-seat .emb { width: 0.7rem; height: 0.7rem; margin-right: 0.3rem; color: var(--seat-light); vertical-align: 0.05em; }
+.stats-table .sx-seat .emb { display: inline-block; width: 0.7rem; height: 0.7rem; margin-right: 0.3rem; color: var(--seat-light); vertical-align: 0.05em; }
 .stats-table td { text-align: right; font-weight: 600; font-variant-numeric: lining-nums tabular-nums; color: var(--ivory-90); }
 
 /* ------------------------------------------------------------------------ */
