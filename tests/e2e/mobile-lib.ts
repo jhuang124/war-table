@@ -3,8 +3,8 @@
 // page.touchscreen, long-press and pinch through CDP Input.dispatchTouchEvent, and the "never scrolls,
 // never zooms" probe. Flows import from here and from ./lib.
 
-import { chromium, devices, type Browser, type BrowserContext, type CDPSession, type Page } from 'playwright';
-import { BASE, Q } from './lib';
+import { devices, type Browser, type BrowserContext, type CDPSession, type Page } from 'playwright';
+import { BASE, Q, launchBrowser, prepareContext } from './lib';
 
 export type DeviceName = 'iphone' | 'iphone-land' | 'iphone-pwa' | 'iphone-pwa-land' | 'pixel' | 'pixel-land' | 'ipad' | 'ipad-land';
 
@@ -32,18 +32,18 @@ export interface MCtx {
 }
 
 export async function openDevice(device: DeviceName, opts: { query?: string; safe?: boolean; browser?: Browser } = {}): Promise<MCtx> {
-  const browser = opts.browser ?? (await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] }));
+  const browser = opts.browser ?? (await launchBrowser());
   const d = DEVICES[device];
   // Chromium stands in for Mobile Safari: keep the device's viewport, DPR, touch and mobile flags.
   const { defaultBrowserType: _ignored, ...desc } = d.desc as typeof d.desc & { defaultBrowserType?: string };
   const context = await browser.newContext({ ...desc });
+  await prepareContext(context);
   const page = await context.newPage();
   const errors: string[] = [];
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(m.text());
   });
   page.on('pageerror', (e) => errors.push(String(e)));
-  await page.addInitScript('window.__name = (f) => f');
   const cdp = await context.newCDPSession(page);
   if (opts.safe !== false) await cdp.send('Emulation.setSafeAreaInsetsOverride' as never, { insets: d.safe } as never).catch(() => undefined);
   await page.goto(BASE + (opts.query ?? Q));

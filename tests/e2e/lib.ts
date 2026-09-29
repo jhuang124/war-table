@@ -1,11 +1,15 @@
-// Shared Playwright helpers for the e2e flows. `npm run test:e2e` starts a dev server on :5290 and runs
-// every flow against the REAL board (src/render) and REAL HUD (src/ui). Run one flow by hand with:
+// Shared Playwright helpers for the e2e flows. `npm run test:e2e` builds the game (VITE_E2E=1), serves it
+// and runs every flow against the REAL board (src/render) and REAL HUD (src/ui); lanes, speeds and the
+// quick tier live in tests/e2e/lanes.ts. Run one flow by hand against any server (dev or `vite preview`):
 //   npx vite --port 5290 --strictPort --host 127.0.0.1 &   npx tsx tests/e2e/<flow>.e2e.ts
-// RISK_URL overrides the server; RISK_QUERY adds URL flags (e.g. '?stub&debughud' for the stand-ins).
+// RISK_URL overrides the server; RISK_QUERY adds URL flags (e.g. '?stub&debughud' for the stand-ins);
+// E2E_SPEED=instant|real overrides the flow's lane speed (a logic flow run by hand is instant too).
 // Clicks go through real pointer events at __risk.screenPos(t).
 
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { mkdirSync } from 'node:fs';
+import { basename } from 'node:path';
+import { speedOf, type Speed } from './lanes';
 
 export const BASE = process.env.RISK_URL ?? 'http://127.0.0.1:5290/';
 /** URL flags for every flow; '' = the real renderer + real UI. */
@@ -13,26 +17,100 @@ export const Q = process.env.RISK_QUERY ?? '';
 export const ART = 'artifacts/e2e';
 mkdirSync(ART, { recursive: true });
 
+export const GPU_ARGS = ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'];
+
+/**
+ * The speed this flow runs at. The runner passes E2E_SPEED from lanes.ts; a flow run by hand looks itself
+ * up there, so it runs the way the suite runs it. Tools that aren't in lanes.ts (screens, perf) run real.
+ */
+export const SPEED: Speed = (() => {
+  const env = process.env.E2E_SPEED;
+  if (env === 'instant' || env === 'real') return env;
+  if (env) throw new Error(`E2E_SPEED must be instant or real (got ${env})`);
+  return speedOf(basename(process.argv[1] ?? '').replace(/\.e2e\.ts$/, ''));
+})();
+
 export interface Ctx {
   browser: Browser;
+  context: BrowserContext;
   page: Page;
   errors: string[];
 }
 
+/**
+ * A Chromium for one open(): the runner's shared browser for this worker when it hands one over (E2E_WS;
+ * close() then only disconnects and drops this flow's contexts), else a fresh launch (a flow run by hand,
+ * and the timing lane, where every open() gets a cold GPU process like a player's first load).
+ */
+export async function launchBrowser(): Promise<Browser> {
+  const ws = process.env.E2E_WS;
+  return ws ? chromium.connect(ws) : chromium.launch({ args: GPU_ARGS });
+}
+
+// Instant speed, pinned in the page before the game boots: every load starts with animation speed 0 and
+// AI 'instant' in the saved settings (other settings are kept), and __risk.setSpeed() calls are held at
+// instant, until realtime() sets the tab's opt-out flag. Speed changes made in the Settings UI aren't pinned.
+const PIN = `(() => {
+  const REAL = 'risk3d.e2e.realtime';
+  try { if (sessionStorage.getItem(REAL)) return; } catch { return; }
+  try {
+    const k = 'risk3d.settings.v1';
+    const s = JSON.parse(localStorage.getItem(k) || 'null') || {};
+    localStorage.setItem(k, JSON.stringify({ ...s, animationSpeed: 0, aiSpeed: 'instant' }));
+  } catch {}
+  let hooks;
+  Object.defineProperty(window, '__risk', {
+    configurable: true,
+    enumerable: true,
+    get: () => hooks,
+    set: (h) => {
+      if (h && typeof h.setSpeed === 'function' && !h.__realSetSpeed) {
+        const real = h.setSpeed;
+        h.__realSetSpeed = real;
+        h.setSpeed = (a, ai) => (sessionStorage.getItem(REAL) ? real(a, ai) : real(0, 'instant'));
+      }
+      hooks = h;
+    },
+  });
+})()`;
+
+let saidSpeed = false;
+/** What every flow's browser context gets: the tsx __name shim, and the lane's speed pin. */
+export async function prepareContext(context: BrowserContext): Promise<void> {
+  // tsx (esbuild keepNames) wraps named functions inside page.evaluate callbacks in __name(); give the
+  // page a no-op so callbacks can use local helper functions.
+  await context.addInitScript('window.__name = (f) => f');
+  if (SPEED !== 'instant') return;
+  await context.addInitScript(PIN);
+  if (!saidSpeed) console.log('(instant speed: a logic-lane flow, tests/e2e/lanes.ts; E2E_SPEED=real runs it at 1x)');
+  saidSpeed = true;
+}
+
+/**
+ * Real speed (1×, AI watch) for the rest of this page's life, reloads included: for the few checks in a
+ * logic-lane flow that need real animations. A no-op when the flow already runs at real speed.
+ */
+export async function realtime(page: Page): Promise<void> {
+  if (SPEED !== 'instant') return;
+  await page.evaluate(() => {
+    sessionStorage.setItem('risk3d.e2e.realtime', '1');
+    (window.__risk as unknown as { __realSetSpeed?: (a: number, ai?: string) => void }).__realSetSpeed?.(1, 'watch');
+  });
+}
+
 export async function open(query = Q, viewport = { width: 1440, height: 900 }, deviceScaleFactor = 1): Promise<Ctx> {
-  const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-  const page = await browser.newPage({ viewport, deviceScaleFactor });
+  const browser = await launchBrowser();
+  const context = await browser.newContext({ viewport, deviceScaleFactor });
+  await prepareContext(context);
+  const page = await context.newPage();
   const errors: string[] = [];
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(m.text());
   });
   page.on('pageerror', (e) => errors.push(String(e)));
-  // tsx (esbuild keepNames) wraps named functions inside page.evaluate callbacks in __name(); give the
-  // page a no-op so callbacks can use local helper functions.
-  await page.addInitScript('window.__name = (f) => f');
   await page.goto(BASE + query);
   await page.waitForFunction(() => !!(window as unknown as { __risk?: unknown }).__risk);
-  return { browser, page, errors };
+  return { browser, context, page, errors };
 }
 
 export async function clearStorage(page: Page): Promise<void> {

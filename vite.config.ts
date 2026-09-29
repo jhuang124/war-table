@@ -4,8 +4,9 @@ import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
 // Dev: `npm run dev` on http://127.0.0.1:5273
-// `npm run test:e2e` starts its own server with RISK_E2E=1: no HMR and no file watching, so editing a
-// file mid-run can't reload the page under a running flow.
+// `npm run test:e2e` builds with VITE_E2E=1 (src/main.ts keeps the test hooks in that bundle, no service
+// worker) and serves the build. Its --dev mode starts a dev server with RISK_E2E=1: no HMR and no file
+// watching, so editing a file mid-run can't reload the page under a running flow.
 const e2e = !!process.env.RISK_E2E;
 
 /**

@@ -9,6 +9,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 5274",
     "test": "vitest run",
     "test:e2e": "tsx scripts/e2e.ts",
+    "test:e2e:quick": "tsx scripts/e2e.ts --quick",
     "typecheck": "tsc --noEmit",
     "build:map": "tsx scripts/build-map.ts",
     "verify:map": "tsx scripts/verify-map.ts",
