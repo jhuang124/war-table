@@ -233,3 +233,66 @@ export function brushMark(points: Pt[], opts: { seed: number; width: number; clo
   const width = (t: number) => opts.width * (0.8 + 0.2 * smooth(0, 0.06, t)) * (1 + breath(t) * 0.12) * (1 - 0.6 * Math.pow(smooth(0.6, 1, t), 1.5));
   return sweep(r, at, width, { bristles: opts.bristles ?? 3, samples: opts.samples ?? 72, tMax: 1, dryAt: 0.78, cap: true });
 }
+
+export interface RingOpts {
+  /** Stroke weight multiplier (1 = ~5% of the ring's height at its thickest). */
+  weight?: number;
+  /** Where the brush lands, in degrees clockwise from 12 o'clock. Default ~270 (from the west), jittered. */
+  startAt?: number;
+  /** Bristle strips across the stroke (default 5). */
+  bristles?: number;
+  /** Samples along the loop (default 120). */
+  samples?: number;
+}
+
+/**
+ * The brush ring (docs/INK2.md §2.3, §3): one closed brushed ellipse round a word or the dice, drawn
+ * clockwise. Unlike the ensō there is no gap (the gap is the signature's): the brush runs a little
+ * past where it landed and its dry end, the ring's one thin patch, overlaps the start. `aspect` is
+ * width / height; the viewBox is `0 0 (100 × aspect) 100`. Deterministic per seed.
+ */
+export function brushRing(seed: number, aspect = 1, opts: RingOpts = {}): EnsoShape {
+  const r = rng(seed * 6007 + 29);
+  const A = Math.max(1, Math.min(6, aspect));
+  const W = 100 * A;
+  const Wmax = 5.2 * (opts.weight ?? 1);
+  const K = Math.max(2, Math.round(opts.bristles ?? 6));
+  const N = Math.max(48, Math.round(opts.samples ?? 160));
+  const rx = W / 2 - Wmax * 1.6 - 3;
+  const ry = 50 - Wmax * 1.6 - 3;
+  const start = ((opts.startAt ?? 270 + (r() - 0.5) * 30) * Math.PI) / 180;
+  const wob = noise1(r, 3 + r() * 2);
+  const wob2 = noise1(r, 8 + r() * 4);
+  const breath = noise1(r, 4 + r() * 3);
+  const press = r() * Math.PI * 2; // where the hand bears down hardest
+  const tilt = (r() - 0.5) * 0.06;
+  const tMax = 1.1;
+  const at = (t: number): Pt => {
+    const u = t / tMax;
+    const a = start + Math.PI * 2 * t;
+    const k = 1 + wob(u) * 0.045 + wob2(u) * 0.012 + 0.018 * t;
+    const x = Math.sin(a) * rx * k;
+    const y = -Math.cos(a) * ry * k;
+    return [W / 2 + x + y * tilt * A, 50 + y - x * tilt / A];
+  };
+  const width = (t: number) => {
+    const a = start + Math.PI * 2 * t;
+    const land = 0.7 + 0.5 * (1 - smooth(0, 0.08, t)); // lands loaded, a heavy first beat
+    const bear = 1 + 0.28 * Math.cos(a - press);
+    const body = 1 + breath(t / tMax) * 0.3;
+    const taper = 1 - 0.7 * Math.pow(smooth(0.7, tMax, t), 1.2);
+    return Wmax * land * bear * body * taper;
+  };
+  const d = sweep(r, at, width, { bristles: K, samples: N, tMax, dryAt: 0.66 + r() * 0.08, cap: true });
+  const S = 64;
+  let spine = '';
+  let length = 0;
+  let prev: Pt | null = null;
+  for (let i = 0; i <= S; i++) {
+    const p = at((i / S) * tMax);
+    spine += `${i ? 'L' : 'M'}${f1(p[0])} ${f1(p[1])}`;
+    if (prev) length += Math.hypot(p[0] - prev[0], p[1] - prev[1]);
+    prev = p;
+  }
+  return { d, viewBox: `0 0 ${f1(W)} 100`, spine, length: Math.ceil(length) };
+}
