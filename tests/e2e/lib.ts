@@ -17,7 +17,7 @@ export const Q = process.env.RISK_QUERY ?? '';
 export const ART = 'artifacts/e2e';
 mkdirSync(ART, { recursive: true });
 
-export const GPU_ARGS = ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'];
+export const GPU_ARGS = ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--mute-audio'];
 
 /**
  * The speed this flow runs at. The runner passes E2E_SPEED from lanes.ts; a flow run by hand looks itself

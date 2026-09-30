@@ -57,7 +57,7 @@ await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
 const port = (server.address() as { port: number }).port;
 const ROOT = `http://127.0.0.1:${port}/war-table/`;
 
-const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--mute-audio'] });
 const { defaultBrowserType: _d, ...pixel } = devices['Pixel 7'] as (typeof devices)[string] & { defaultBrowserType?: string };
 const context = await browser.newContext({ ...pixel });
 const page = await context.newPage();

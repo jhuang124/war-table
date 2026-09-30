@@ -753,7 +753,7 @@ function vstack(parts: { w: number; h: number; d: Uint8Array }[], gap = 8): { w:
 const sha = (f: string) => createHash('sha256').update(readFileSync(f)).digest('hex');
 const CH = ['R', 'G', 'B', 'A'] as const;
 
-const browser = await chromium.launch();
+const browser = await chromium.launch({ args: ['--mute-audio'] });
 const page = await browser.newPage();
 await page.addInitScript('window.__name = (f) => f'); // tsx keepNames wraps local functions
 await page.goto('about:blank');

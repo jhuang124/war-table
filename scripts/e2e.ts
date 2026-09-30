@@ -24,7 +24,7 @@ import { FLOWS, QUICK, laneOf, speedOf, type Lane } from '../tests/e2e/lanes';
 
 const LOGS = 'artifacts/e2e';
 const TIMINGS = `${LOGS}/timings.json`;
-const GPU_ARGS = ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist']; // = lib.ts GPU_ARGS
+const GPU_ARGS = ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--mute-audio']; // = lib.ts GPU_ARGS
 const BIN = (name: string) => resolve('node_modules/.bin', name);
 /** A flow still running after this is killed and marked failed (E2E_FLOW_TIMEOUT=<s> overrides both). */
 const FLOW_TIMEOUT_S: Record<Lane, number> = {

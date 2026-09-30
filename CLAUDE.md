@@ -39,7 +39,7 @@ Read SOUL.md first, and run its "Before you plan" checklist before you plan, del
   If something is truly missing, report it.
 - Do NOT `git commit`; the lead commits.
 - Browser checks: Playwright from a node script with
-  `chromium.launch({ args: ['--use-angle=metal','--enable-gpu','--ignore-gpu-blocklist'] })`.
+  `chromium.launch({ args: ['--use-angle=metal','--enable-gpu','--ignore-gpu-blocklist','--mute-audio'] })` (always mute: the score is on by default and headless browsers play through John's speakers).
   Never agent-browser (shared daemon wedges with parallel agents) or the Browser pane.
 - Run your own dev server on the port in your brief (`npx vite --port <p> --strictPort`, in the
   background) and kill it when you finish.

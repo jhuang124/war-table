@@ -114,7 +114,7 @@ export async function renderPreviews(b: BoardGeometry, outDir: string, minClear:
   shots.push({ name: 'preview-seasia', viewBox: frame(['siam', 'indonesia', 'new_guinea', 'japan', 'india'], 1.5), px: 1600 });
   shots.push({ name: 'preview-americas', viewBox: frame(['western_us', 'eastern_us', 'central_america', 'venezuela', 'quebec'], 1.5), px: 1600 });
   const { chromium } = await import('playwright');
-  const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+  const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--mute-audio'] });
   try {
     const page = await browser.newPage({ deviceScaleFactor: 1 });
     for (const s of shots) {

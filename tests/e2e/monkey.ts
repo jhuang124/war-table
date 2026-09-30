@@ -489,7 +489,7 @@ async function playGame(browser: Browser, seed: number): Promise<Result> {
   return { seed, mode, ok: finished && !reason, finished, reason, inputs, turns, ms: Date.now() - t0, log };
 }
 
-const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--mute-audio'] });
 const seeds = Array.from({ length: GAMES }, (_, i) => FIRST + i);
 const results: Result[] = [];
 let next = 0;

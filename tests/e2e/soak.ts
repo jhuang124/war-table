@@ -819,7 +819,7 @@ async function worker(id: number, jobs: Job[], results: GameResult[]): Promise<v
   const fresh = async () => {
     await (browser as Browser | null)?.close().catch(() => undefined);
     browser = await chromium.launch({
-      args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-precise-memory-info', '--js-flags=--expose-gc'],
+      args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--mute-audio', '--enable-precise-memory-info', '--js-flags=--expose-gc'],
     });
     page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     page.on('crash', () => console.log(`[w${id}] PAGE CRASH`));

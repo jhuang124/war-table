@@ -12,7 +12,7 @@ import { resolve } from 'node:path';
 const DIR = resolve('public/icons');
 const svg = readFileSync(`${DIR}/icon.svg`, 'utf8');
 
-const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--mute-audio'] });
 const page = await browser.newPage({ viewport: { width: 512, height: 512 }, deviceScaleFactor: 1 });
 const shot = async (file: string, size: number, rounded: boolean) => {
   await page.setViewportSize({ width: size, height: size });

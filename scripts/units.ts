@@ -13,7 +13,7 @@ const NAMES = ['soldier', 'rider', 'cannon'] as const;
 const CELL = 256;
 const PAD = 10;
 
-const browser = await chromium.launch();
+const browser = await chromium.launch({ args: ['--mute-audio'] });
 const page = await browser.newPage();
 // tsx (esbuild keepNames) wraps local functions in __name(): give the page a no-op.
 await page.addInitScript('window.__name = (f) => f');
