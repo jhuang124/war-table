@@ -142,6 +142,10 @@ export class DiceTray {
   trayH = 110;
   cx = 0;
   cy = 0;
+  /** Where the shared rule puts the tray's centre (layout); `cy` = this + `shiftY`. */
+  private baseCy = 0;
+  /** Landscape phones: the tray moves up or down its band's free column, away from the fight (index.ts). */
+  shiftY = 0;
   private W = 1;
   private H = 1;
   private light: THREE.DirectionalLight;
@@ -263,7 +267,9 @@ export class DiceTray {
     this.trayH = trayH;
     this.cx = W / 2;
     // Placed by the shared rule (the HUD's header sits just above this top), so the header rests on the rim.
-    this.cy = bandTop + bandH - inkTrayTop(W, H, bandH, uiScale) + trayH / 2;
+    this.baseCy = bandTop + bandH - inkTrayTop(W, H, bandH, uiScale) + trayH / 2;
+    this.shiftY = 0;
+    this.cy = this.baseCy;
     const fov = 20;
     this.camera.fov = fov;
     this.camera.aspect = W / H;
@@ -276,6 +282,13 @@ export class DiceTray {
     this.place();
     if (changed || !this.floor) this.buildTray();
     for (const d of this.dice) if (d.active) this.applyDie(d);
+  }
+
+  /** Move the tray `px` down (− = up) from its layout spot; the next layout() resets it. */
+  setShift(px: number): void {
+    this.shiftY = px;
+    this.cy = this.baseCy + px;
+    this.place();
   }
 
   /** Tray centre in world = pixel-mapped at z = 0, sunk by the rise. */

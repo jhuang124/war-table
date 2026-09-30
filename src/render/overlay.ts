@@ -587,6 +587,7 @@ export class Overlay {
           b.hideAt = 0;
           b.el.style.visibility = 'hidden';
           b.lastT = 'off';
+          if (this.relax) this.labelsDirty = true;
         }
         continue;
       }
@@ -598,6 +599,7 @@ export class Overlay {
         if (b.lastT !== 'off') {
           b.el.style.visibility = 'hidden';
           b.lastT = 'off';
+          if (this.relax) this.labelsDirty = true;
         }
         continue;
       }
@@ -619,7 +621,12 @@ export class Overlay {
       }
       const tr = `translate3d(${snap(px - wq / 2, r)}px,${snap(py - hq / 2, r)}px,0)`;
       if (tr !== b.lastT) {
-        if (b.lastT === '' || b.lastT === 'off') b.el.style.visibility = 'visible';
+        if (b.lastT === '' || b.lastT === 'off') {
+          b.el.style.visibility = 'visible';
+          // Phones: a count coming back (after a conquest's flood, or from under the tray) re-lays the names,
+          // so a name placed while it was hidden never stays on top of it.
+          if (this.relax && b.lastT === 'off') this.labelsDirty = true;
+        }
         b.el.style.transform = tr;
         b.lastT = tr;
       }
@@ -744,6 +751,18 @@ export class Overlay {
       for (let k = 0; k < boxes.length; k += 4) if (hit([boxes[k], boxes[k + 1], boxes[k + 2], boxes[k + 3]], x0, y0, x1, y1)) return false;
       return true;
     };
+    // Phones: a name never covers an army count, its own included. Every territory's count counts, even
+    // one drying out or hidden for a moment (a conquest changing hands, the dice tray): it is still on
+    // screen, or comes back where it was.
+    const countsClear = (x0: number, y0: number, x1: number, y1: number): boolean => {
+      if (!this.relax) return true;
+      for (let j = 0; j < n; j++) {
+        const o = this.badgeList[j];
+        if (!o.onScreen || o.pw <= 0) continue;
+        if (o.px - o.pw / 2 < x1 + pad && o.px + o.pw / 2 > x0 - pad && o.py - o.ph / 2 < y1 + pad && o.py + o.ph / 2 > y0 - pad) return false;
+      }
+      return true;
+    };
     const freeOfNames = (x0: number, y0: number, x1: number, y1: number): boolean => {
       for (let k = 0; k < boxes.length; k += 4) if (hit([boxes[k], boxes[k + 1], boxes[k + 2], boxes[k + 3]], x0, y0, x1, y1)) return false;
       return true;
@@ -772,18 +791,50 @@ export class Overlay {
         const shown = b.visible && b.lastT !== 'off';
         const below = shown ? b.box[3] + 2 : b.cy + 2;
         const above = shown ? b.box[1] - 2 - l.h : b.cy - 2 - l.h;
-        if (free(i, x0, below, x1, below + l.h)) place = [b.cx, below];
-        else if (shown && free(i, x0, above, x1, above + l.h)) place = [b.cx, above];
+        if (free(i, x0, below, x1, below + l.h) && countsClear(x0, below, x1, below + l.h)) place = [b.cx, below];
+        else if (shown && free(i, x0, above, x1, above + l.h) && countsClear(x0, above, x1, above + l.h)) place = [b.cx, above];
         else if (isFocus && !this.relax) place = [b.cx, below];
         else if (isFocus) {
           // Phones: a name that must show: beside its piece if that is clear, else wherever it at least misses the
           // other names (the source and target names of a fight on a phone would otherwise stack).
           const cands: [number, number][] = [];
           for (const y of shown ? [below, above] : [below]) for (const dx of [0.55, -0.55]) cands.push([b.cx + dx * l.w, y]);
-          place = cands.find(([cx, y]) => free(i, cx - l.w / 2, y, cx + l.w / 2, y + l.h)) ?? null;
+          if (shown) {
+            // beside the piece, level with it
+            const mid = (b.box[1] + b.box[3]) / 2 - l.h / 2;
+            cands.push([b.box[2] + 2 + l.w / 2, mid], [b.box[0] - 2 - l.w / 2, mid]);
+          }
+          place = cands.find(([cx, y]) => free(i, cx - l.w / 2, y, cx + l.w / 2, y + l.h) && countsClear(cx - l.w / 2, y, cx + l.w / 2, y + l.h)) ?? null;
           if (!place) {
-            const all: [number, number][] = [[b.cx, below], ...(shown ? ([[b.cx, above]] as [number, number][]) : []), ...cands];
-            place = all.find(([cx, y]) => freeOfNames(cx - l.w / 2, y, cx + l.w / 2, y + l.h)) ?? [b.cx, below];
+            // Crowded (a landscape phone's Ural, Europe): a name never prints over an army count (its own included).
+            // Of the spots that miss the other names and every count, take the one that covers the least of
+            // the other figures; if there is none, the name stays hidden (the dock's line already says it,
+            // and the picked tiles are lit), rather than hide a number.
+            const all: [number, number][] = [...cands];
+            const ys = shown ? [below, above, below + 0.4 * l.h, above - 0.4 * l.h, (b.box[1] + b.box[3]) / 2 - l.h / 2] : [below, below + 0.4 * l.h];
+            for (const y of ys) for (const dx of [0, 0.3, -0.3, 0.55, -0.55, 0.8, -0.8, 1.05, -1.05]) all.push([b.cx + dx * l.w, y]);
+            const ov = (a0: number, a1: number, c0: number, c1: number) => Math.max(0, Math.min(a1, c1) - Math.max(a0, c0));
+            let best: [number, number] | null = null;
+            let bestC = Infinity;
+            for (const p of all) {
+              const x0 = p[0] - l.w / 2;
+              const x1 = p[0] + l.w / 2;
+              const y0 = p[1];
+              const y1 = p[1] + l.h;
+              if (!freeOfNames(x0, y0, x1, y1) || !countsClear(x0, y0, x1, y1)) continue;
+              let figs = 0;
+              for (let j = 0; j < n; j++) {
+                const bb = tokenBox[j];
+                if (j !== i && bb) figs += ov(x0, x1, bb[0], bb[2]) * ov(y0, y1, bb[1], bb[3]);
+              }
+              // the least figure covered, then the nearest to its own piece
+              const c = figs + 2 * Math.hypot(p[0] - b.cx, p[1] + l.h / 2 - b.cy);
+              if (c < bestC - 0.5) {
+                best = p;
+                bestC = c;
+              }
+            }
+            place = best;
           }
         }
       }
@@ -805,6 +856,13 @@ export class Overlay {
         if (!on) l.el.style.visibility = 'hidden';
       }
     }
+  }
+
+  /** A piece's screen box (figure top → plaque bottom) and its count plaque, container px; null if hidden. */
+  pieceRects(id: TerritoryId): { box: [number, number, number, number]; plaque: [number, number, number, number] } | null {
+    const b = this.badgeList.find((x) => x.id === id);
+    if (!b || !b.visible || !b.onScreen) return null;
+    return { box: [b.box[0], b.box[1], b.box[2], b.box[3]], plaque: [b.px - b.pw / 2, b.py - b.ph / 2, b.px + b.pw / 2, b.py + b.ph / 2] };
   }
 
   get chipCount(): number {

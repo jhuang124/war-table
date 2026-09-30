@@ -1166,7 +1166,100 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     });
   };
   const projTmp = new THREE.Vector3();
+  /**
+   * Landscape phones: the home view already shows every piece clear of the HUD, the free band is short,
+   * and a zoom pushes the pieces around the fight under the seat chips and the dock. There the camera
+   * frames a fight only when one of its pieces is actually hidden, and keeps both whole pieces (figure
+   * top to plaque) clear of the HUD when it does.
+   */
+  const phoneLand = () => compact && W > H;
+  const pieceIndex = new Map(TERRITORY_IDS.map((id, i) => [id, i]));
+  const extentsOf = (ids: TerritoryId[]): number[][] | undefined => {
+    const all = rig.pieceExtents;
+    if (!all) return undefined;
+    return ids.flatMap((id) => {
+      const i = pieceIndex.get(id);
+      return i === undefined ? [] : all.slice(i * 4, i * 4 + 4);
+    });
+  };
+  /**
+   * Landscape phones: the free band is so short that the dice tray and its header (the HUD's fight line,
+   * which rests on the tray's rim) always cover part of the board. Put them where they cover the fight
+   * least — the tray's usual spot, or up or down its column of the free band — and then the fewest other
+   * army counts. The HUD's header follows through `--tray-shift` on <html> (src/ui/mobile.css).
+   * Elsewhere the tray keeps its spot.
+   */
+  let trayFor = '';
+  const placeTrayFor = (from: TerritoryId, to: TerritoryId) => {
+    trayFor = `${from}>${to}`;
+    let best = 0;
+    // (Only where the HUD's header can follow: its phone form, src/ui/layout.ts.)
+    if (phoneLand() && document.documentElement.classList.contains('form-phone')) {
+      const baseCy = tray.cy - tray.shiftY;
+      const halfH = tray.trayH / 2 + 4;
+      const headH = overlay.headerBand;
+      // The header's words when the HUD has laid them out (it names the fight before the tray shows).
+      let hx0 = tray.cx - tray.trayW / 2;
+      let hx1 = tray.cx + tray.trayW / 2;
+      let l = Infinity;
+      let r = -Infinity;
+      document.querySelectorAll<HTMLElement>('[data-testid="battle"] .bt-head > *').forEach((k) => {
+        const bb = k.getBoundingClientRect();
+        if (bb.width > 0) {
+          l = Math.min(l, bb.left - rect0.left);
+          r = Math.max(r, bb.right - rect0.left);
+        }
+      });
+      if (l < r) {
+        hx0 = Math.min(hx0, l - 6);
+        hx1 = Math.max(hx1, r + 6);
+      }
+      const { y0, y1 } = rig.region();
+      const top0 = baseCy - halfH - headH; // the header's top at the usual spot
+      const up = Math.min(0, y0 + 2 - top0);
+      const down = Math.max(0, y1 - 4 - (baseCy + halfH));
+      const fight = [from, to].map((id) => overlay.pieceRects(id)).filter((x) => !!x);
+      const others = TERRITORY_IDS.filter((id) => id !== from && id !== to)
+        .map((id) => overlay.pieceRects(id))
+        .filter((x) => !!x);
+      const ov = (a0: number, a1: number, b0: number, b1: number) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+      const cover = (q: [number, number, number, number], dy: number) => {
+        const tray0 = baseCy + dy - halfH;
+        const tray1 = baseCy + dy + halfH;
+        const tx0 = tray.cx - tray.trayW / 2;
+        const tx1 = tray.cx + tray.trayW / 2;
+        return ov(q[0], q[2], tx0, tx1) * ov(q[1], q[3], tray0, tray1) + ov(q[0], q[2], hx0, hx1) * ov(q[1], q[3], tray0 - headH, tray0);
+      };
+      // In 6 px steps: first the fight uncovered (a spear tip's worth is fine), then the fewest other counts
+      // covered, then the smallest move.
+      const steps: number[] = [0];
+      for (let dy = -6; dy > up; dy -= 6) steps.push(dy);
+      for (let dy = 6; dy < down; dy += 6) steps.push(dy);
+      steps.push(up, down);
+      let bestF = Infinity;
+      let bestO = Infinity;
+      for (const dy of steps) {
+        let f = 0;
+        for (const q of fight) f += cover(q!.box, dy);
+        f = f < 24 ? 0 : f;
+        let o = 0;
+        for (const q of others) o += cover(q!.plaque, dy);
+        if (f < bestF - 1 || (Math.abs(f - bestF) <= 1 && (o < bestO - 1 || (Math.abs(o - bestO) <= 1 && Math.abs(dy) < Math.abs(best))))) {
+          bestF = f;
+          bestO = o;
+          best = dy;
+        }
+      }
+      best = Math.round(best);
+    }
+    if (best !== tray.shiftY) tray.setShift(best);
+    document.documentElement.style.setProperty('--tray-shift', `${best}px`);
+  };
   const needsFraming = (from: TerritoryId, to: TerritoryId): boolean => {
+    if (phoneLand()) {
+      const ext = extentsOf([from, to]);
+      if (ext) return !rig.piecesClear(ext);
+    }
     const { x0, y0, x1, y1 } = rig.region();
     for (const id of [from, to]) {
       const t = tiles.get(id);
@@ -1188,7 +1281,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     const pxPerUnitHome = W / (G.width * 1.1);
     const minZoom = clamp(40 / Math.max(1, widthUnits * pxPerUnitHome), 1, 1.8);
     // Frame a region, not a close-up: the room still needs context around the fight.
-    const pose = rig.framePose(pts, minZoom, 1.7);
+    const pose = rig.framePose(pts, minZoom, 1.7, phoneLand() ? extentsOf([from, to]) : undefined);
     if (reduced || anim.instant) {
       cutTo(pose);
       return;
@@ -1583,6 +1676,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
           return;
         }
         // full: the battle tray. The two figures face each other; the attacker leans in while the dice roll.
+        if (!tray.showing || trayFor !== key) placeTrayFor(e.from, e.to);
         tokens.lean(e.from, e.to, true);
         rolling++;
         try {
@@ -2009,6 +2103,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     const band = insets.trayBand > 0 ? insets.trayBand : nominalBand();
     // The band sits just above the bottom strip; the tray is centred in it.
     tray.layout(W, H, H - insets.bottom - band, band, uiScale);
+    document.documentElement.style.setProperty('--tray-shift', '0px');
+    trayFor = '';
     // The home view keeps tokens clear of the tray's footprint where it can (camera.ts). The band it
     // assumes only ever grows, so a HUD that reports the band only during fights never moves the camera
     // mid-game (it re-homes once, the first time).
@@ -2430,7 +2526,10 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         else void rig.goHome(o?.durationMs);
         return;
       }
-      const pose = rig.framePose(ids.map((id) => tiles.get(id).anchorW), ids.length === 1 ? 2.2 : 1);
+      const ext = phoneLand() ? extentsOf(ids) : undefined;
+      // Landscape phones: pieces already clear of the HUD stay where they are (see phoneLand).
+      if (ext && !rig.moving && rig.piecesClear(ext)) return;
+      const pose = rig.framePose(ids.map((id) => tiles.get(id).anchorW), ids.length === 1 ? 2.2 : 1, 2.4, ext);
       if (reduced) cutTo(pose);
       else void rig.moveTo(pose, o?.durationMs);
     },

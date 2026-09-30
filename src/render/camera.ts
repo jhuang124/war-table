@@ -834,8 +834,106 @@ export class CameraRig {
     return this.moveTo({ ...this.home }, durationMs);
   }
 
-  /** Pose that frames world-space points (keeps pitch within 8° of now, azimuth as is). */
-  framePose(points: THREE.Vector3[], minZoom = 1, maxZoom = 2.4): Pose {
+  /**
+   * How far these pieces sit inside the HUD-free view at `pose`, px per side (≥ 0 = clear), by the home
+   * view's rules: `pts` is 4 world points per piece, the figure's top first (tokens.extentPoints); the
+   * side safe areas + sideClear, the HUD rectangles (or the top/bottom inset bands), and the land/piece/
+   * figure clearances. The dice tray is not counted (it only shows during a fight). `strict`: the figures'
+   * tops keep the pieces' clearance too (the home view lets them tuck under a band: `figureClear`).
+   */
+  pieceSlack(pts: number[][], pose: Pose, strict = false): { top: number; bot: number; left: number; right: number } {
+    const W = this.W;
+    const H = this.H;
+    const ins = this.insets;
+    const mP = this.pieceClear;
+    const mF = strict ? Math.max(mP, this.figureClear ?? mP) : (this.figureClear ?? mP);
+    const xL = clamp(Math.max(ins.left, this.safeLeft), 0, W * 0.45) + this.sideClear;
+    const xR = W - clamp(Math.max(ins.right, this.safeRight), 0, W * 0.45) - this.sideClear;
+    const BIG = 1e6;
+    const ex: { x0: number; x1: number; y0: number; y1: number; top: boolean }[] = [];
+    if (ins.rects && ins.rects.length) {
+      for (const r of ins.rects) if (r.w > 0 && r.h > 0) ex.push({ x0: r.x, x1: r.x + r.w, y0: r.y, y1: r.y + r.h, top: r.y + r.h / 2 < H / 2 });
+    } else {
+      if (ins.top > 0) ex.push({ x0: -BIG, x1: BIG, y0: -BIG, y1: clamp(ins.top, 0, H * 0.45), top: true });
+      if (ins.bottom > 0) ex.push({ x0: -BIG, x1: BIG, y0: H - clamp(ins.bottom, 0, H * 0.5), y1: BIG, top: false });
+    }
+    const cam = this.camera.clone();
+    this.place(pose, cam);
+    let top = Infinity;
+    let bot = Infinity;
+    let left = Infinity;
+    let right = Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      const c = pts[i];
+      this.tmp.set(c[0], c[1], c[2]).project(cam);
+      const px = (this.tmp.x * 0.5 + 0.5) * W;
+      const py = (-this.tmp.y * 0.5 + 0.5) * H;
+      const m = i % 4 === 0 ? mF : mP;
+      top = Math.min(top, py - m);
+      bot = Math.min(bot, H - m - py);
+      left = Math.min(left, px - xL);
+      right = Math.min(right, xR - px);
+      for (const r of ex) {
+        if (px < r.x0 - m || px > r.x1 + m) continue;
+        if (r.top) top = Math.min(top, py - (r.y1 + m));
+        else bot = Math.min(bot, r.y0 - m - py);
+      }
+    }
+    return { top, bot, left, right };
+  }
+
+  /** These pieces (see pieceSlack) are clear of the HUD and the screen edges at `pose` (default: now). */
+  piecesClear(pts: number[][], pose: Pose = this.cur, strict = false): boolean {
+    const s = this.pieceSlack(pts, pose, strict);
+    return s.top >= -0.5 && s.bot >= -0.5 && s.left >= -0.5 && s.right >= -0.5;
+  }
+
+  /**
+   * Keep `pose` framing these pieces clear of the HUD (phones, where the free band is short): nudge it
+   * so the slack is even on each axis, and if they still don't fit, zoom out (towards home) until they
+   * do. Whole pieces, figure tops included: a framed fight never tucks under the HUD. Returns the adjusted
+   * pose; home if even the home scale can't hold them clear.
+   */
+  private fitPieces(pose: Pose, pts: number[][]): Pose {
+    const pr = pose.pitch * DEG;
+    const tanH = Math.tan((BASE_FOV * DEG) / 2);
+    const at = (dist: number): Pose => {
+      const p: Pose = { ...pose, dist };
+      // world units per px at the look-at point: across (x) and along the ground (z)
+      const ux = (2 * dist * tanH) / this.H;
+      const uz = ux / Math.sin(pr);
+      for (let it = 0; it < 6; it++) {
+        const s = this.pieceSlack(pts, p, true);
+        const dy = (s.bot - s.top) / 2; // px, + = move the pieces down the screen
+        const dx = (s.right - s.left) / 2; // px, + = move them right
+        if (Math.abs(dy) < 0.25 && Math.abs(dx) < 0.25) break;
+        p.tz -= dy * uz;
+        p.tx -= dx * ux;
+        this.clampPan(p);
+      }
+      return p;
+    };
+    const fits = (p: Pose) => this.piecesClear(pts, p, true);
+    let p = at(pose.dist);
+    if (fits(p)) return p;
+    // The largest zoom (smallest distance) that holds them clear: bisect between this pose and home scale.
+    let lo = pose.dist;
+    let hi = Math.max(pose.dist, this.home.dist);
+    if (!fits(at(hi))) return { ...this.home };
+    for (let it = 0; it < 14; it++) {
+      const mid = (lo + hi) / 2;
+      if (fits(at(mid))) hi = mid;
+      else lo = mid;
+    }
+    p = at(hi);
+    return p;
+  }
+
+  /**
+   * Pose that frames world-space points (keeps pitch within 8° of now, azimuth as is). `pieces` (4 world
+   * points per piece, see pieceSlack): the pose also keeps those pieces clear of the HUD (phones).
+   */
+  framePose(points: THREE.Vector3[], minZoom = 1, maxZoom = 2.4, pieces?: number[][]): Pose {
     let minX = Infinity;
     let maxX = -Infinity;
     let minZ = Infinity;
@@ -860,7 +958,7 @@ export class CameraRig {
       az: this.cur.az,
     };
     this.clampPan(pose);
-    return pose;
+    return pieces && pieces.length ? this.fitPieces(pose, pieces) : pose;
   }
 
   /** Cut (no motion) to a pose. */

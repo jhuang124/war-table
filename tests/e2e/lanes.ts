@@ -33,6 +33,7 @@ export const FLOWS: Record<string, FlowSpec> = {
   budgets: { lane: 'timing', why: 'forced wait 0 on your own turn at 1× and rapid 60 ms stepper presses never dropped: tempo budgets' },
   rematch: { lane: 'timing', why: 'no board event > 3 s in the new game: the deal is designed at ≤ 2.5 s, so the bound has 0.5 s of slack' },
   feel: { lane: 'timing', why: 'worst frame ≤ 50 ms on the first roll after a cold load, click → line ≤ 50 ms, idle board 0 tweens' },
+  ink: { lane: 'timing', why: 'one gold per frame over a real turn, plus a single roll ≤ 1.25 s and a blitz ≤ 3.0 s from __risk.metrics() (tempo budgets)' },
   round: { lane: 'timing', why: 'AI turn median ≤ 6 s and p95 ≤ 12 s at watch, a round of 3 AI turns ≤ 25 s, Start → first click ≤ 20 s' },
   game: {
     lane: 'timing',
