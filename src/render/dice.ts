@@ -1,18 +1,19 @@
-// The battle tray (docs/INK.md B §4 "Attack 2 · dice land"): a slim, translucent indigo lacquer tray that
-// rises out of the southern ocean just above the bottom strip, drawn in its own pass (depth cleared, after
-// the board) with a pixel-mapped camera, so it sits at a fixed CSS-px spot in the battle band. The paper shows
-// through its floor; its rim is a thin matte lacquer edge with one ivory hairline. Matte dice in the seats'
-// wash colours with ivory pips, keyframed (no physics) onto the engine's faces:
+// The battle tray (docs/INK2.md §2.3, "the ink ring"): no object on the painting, just one closed brush
+// ellipse in silver ink that brushes itself onto the paper clockwise from the west, with a feathered wash
+// of deep paper inside it so the dice have ground over ocean or land. Drawn in its own pass (depth cleared,
+// after the board) with a pixel-mapped camera, so it sits at one fixed CSS-px spot per layout in the battle
+// band. Matte dice in the seats' wash colours with ivory pips land on the paper inside the ring, keyframed
+// (no physics) onto the engine's faces:
 //   shake → tumble → settle → 250 ms of stillness → the verdict: each compared pair is joined by an
 //   ivory hairline, drawn from the winner; the loser dims to half under a splash of ink.
 // (The hairline is ivory, not gold: while a fight is on, the gold stroke on the board is the one gold.)
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { Animator, ease, type Run } from './anim';
-import { inkDiceFaceTexture, inkSplashTexture } from './textures';
-import { IVORY } from './util';
+import { inkDiceFaceTexture, inkRingTexture, inkSplashTexture } from './textures';
+import { IVORY, hexToRgb } from './util';
 import type { PlayerPalette } from '../shared/palette';
-import { boardTrayGeometry, inkTrayGeometry, inkTrayTop, INK_TRAY_MID_GAP, INK_TRAY_PAD, INK_TRAY_STEP } from '../shared/tray';
+import { boardTrayGeometry, inkRingGeometry, inkTrayGeometry, inkTrayTop, INK_TRAY_MID_GAP, INK_TRAY_PAD, INK_TRAY_STEP } from '../shared/tray';
 // The HUD's tray band (src/shared/tray.ts) is re-exported here; the tray actually drawn is the slimmer
 // `inkTrayGeometry`, placed by `inkTrayTop` (shared with the HUD, so the fight header sits on its rim).
 export { boardTrayGeometry, inkTrayGeometry };
@@ -28,8 +29,50 @@ const FACE_VALUES = [3, 4, 2, 5, 1, 6];
 const TILT = -0.42; // tray pitch (top edge recedes)
 /** The verdict's held stillness (B §4): after the dice settle, nothing moves, then the verdict. */
 export const VERDICT_SILENCE_MS = 250;
-/** How far the tray rises from (CSS px) as it appears. */
-const RISE_PX = 26;
+/** The ring brushes itself on (INK2 §2.2 t = 0): 220 ms, clockwise from the west. Reduced motion: a 150 ms fade. */
+const RING_DRAW_MS = 220;
+/** The ring's ink (`--coast`, silver on indigo) and the wash inside it (the deep paper). */
+const RING_INK = hexToRgb('#e2ddcf');
+const RING_WASH = hexToRgb('#0b1224');
+/** Ring weight at home, CSS px: the brush's full width where it bears down (it breathes ~1.4–3 px). */
+const RING_PX = 2.9;
+/** One brush for every ring (the same hand every fight). */
+const RING_SEED = 11;
+
+const RING_VERT = /* glsl */ `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+const RING_FRAG = /* glsl */ `
+uniform sampler2D uRing;
+uniform vec3 uInk;
+uniform vec3 uWash;
+uniform float uProgress;
+uniform float uAlpha;
+uniform float uWashA;
+uniform vec2 uSize;
+uniform vec2 uRad;
+varying vec2 vUv;
+void main() {
+  vec2 q = (vUv - 0.5) * uSize / uRad;
+  float r = length(q);
+  // the brush travels clockwise from the west (9 o'clock): 0 → 1 round the loop
+  float th = mod(3.14159265 - atan(q.y, q.x), 6.2831853) / 6.2831853;
+  float rev = 1.0 - smoothstep(uProgress - 0.035, uProgress, th);
+  float ring = texture2D(uRing, vUv).a * 0.38 * rev;
+  // the deep-paper wash inside: 30 %, feathered over 12 px inward from the brush's centre line
+  vec2 dir = r > 1e-4 ? q / r : vec2(1.0, 0.0);
+  float d = (1.0 - r) * length(dir * uRad);
+  float wash = smoothstep(0.0, 12.0, d) * 0.3 * uWashA;
+  float a = ring + wash * (1.0 - ring);
+  if (a * uAlpha < 0.003) discard;
+  vec3 col = (uInk * ring + uWash * wash * (1.0 - ring)) / max(a, 1e-4);
+  gl_FragColor = vec4(col, a * uAlpha);
+}
+`;
 
 const HAIR_VERT = /* glsl */ `
 attribute float aU;
@@ -126,15 +169,17 @@ export class DiceTray {
   private tray = new THREE.Group();
   private dice: Die[] = [];
   private faceCache = new Map<string, THREE.Texture[]>();
-  private floor: THREE.Mesh | null = null;
-  private rimMesh: THREE.Mesh | null = null;
-  private hairMesh: THREE.Mesh | null = null;
-  private trayMats: THREE.Material[] = [];
+  /** The ink ring (a quad on the tray's plane) and the contact-shadow catcher inside it. */
+  private ring: THREE.Mesh;
+  private ringMat: THREE.ShaderMaterial;
+  private shadow: THREE.Mesh;
+  private shadowMat: THREE.ShadowMaterial;
+  private ringKey = '';
   private splashTex = inkSplashTexture();
   private hairs: { mesh: THREE.Mesh; mat: THREE.ShaderMaterial }[] = [];
   private opacity = 0;
-  /** 0 = sunk (below its spot, as it rises / sinks), 1 = in place. */
-  private rise = 0;
+  /** How far round the ring the brush has come (0 → 1.04), clockwise from the west. */
+  private drawn = 0;
   private shown = false;
   private ver = 0;
   size = 64; // die size in px
@@ -142,10 +187,6 @@ export class DiceTray {
   trayH = 110;
   cx = 0;
   cy = 0;
-  /** Where the shared rule puts the tray's centre (layout); `cy` = this + `shiftY`. */
-  private baseCy = 0;
-  /** Landscape phones: the tray moves up or down its band's free column, away from the fight (index.ts). */
-  shiftY = 0;
   private W = 1;
   private H = 1;
   private light: THREE.DirectionalLight;
@@ -183,6 +224,35 @@ export class DiceTray {
     this.scene.add(this.root);
     this.root.add(this.tray);
     this.tray.rotation.x = TILT;
+    // The ring and its wash lie on the paper plane the dice land on; the dice's contact shadow falls on a
+    // shadow-only catcher (no floor, no rim, no lacquer, no reflections).
+    this.ringMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uRing: { value: null },
+        uInk: { value: new THREE.Vector3(...RING_INK) },
+        uWash: { value: new THREE.Vector3(...RING_WASH) },
+        uProgress: { value: 0 },
+        uAlpha: { value: 0 },
+        uWashA: { value: 0 },
+        uSize: { value: new THREE.Vector2(1, 1) },
+        uRad: { value: new THREE.Vector2(1, 1) },
+      },
+      vertexShader: RING_VERT,
+      fragmentShader: RING_FRAG,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      toneMapped: false,
+    });
+    this.ring = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.ringMat);
+    this.ring.renderOrder = -2;
+    this.shadowMat = new THREE.ShadowMaterial({ color: '#05080f', opacity: 0, transparent: true, depthWrite: false });
+    this.shadow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.shadowMat);
+    this.shadow.receiveShadow = true;
+    this.shadow.position.z = 0.05;
+    this.shadow.renderOrder = -1;
+    this.tray.add(this.ring, this.shadow);
+    this.materials.push(this.ringMat, this.shadowMat);
 
     const geo = new RoundedBoxGeometry(1, 1, 1, 4, 0.12);
     const splashGeo = new THREE.PlaneGeometry(0.9, 0.9);
@@ -266,10 +336,9 @@ export class DiceTray {
     this.trayW = trayW;
     this.trayH = trayH;
     this.cx = W / 2;
-    // Placed by the shared rule (the HUD's header sits just above this top), so the header rests on the rim.
-    this.baseCy = bandTop + bandH - inkTrayTop(W, H, bandH, uiScale) + trayH / 2;
-    this.shiftY = 0;
-    this.cy = this.baseCy;
+    // Placed by the shared rule (the HUD's header sits just above this top), so the header rests on the
+    // ring. One fixed spot per layout: the ring's translucent wash keeps anything under it readable.
+    this.cy = bandTop + bandH - inkTrayTop(W, H, bandH, uiScale) + trayH / 2;
     const fov = 20;
     this.camera.fov = fov;
     this.camera.aspect = W / H;
@@ -280,87 +349,47 @@ export class DiceTray {
     this.camera.lookAt(0, 0, 0);
     this.camera.updateProjectionMatrix();
     this.place();
-    if (changed || !this.floor) this.buildTray();
+    this.buildRing(W, H, bandH, uiScale, changed);
     for (const d of this.dice) if (d.active) this.applyDie(d);
   }
 
-  /** Move the tray `px` down (− = up) from its layout spot; the next layout() resets it. */
-  setShift(px: number): void {
-    this.shiftY = px;
-    this.cy = this.baseCy + px;
-    this.place();
-  }
-
-  /** Tray centre in world = pixel-mapped at z = 0, sunk by the rise. */
+  /** Tray centre in world = pixel-mapped at z = 0. */
   private place(): void {
-    const sink = (1 - this.rise) * RISE_PX;
-    this.root.position.set(this.cx - this.W / 2, this.H / 2 - this.cy - sink, 0);
+    this.root.position.set(this.cx - this.W / 2, this.H / 2 - this.cy, 0);
   }
 
-  private buildTray(): void {
-    if (this.floor) {
-      this.tray.remove(this.floor, this.rimMesh!, this.hairMesh!);
-      this.floor.geometry.dispose();
-      this.rimMesh!.geometry.dispose();
-      this.hairMesh!.geometry.dispose();
+  /**
+   * The ring for this size (INK2 §2.3): its centre line is the ellipse inscribed in the tray box with a 6 %
+   * overshoot on the long axis, weight ~RING_PX at its heaviest. The quad carries the brush's margin; the
+   * canvas is rasterised once per size (textures.ts caches it).
+   */
+  private buildRing(W: number, H: number, bandH: number, uiScale: number, changed: boolean): void {
+    const { rx, ry } = inkRingGeometry(W, H, bandH, uiScale);
+    // brushRing's viewBox is 100 tall; its centre line sits (1.6·Wmax + 3) units inside the box, and the
+    // weight scales with the box. Solve for the px weight (a few fixed-point steps converge).
+    let wmax = 3;
+    let s = 1;
+    for (let i = 0; i < 5; i++) {
+      s = ry / (50 - wmax * 1.6 - 3);
+      wmax = RING_PX / s;
     }
-    const w = this.trayW;
-    const h = this.trayH / Math.cos(TILT);
-    // A thin lacquer tray, not a slab: a narrow, low rim and softly rounded corners.
-    const rim = Math.max(3, this.size * 0.085);
-    const r = Math.min(h * 0.28, 16);
-    const rr = (W: number, H: number, R: number) => {
-      const s = new THREE.Shape();
-      s.moveTo(-W / 2 + R, -H / 2);
-      s.lineTo(W / 2 - R, -H / 2);
-      s.quadraticCurveTo(W / 2, -H / 2, W / 2, -H / 2 + R);
-      s.lineTo(W / 2, H / 2 - R);
-      s.quadraticCurveTo(W / 2, H / 2, W / 2 - R, H / 2);
-      s.lineTo(-W / 2 + R, H / 2);
-      s.quadraticCurveTo(-W / 2, H / 2, -W / 2, H / 2 - R);
-      s.lineTo(-W / 2, -H / 2 + R);
-      s.quadraticCurveTo(-W / 2, -H / 2, -W / 2 + R, -H / 2);
-      return s;
-    };
-    if (!this.trayMats.length) {
-      // Floor: a pale veil of the deep paper colour (Lambert, so the dice still cast soft shadows on it);
-      // the ocean's paper and fibres show through, so the tray reads as part of the painting.
-      // Its mean luminance sits within ~15 % of the open ocean's (a pale wash band, not a dark slab).
-      const floorMat = new THREE.MeshLambertMaterial({ color: '#223052', transparent: true, depthWrite: false });
-      floorMat.userData.base = 0.5;
-      // Rim: matte indigo lacquer (one soft highlight at most), and a single ivory hairline on its top.
-      const rimMat = new THREE.MeshStandardMaterial({ color: '#1c2745', roughness: 0.62, metalness: 0, envMapIntensity: 0.08, transparent: true });
-      rimMat.userData.base = 0.9;
-      const hairMat = new THREE.MeshBasicMaterial({ color: IVORY, transparent: true, depthWrite: false, toneMapped: false });
-      hairMat.userData.base = 0.4;
-      this.trayMats.push(floorMat, rimMat, hairMat);
-      this.materials.push(floorMat, rimMat, hairMat);
-    }
-    const floorGeo = new THREE.ShapeGeometry(rr(w - rim, h - rim, Math.max(2, r - rim * 0.5)), 8);
-    this.floor = new THREE.Mesh(floorGeo, this.trayMats[0]);
-    this.floor.receiveShadow = true;
-    const outer = rr(w, h, r);
-    outer.holes.push(rr(w - rim * 2, h - rim * 2, Math.max(2, r - rim)) as unknown as THREE.Path);
-    const depth = rim * 0.9;
-    const rimGeo = new THREE.ExtrudeGeometry(outer, {
-      depth,
-      bevelEnabled: true,
-      bevelThickness: rim * 0.22,
-      bevelSize: rim * 0.22,
-      bevelOffset: -rim * 0.22,
-      bevelSegments: 2,
-      curveSegments: 10,
-    });
-    this.rimMesh = new THREE.Mesh(rimGeo, this.trayMats[1]);
-    this.rimMesh.receiveShadow = true;
-    // the hairline: ~1.2 px of ivory along the middle of the rim's top
-    const hw = 0.6;
-    const ring = rr(w - rim + hw * 2, h - rim + hw * 2, Math.max(2, r - rim * 0.5 + hw));
-    ring.holes.push(rr(w - rim - hw * 2, h - rim - hw * 2, Math.max(2, r - rim * 0.5 - hw)) as unknown as THREE.Path);
-    this.hairMesh = new THREE.Mesh(new THREE.ShapeGeometry(ring, 10), this.trayMats[2]);
-    this.hairMesh.position.z = depth + rim * 0.22 + 0.2;
-    this.hairMesh.renderOrder = 2;
-    this.tray.add(this.floor, this.rimMesh, this.hairMesh);
+    const m = wmax * 1.6 + 3;
+    const aspect = (2 * (rx / s + m)) / 100;
+    const qw = 100 * aspect * s;
+    const qh = 100 * s;
+    const dpr = Math.min(2, typeof devicePixelRatio === 'number' ? devicePixelRatio : 1);
+    const cw = Math.min(2048, Math.round(qw * dpr));
+    const ch = Math.min(512, Math.round(qh * dpr));
+    const key = `${cw}x${ch}|${aspect.toFixed(3)}`;
+    if (key === this.ringKey && !changed) return;
+    this.ringKey = key;
+    this.ringMat.uniforms.uRing.value = inkRingTexture(RING_SEED, aspect, cw, ch, wmax / 5.2, 5);
+    (this.ringMat.uniforms.uSize.value as THREE.Vector2).set(qw, qh);
+    (this.ringMat.uniforms.uRad.value as THREE.Vector2).set(rx, ry);
+    // On the tilted paper plane: stretched along its depth so it projects to the box's height.
+    const k = 1 / Math.cos(TILT);
+    this.ring.scale.set(qw, qh * k, 1);
+    this.shadow.scale.set(rx * 1.9, ry * 1.9 * k, 1);
   }
 
   private faces(p: PlayerPalette): THREE.Texture[] {
@@ -398,63 +427,75 @@ export class DiceTray {
 
   private setFade(v: number): void {
     this.opacity = v;
-    for (const m of this.trayMats) m.opacity = v * ((m.userData.base as number | undefined) ?? 1);
+    this.ringMat.uniforms.uAlpha.value = v;
+    this.shadowMat.opacity = 0.34 * v;
     for (const d of this.dice) this.applyDie(d);
     for (const h of this.hairs) h.mat.uniforms.uOpacity.value = Math.min(h.mat.uniforms.uOpacity.value, v * 0.8);
     this.root.visible = v > 0.002;
   }
 
-  /** The tray rises out of the sea into its spot (220 ms), fading in as it comes. */
-  show(): void {
+  private setDrawn(v: number): void {
+    this.drawn = v;
+    this.ringMat.uniforms.uProgress.value = v;
+    this.ringMat.uniforms.uWashA.value = Math.min(1, v * 1.15);
+  }
+
+  /**
+   * The ring brushes itself onto the paper clockwise from the west (220 ms, brush easing) and the wash
+   * inside fades in with it. Already up (a repeat roll, a blitz): it stays. Reduced motion: a 150 ms fade.
+   */
+  show(reduced = false): void {
     this.lingerUntil = 0;
-    if (this.shown && this.opacity >= 1) return;
+    if (this.shown && this.opacity >= 1 && this.drawn >= 1) return;
     this.shown = true;
     const ver = ++this.ver;
     const from = this.opacity;
-    const r0 = this.rise;
     this.root.visible = true;
     if (this.anim.instant) {
-      this.rise = 1;
-      this.place();
+      this.setDrawn(1.04);
       this.setFade(1);
       return;
     }
+    // Still on the paper (drying out, or up): it comes back whole; only a dry ring is drawn again.
+    const redraw = this.drawn < 1 || from <= 0.002;
+    if (redraw && !reduced) this.setDrawn(0);
+    else this.setDrawn(1.04);
+    const brush = (t: number) => 1 - Math.pow(1 - t, 2.4);
     this.anim.tween({
-      ms: 220,
+      ms: redraw && !reduced ? RING_DRAW_MS : 150,
       unscaled: true,
-      ease: ease.outCubic,
+      ease: ease.linear,
       update: (v) => {
         if (ver !== this.ver) return;
-        this.rise = r0 + (1 - r0) * v;
-        this.place();
-        this.setFade(from + (1 - from) * Math.min(1, v * 1.6));
+        if (redraw && !reduced) {
+          this.setDrawn(brush(v) * 1.04);
+          // the dice (and the shadow) are there from the first frame of the shake
+          this.setFade(from + (1 - from) * Math.min(1, v * 4));
+        } else this.setFade(from + (1 - from) * ease.outQuad(v));
       },
     });
   }
 
-  /** It sinks back into the sea as it fades. */
+  /** It dries out: alpha only (the ring, its wash and the dice together). */
   hide(ms = 200): void {
     this.lingerUntil = 0;
     if (!this.shown && this.opacity <= 0) return;
     this.shown = false;
     const ver = ++this.ver;
     const from = this.opacity;
-    const r0 = this.rise;
+    this.onHide?.(ms);
     this.anim.tween({
       ms,
       unscaled: true,
       ease: ease.inQuad,
       update: (v) => {
         if (ver !== this.ver) return;
-        this.rise = r0 * (1 - 0.5 * v);
-        this.place();
         this.setFade(from * (1 - v));
       },
       done: () => {
         if (ver === this.ver) {
           this.setFade(0);
-          this.rise = 0;
-          this.place();
+          this.setDrawn(0);
           for (const d of this.dice) d.active = false;
           for (const h of this.hairs) h.mesh.visible = false;
         }
@@ -462,12 +503,14 @@ export class DiceTray {
     });
   }
 
+  /** Called as the tray starts to dry out (`ms` = its fade): the board's washes come back with it. */
+  onHide: ((ms: number) => void) | null = null;
+
   /** Warm-up: show a static roll so shaders/textures are uploaded. */
   warm(p: PlayerPalette, q: PlayerPalette): void {
     this.prepare({ attack: [6, 5, 4], defend: [3, 2], attacker: p, defender: q, mode: 'static', reduced: false, run: null });
-    this.opacity = 1;
-    this.rise = 1;
-    this.place();
+    this.setDrawn(1.04);
+    this.setFade(1);
     this.root.visible = true;
     for (const d of this.dice) this.applyDie(d);
     for (let i = 0; i < 2; i++) this.layHair(i, this.dice[i], this.dice[3 + i], true);
@@ -475,9 +518,8 @@ export class DiceTray {
 
   resetWarm(): void {
     this.setFade(0);
+    this.setDrawn(0);
     this.shown = false;
-    this.rise = 0;
-    this.place();
     for (const d of this.dice) d.active = false;
     for (const h of this.hairs) h.mesh.visible = false;
   }
@@ -580,7 +622,7 @@ export class DiceTray {
 
   /** Play one roll. Always resolves. */
   async roll(spec: RollSpec): Promise<void> {
-    this.show();
+    this.show(spec.reduced);
     const { atk, def } = this.prepare(spec);
     const all = [...atk, ...def];
     const run = spec.run;
@@ -778,6 +820,36 @@ export class DiceTray {
     await verdict(T.full, T.verdict);
   }
 
+  private proj = new THREE.Vector3();
+  /**
+   * Where the dice sit on screen (CSS px, x0 y0 x1 y1): their seats, not the ring. The ring is ink on the
+   * paper with a translucent wash, so what lies under it stays readable (John, 2026-09-29); only the dice
+   * themselves cover the board. Null when no die is out.
+   */
+  diceRect(): [number, number, number, number] | null {
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    this.root.updateMatrixWorld();
+    const s = this.size;
+    for (let i = 0; i < this.dice.length; i++) {
+      const d = this.dice[i];
+      if (!d.active) continue;
+      // the die's seat (its final spot), a rounded cube seen a little from the front
+      this.proj.set(this.slotX(d.side, i < 3 ? i : i - 3), -s * 0.2, s / 2);
+      this.tray.localToWorld(this.proj);
+      this.proj.project(this.camera);
+      const x = (this.proj.x * 0.5 + 0.5) * this.W;
+      const y = (-this.proj.y * 0.5 + 0.5) * this.H;
+      x0 = Math.min(x0, x - s * 0.6);
+      x1 = Math.max(x1, x + s * 0.6);
+      y0 = Math.min(y0, y - s * 0.72);
+      y1 = Math.max(y1, y + s * 0.62);
+    }
+    return x0 < x1 ? [x0, y0, x1, y1] : null;
+  }
+
   /** Linger bookkeeping: hide after `ms` of real time unless another roll starts. */
   linger(ms: number, now: number): void {
     this.lingerUntil = now + ms;
@@ -794,9 +866,8 @@ export class DiceTray {
     for (const m of this.materials) m.dispose();
     for (const f of this.faceCache.values()) f.forEach((t) => t.dispose());
     this.splashTex.dispose();
-    this.floor?.geometry.dispose();
-    this.rimMesh?.geometry.dispose();
-    this.hairMesh?.geometry.dispose();
+    this.ring.geometry.dispose();
+    this.shadow.geometry.dispose();
     this.dice[0]?.mesh.geometry.dispose();
     this.dice[0]?.splash.geometry.dispose();
     for (const h of this.hairs) h.mesh.geometry.dispose();

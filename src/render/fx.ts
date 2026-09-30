@@ -1,26 +1,58 @@
-// Brush strokes on the board (docs/INK.md B §4, A2): the attack arrow as one gold dry-brush stroke (tip
-// first, thick → thin, a brushed wedge for a head), the live stroke that follows a finger or mouse in
-// draw-to-attack, and the fortify route as a dotted ink line. They lie flat on the paper; nothing glows.
+// Brush strokes on the board (docs/INK2.md §2.1, INK.md A2): the attack arrow as one dry-brush stroke that
+// lands loaded at the source figure, swells, thins as it crosses the border and lifts off inside the target
+// in a few separate bristle hairs (no arrowhead: direction reads from where the brush lifted); the live
+// stroke that follows a finger or mouse in draw-to-attack (the same brush, wet under the finger); and the
+// fortify route as a dotted ink line. They lie flat on the paper; nothing glows.
 // (Sea lanes are ink dabs in the ink layer now; dust and ripple rings are cut.)
 import * as THREE from 'three';
 import type { TerritoryId } from '../engine/types';
 import { seaLaneBetween } from '../map';
 import { Animator, ease, type Run } from './anim';
+import { loadInkMap } from './textures';
 import { GOLD, IVORY, TILE_TOP, hexToRgb, toWorld, type RGB } from './util';
 import type { TileSet } from './tiles';
 
 const STROKE_Y = TILE_TOP + 0.34;
 
+/**
+ * The brush-tip map (public/tex/tip.png, Phase 0; docs/INK2.md §4.1): the end of a real dry stroke where
+ * the brush lifted, alpha = ink, stroke axis left → right. Loaded once, on the first brush; until it arrives
+ * (or if it fails) the strokes fray with the procedural noise alone.
+ */
+const TIP: { tex: THREE.Texture | null; mats: Set<THREE.ShaderMaterial>; asked: boolean } = { tex: null, mats: new Set(), asked: false };
+function useTip(mat: THREE.ShaderMaterial): void {
+  TIP.mats.add(mat);
+  if (TIP.tex) {
+    mat.uniforms.uTip.value = TIP.tex;
+    mat.uniforms.uTipOn.value = 1;
+    return;
+  }
+  if (TIP.asked || typeof document === 'undefined') return;
+  TIP.asked = true;
+  loadInkMap('tip.png', { flipY: true }, (t) => {
+    TIP.tex = t;
+    for (const m of TIP.mats) {
+      m.uniforms.uTip.value = t;
+      m.uniforms.uTipOn.value = 1;
+    }
+  });
+}
+
 const BRUSH_VERT = /* glsl */ `
 attribute vec2 aUV;
+attribute vec3 aW;
 varying vec2 vUV;
+varying vec3 vW;
 void main() {
   vUV = aUV;
+  vW = aW;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
 `;
 const BRUSH_FRAG = /* glsl */ `
 uniform sampler2D uNoise;
+uniform sampler2D uTip;
+uniform float uTipOn;
 uniform vec3 uColor;
 uniform float uOpacity;
 uniform float uProgress;
@@ -31,10 +63,13 @@ uniform float uSeed;
 uniform float uDry;
 uniform float uDryK;
 uniform float uStyle;
-uniform float uDryAt;
+uniform float uLive;
+uniform float uPx;
 uniform float uFadeIn;
 uniform float uFadeOut;
 varying vec2 vUV;
+varying vec3 vW;
+float h1(float n) { return fract(sin(n * 12.9898 + uSeed * 78.233) * 43758.5453); }
 void main() {
   float u = vUV.x;
   float v = vUV.y;
@@ -46,16 +81,48 @@ void main() {
   float bristle = n.b;
   float a;
   if (uStyle > 0.5) {
-    // Dry brush (the attack stroke): bristle streaks run along the stroke; the tail end (uDryAt 0 = u 0)
-    // runs out of ink, so it streaks and frays; the loaded end stays solid.
-    float tailness = uDryAt > 0.5 ? u : 1.0 - u;
+    // The brush that lifts (INK2 §2.1), all in home-view px: vW = (half-width of the ribbon, half-width of
+    // the loaded body, g = 0 → 1 along the whole stroke). w runs from the loaded end (0) to where the brush
+    // lifts (1): the arrow lands at its source; the live stroke is wet under the finger.
+    float g = vW.z;
+    float w = uLive > 0.5 ? 1.0 - g : g;
+    float d = v * vW.x;
+    float ad = abs(d);
     vec4 st = texture2D(uNoise, vec2(s / 19.0 + uSeed, v * 0.62 + 0.5));
     vec4 st2 = texture2D(uNoise, vec2(s / 6.0 + uSeed * 2.1, v * 1.3 + 0.13));
     bristle = st.b * 0.65 + st2.a * 0.35;
-    float halfW = 1.0 - (0.18 + 0.42 * tailness * tailness) * e.g;
-    a = 1.0 - smoothstep(halfW - 0.2, halfW, abs(v));
-    float dryness = clamp((0.08 + 0.95 * pow(tailness, 1.6) + uDry * tailness) * uDryK, 0.0, 1.0);
-    a *= mix(1.0, smoothstep(0.3, 0.6, bristle), dryness);
+    // the body: its loaded width, ±8 % bristle wobble; the landing is round
+    float hb = vW.y * (1.0 + 0.16 * (e.g - 0.5));
+    float sPx = (uLive > 0.5 ? (1.0 - u) : u) * uLen / max(uPx, 1e-5);
+    float h0 = vW.y;
+    if (sPx < h0) hb = min(hb, sqrt(max(0.0, h0 * h0 - (h0 - sPx) * (h0 - sPx))) + 0.4);
+    float body = 1.0 - smoothstep(hb - 0.6, hb + 0.4, ad);
+    // faint bristle streaks in the body; dry gaps begin as it thins across the border
+    float dryness = clamp(0.1 + 0.8 * smoothstep(0.62, 0.92, w) + uDry * 0.3, 0.0, 1.0) * uDryK;
+    body *= mix(1.0, smoothstep(0.3, 0.6, bristle), dryness);
+    // the last 30 %: the real brush tip's fray (u-mapped along the stroke, v across it)
+    float env = max(vW.y, 1.4 + 1.3 * smoothstep(0.9, 1.0, w));
+    float tipA = 1.0;
+    if (w > 0.7 && uTipOn > 0.5) tipA = texture2D(uTip, vec2(clamp((w - 0.7) / 0.3, 0.02, 0.98), clamp(0.5 + 0.46 * d / env, 0.02, 0.98))).a;
+    body *= mix(1.0, tipA, smoothstep(0.7, 0.76, w));
+    // the lift: the body gives way to 3–5 bristle hairs, 0.6–1.2 px, each ending on its own
+    float hz = smoothstep(0.9, 1.0, w);
+    float hairs = 0.0;
+    if (w > 0.86) {
+      float K = 3.0 + floor(h1(1.0) * 2.99);
+      for (int k = 0; k < 5; k++) {
+        float fk = float(k);
+        if (fk >= K) break;
+        float c = (-0.8 + 1.6 * (fk + 0.5) / K + (h1(fk + 3.0) - 0.5) * 0.25) * (1.5 + 1.1 * hz);
+        float wk = 0.6 + 0.6 * h1(fk + 7.0);
+        float endK = 0.94 + 0.06 * h1(fk + 11.0);
+        float hk = (1.0 - smoothstep(wk * 0.5 - 0.35, wk * 0.5 + 0.35, abs(d - c))) * (1.0 - smoothstep(endK - 0.03, endK, w));
+        if (uTipOn > 0.5) hk *= mix(0.45, 1.0, texture2D(uTip, vec2(clamp((w - 0.7) / 0.3, 0.02, 0.98), clamp(0.5 + 0.46 * c / env, 0.02, 0.98))).a);
+        else hk *= mix(0.55, 1.0, smoothstep(0.35, 0.6, texture2D(uNoise, vec2(s / 3.0 + fk * 0.37, 0.5)).b));
+        hairs = max(hairs, hk * 0.9);
+      }
+    }
+    a = max(body * (1.0 - smoothstep(0.9, 0.95, w)), hairs * smoothstep(0.86, 0.92, w));
   } else {
     // ragged, feathered edges
     float halfW = 1.0 - 0.3 * e.g;
@@ -70,8 +137,8 @@ void main() {
   if (uFadeIn > 0.0) a *= smoothstep(0.0, uFadeIn, u + 0.05 * (bristle - 0.5));
   if (uFadeOut > 0.0) a *= smoothstep(0.0, uFadeOut, 1.0 - u + 0.05 * (bristle - 0.5));
   if (uDots > 0.5) {
-    float d = abs(fract(s / 0.46) - 0.5) * 2.0;
-    a *= 1.0 - smoothstep(0.38, 0.62, d);
+    float dd = abs(fract(s / 0.46) - 0.5) * 2.0;
+    a *= 1.0 - smoothstep(0.38, 0.62, dd);
   }
   a *= rev * uOpacity;
   if (a < 0.004) discard;
@@ -80,12 +147,35 @@ void main() {
 }
 `;
 
+const smooth = (a: number, b: number, x: number) => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * The brush profile (INK2 §2.1), full width in home-view px at w = 0 (the loaded end) → 1 (the lift):
+ * a round landing 4 → 8, a slow swell 8 → 9 → 7, thinning 7 → 3 across the border, then the hairs.
+ */
+export function brushWidthPx(w: number): number {
+  if (w < 0.08) return 4 + 4 * Math.sqrt(Math.max(0, w) / 0.08);
+  if (w < 0.35) return 8 + smooth(0.08, 0.35, w);
+  if (w < 0.7) return 9 - 2 * smooth(0.35, 0.7, w);
+  if (w < 0.92) return 7 - 4 * Math.pow((w - 0.7) / 0.22, 0.9);
+  return 3 - 1.2 * Math.min(1, (w - 0.92) / 0.08);
+}
+/** Half the ribbon (px): the body, or the hairs' splay near the lift, plus a pixel of feather. */
+function ribbonHalfPx(w: number): number {
+  const env = w > 0.86 ? 1.4 + 1.3 * smooth(0.9, 1, w) : 0;
+  return Math.max(brushWidthPx(w) / 2, env * 1.15) + 1.2;
+}
+
 /** A flat ribbon along a world-space path, drawn by the brush shader. */
 class BrushRibbon {
   mesh: THREE.Mesh;
   mat: THREE.ShaderMaterial;
   private pos: Float32Array;
   private uv: Float32Array;
+  private wv: Float32Array;
   private geo: THREE.BufferGeometry;
   constructor(
     noise: THREE.Texture,
@@ -95,9 +185,11 @@ class BrushRibbon {
   ) {
     this.pos = new Float32Array(max * 2 * 3);
     this.uv = new Float32Array(max * 2 * 2);
+    this.wv = new Float32Array(max * 2 * 3);
     this.geo = new THREE.BufferGeometry();
     this.geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
     this.geo.setAttribute('aUV', new THREE.BufferAttribute(this.uv, 2).setUsage(THREE.DynamicDrawUsage));
+    this.geo.setAttribute('aW', new THREE.BufferAttribute(this.wv, 3).setUsage(THREE.DynamicDrawUsage));
     const idx: number[] = [];
     for (let i = 0; i < max - 1; i++) {
       const a = i * 2;
@@ -108,6 +200,8 @@ class BrushRibbon {
     this.mat = new THREE.ShaderMaterial({
       uniforms: {
         uNoise: { value: noise },
+        uTip: { value: null },
+        uTipOn: { value: 0 },
         uColor: { value: new THREE.Vector3(color[0], color[1], color[2]) },
         uOpacity: { value: 1 },
         uProgress: { value: 1 },
@@ -118,7 +212,8 @@ class BrushRibbon {
         uDry: { value: 0 },
         uDryK: { value: 1 },
         uStyle: { value: 0 },
-        uDryAt: { value: 0 },
+        uLive: { value: 0 },
+        uPx: { value: 0.08 },
         uFadeIn: { value: 0 },
         uFadeOut: { value: 0 },
       },
@@ -139,8 +234,19 @@ class BrushRibbon {
     return this.mat.uniforms;
   }
 
-  /** Lay the ribbon along `pts` (world; y ignored → STROKE_Y) with half-width `w(u)` in board units. */
-  set(pts: THREE.Vector3[], w: (u: number) => number): number {
+  /** The brush that lifts (style 1): the profile is set in home-view px; `px` = board units per px. */
+  brush(live: boolean, px: number): void {
+    this.u.uStyle.value = 1;
+    this.u.uLive.value = live ? 1 : 0;
+    this.u.uPx.value = px;
+    useTip(this.mat);
+  }
+
+  /**
+   * Lay the ribbon along `pts` (world; y ignored → STROKE_Y) with half-width `w(u)` in board units.
+   * `prof(u)` (the brush): [ribbon half px, body half px, g along the whole stroke] for the shader.
+   */
+  set(pts: THREE.Vector3[], w: (u: number) => number, prof?: (u: number) => [number, number, number]): number {
     const n = Math.min(this.max, pts.length);
     if (n < 2) {
       this.geo.setDrawRange(0, 0);
@@ -173,15 +279,20 @@ class BrushRibbon {
       this.uv[q + 1] = 1;
       this.uv[q + 2] = u;
       this.uv[q + 3] = -1;
+      const p = prof ? prof(u) : [0, 0, u];
+      this.wv.set(p, o);
+      this.wv.set(p, o + 3);
     }
     (this.geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
     (this.geo.attributes.aUV as THREE.BufferAttribute).needsUpdate = true;
+    (this.geo.attributes.aW as THREE.BufferAttribute).needsUpdate = true;
     this.geo.setDrawRange(0, (n - 1) * 6);
     this.mat.uniforms.uLen.value = L;
     return L;
   }
 
   dispose(): void {
+    TIP.mats.delete(this.mat);
     this.geo.dispose();
     this.mat.dispose();
   }
@@ -207,7 +318,7 @@ function bow(a: THREE.Vector3, b: THREE.Vector3, k: number, n = 48): THREE.Vecto
 }
 
 // ---------------------------------------------------------------------------
-// Attack arrow: one gold dry-brush stroke
+// Attack arrow: one dry-brush stroke that lifts
 // ---------------------------------------------------------------------------
 
 export class AttackArrow {
@@ -217,7 +328,6 @@ export class AttackArrow {
   /** Where a territory's figure stands (world); the stroke runs figure to figure. Default: the anchor. */
   anchorOf: ((id: TerritoryId) => THREE.Vector3) | null = null;
   private bodies: BrushRibbon[];
-  private head: BrushRibbon;
   private lens: number[] = [0, 0];
   /** Board units per CSS px at the home view (set on layout): the stroke's weight is set in screen px. */
   pxUnit = 0.08;
@@ -232,26 +342,22 @@ export class AttackArrow {
   ) {
     const gold = hexToRgb(GOLD);
     this.bodies = [new BrushRibbon(noise, gold, 80), new BrushRibbon(noise, gold, 80)];
-    this.head = new BrushRibbon(noise, gold, 16);
-    this.head.u.uDry.value = 0;
-    // A loaded dry brush: solid where it presses down toward the target, streaked and frayed at the tail
-    // where it ran out of ink; the flick at the head dries toward its own end.
-    for (const r of [...this.bodies, this.head]) {
-      r.u.uStyle.value = 1;
-      r.u.uDryK.value = 0.9;
+    // Loaded where it leaves the source figure, dry where it crosses into the target, lifted inside it.
+    for (const r of this.bodies) {
+      r.brush(false, this.pxUnit);
+      r.u.uDryK.value = 1;
     }
-    this.head.u.uDryAt.value = 1;
     for (const b of this.bodies) this.group.add(b.mesh);
-    this.group.add(this.head.mesh);
     this.group.visible = false;
   }
 
   get materials(): THREE.Material[] {
-    return [...this.bodies.map((b) => b.mat), this.head.mat];
+    return this.bodies.map((b) => b.mat);
   }
 
   /** Re-lay the stroke at a new screen scale (a resize while armed), keeping its progress and ink. */
   relayout(): void {
+    for (const b of this.bodies) b.u.uPx.value = this.pxUnit;
     if (!this.group.visible || !this.key) return;
     const [from, to] = this.key.split('|') as [TerritoryId, TerritoryId];
     const p = this.progress;
@@ -264,6 +370,7 @@ export class AttackArrow {
     const B = (this.anchorOf ? this.anchorOf(to) : this.tiles.get(to).anchorW).clone();
     const lane = seaLaneBetween(from, to);
     const px = this.pxUnit;
+    for (const b of this.bodies) b.u.uPx.value = px;
     let curves: THREE.Vector3[][];
     let wrapped = false;
     if (lane && lane.wrap) {
@@ -289,7 +396,7 @@ export class AttackArrow {
       curves = [bow(A2, EA, k(A2, EA), 32), bow(EB, B2, k(EB, B2), 32)];
     } else {
       const d = Math.hypot(B.x - A.x, B.z - A.z);
-      // start just off the source's figure, stop short of the target's number
+      // start just off the source's figure; the brush lifts inside the target, short of its figure
       const A2 = A.clone().lerp(B, Math.min(0.3, 0.75 / Math.max(d, 0.001)));
       const B2 = B.clone().lerp(A, Math.min(0.36, 1.45 / Math.max(d, 0.001)));
       curves = [bow(A2, B2, 0.14, 56), []];
@@ -302,20 +409,12 @@ export class AttackArrow {
     const L0 = total(curves[0]);
     const L1 = curves[1].length ? total(curves[1]) : 0;
     const LT = L0 + L1 || 1;
-    // The weight, in screen px at the home view (the shader's feathered edge eats ~15 %): a dry tail ~2 px
-    // swelling to ~9 px where the brush presses down near the target, then lifting off to a point.
-    const smooth = (a: number, b: number, x: number) => {
-      const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
-      return t * t * (3 - 2 * t);
-    };
-    const width = (g: number) => {
-      const w = 2.2 + 7.6 * Math.pow(smooth(0, 0.8, g), 0.85);
-      const lift = g > 0.84 ? Math.pow(Math.max(0, (1 - g) / 0.16), 0.7) : 1;
-      return ((w * Math.max(0.12, lift)) / 0.85 / 2) * px;
-    };
+    // The weight is set in screen px at the home view (brushWidthPx); g runs over both pieces of a wrap.
+    const half = (g: number) => ribbonHalfPx(g) * px;
+    const prof = (g: number): [number, number, number] => [ribbonHalfPx(g), brushWidthPx(g) / 2, g];
     this.lens = [L0 / LT, L1 / LT];
-    this.bodies[0].set(curves[0], (u) => width((u * L0) / LT));
-    if (L1 > 0) this.bodies[1].set(curves[1], (u) => width((L0 + u * L1) / LT));
+    this.bodies[0].set(curves[0], (u) => half((u * L0) / LT), (u) => prof((u * L0) / LT));
+    if (L1 > 0) this.bodies[1].set(curves[1], (u) => half((L0 + u * L1) / LT), (u) => prof((L0 + u * L1) / LT));
     else this.bodies[1].set([], () => 0);
     // wrapped: each piece fades out into the paper over its last ~110 px at the edge
     const fade = (L: number) => (wrapped && L > 0 ? Math.min(0.7, (110 * px) / L) : 0);
@@ -323,38 +422,17 @@ export class AttackArrow {
     this.bodies[0].u.uFadeIn.value = 0;
     this.bodies[1].u.uFadeIn.value = fade(L1);
     this.bodies[1].u.uFadeOut.value = 0;
-    // The head: not a wedge but the brush's flick, off the tip, back along the outside of the arc.
-    const last = curves[1].length ? curves[1] : curves[0];
-    const tip = last[last.length - 1];
-    const pre = last[Math.max(0, last.length - 5)];
-    const dir = new THREE.Vector3(tip.x - pre.x, 0, tip.z - pre.z).normalize();
-    // outside of the arc: the side the curve's middle bulges toward
-    const mid = last[Math.floor(last.length / 2)];
-    const nrm = new THREE.Vector3(-dir.z, 0, dir.x);
-    const side = Math.sign((mid.x - tip.x) * nrm.x + (mid.z - tip.z) * nrm.z) || 1;
-    const back = dir.clone().multiplyScalar(-Math.cos(0.62)).addScaledVector(nrm, side * Math.sin(0.62));
-    const hl = 17 * px;
-    const hpts: THREE.Vector3[] = [];
-    for (let i = 0; i <= 10; i++) {
-      const t = i / 10;
-      // a slight hook: it leaves the tip steeply and eases back toward the stroke
-      const p = tip.clone().addScaledVector(back, hl * t).addScaledVector(dir, -hl * 0.12 * t * t);
-      p.y = STROKE_Y;
-      hpts.push(p);
-    }
-    this.head.set(hpts, (u) => ((7.2 * Math.pow(Math.max(0, 1 - u), 0.8) * Math.min(1, 0.5 + u * 5)) / 0.85 / 2) * px);
   }
 
   private setProgress(p: number): void {
     this.progress = p;
     const [f0, f1] = this.lens;
-    this.bodies[0].u.uProgress.value = f0 > 0 ? Math.min(1, p / f0) : 0;
-    this.bodies[1].u.uProgress.value = f1 > 0 ? Math.max(0, Math.min(1, (p - f0) / f1)) : 0;
-    this.head.u.uProgress.value = Math.max(0, Math.min(1, (p - 0.86) / 0.14)) * 1.02;
+    this.bodies[0].u.uProgress.value = f0 > 0 ? Math.min(1.02, (p / f0) * 1.02) : 0;
+    this.bodies[1].u.uProgress.value = f1 > 0 ? Math.max(0, Math.min(1.02, ((p - f0) / f1) * 1.02)) : 0;
   }
 
   private setDry(tail: number, opacity: number): void {
-    for (const r of [...this.bodies, this.head]) {
+    for (const r of this.bodies) {
       r.u.uTail.value = tail;
       r.u.uOpacity.value = opacity;
     }
@@ -411,7 +489,7 @@ export class AttackArrow {
     const I = hexToRgb(IVORY);
     const apply = (g: number) => {
       this.gold = g;
-      for (const r of [...this.bodies, this.head]) {
+      for (const r of this.bodies) {
         const c = r.u.uColor.value as THREE.Vector3;
         c.set(I[0] + (G[0] - I[0]) * g, I[1] + (G[1] - I[1]) * g, I[2] + (G[2] - I[2]) * g);
       }
@@ -431,7 +509,7 @@ export class AttackArrow {
   /** The tail dries up to `v` (0..1 of the stroke) — the conquest's traveller walking it. */
   trail(v: number): void {
     if (!this.group.visible) return;
-    for (const r of [...this.bodies, this.head]) r.u.uTail.value = Math.max(r.u.uTail.value, v);
+    for (const r of this.bodies) r.u.uTail.value = Math.max(r.u.uTail.value, v);
   }
 
   /** Dry out from the tail (140 ms). */
@@ -462,7 +540,6 @@ export class AttackArrow {
 
   dispose(): void {
     for (const b of this.bodies) b.dispose();
-    this.head.dispose();
   }
 }
 
@@ -485,9 +562,10 @@ export class LiveStroke {
     noise: THREE.Texture,
   ) {
     this.body = new BrushRibbon(noise, hexToRgb(GOLD), 200);
-    // the same dry brush as the settled arrow: frayed where it left the source, loaded at the finger
-    this.body.u.uStyle.value = 1;
-    this.body.u.uDryK.value = 0.9;
+    // the same brush as the settled arrow, wet end at the finger: loaded under the pointer, drying toward
+    // the source (INK2 §2.1)
+    this.body.brush(true, this.pxUnit);
+    this.body.u.uDryK.value = 1;
     this.group.add(this.body.mesh);
     this.group.visible = false;
   }
@@ -551,19 +629,23 @@ export class LiveStroke {
       pts.push(src[src.length - 1]);
       if (pts.length > 200) pts = pts.filter((_, i) => i % 2 === 0 || i === pts.length - 1);
     }
-    // Weight in screen px at the home view, as the settled arrow: a ~2 px dry tail at the source swelling to
-    // ~9 px under the finger, the tip rounded off (the shader's feathered edge eats ~15 %).
+    // The arrow's profile in home-view px, mirrored: the round landing under the finger (u = 1), the dry
+    // end back at the source (u = 0).
     const px = this.pxUnit;
-    const L = this.body.set(pts, (u) => {
-      const w = 2.2 + 7.4 * Math.pow(Math.min(1, u / 0.85), 0.9);
-      const tip = u > 0.95 ? Math.max(0.45, (1 - u) / 0.05) : 1;
-      return ((w * tip) / 0.85 / 2) * px;
-    });
+    this.body.u.uPx.value = px;
+    const L = this.body.set(
+      pts,
+      (u) => ribbonHalfPx(1 - u) * px,
+      (u) => [ribbonHalfPx(1 - u), brushWidthPx(1 - u) / 2, u],
+    );
     // the tail dries as the stroke grows
     this.body.u.uDry.value = Math.min(0.6, L / 30);
   }
 
-  /** Cancelled: the stroke dries out (200 ms). Settled: it fades as the arrow takes over (160 ms). */
+  /**
+   * Cancelled: the stroke dries out (200 ms). Settled (160 ms): it gives way to the armed arrow drawing its
+   * last stretch underneath, so the finger end dries into the lifted hairs.
+   */
   end(settle: boolean): void {
     if (!this.active && !this.group.visible) return;
     this.active = false;
@@ -575,7 +657,7 @@ export class LiveStroke {
     void this.startedAt;
     this.anim.tween({
       // Settling into the arrow is quick: the gold moves on to the commit button (one gold, INK A9).
-      ms: settle ? 120 : 200,
+      ms: settle ? 160 : 200,
       unscaled: true,
       ease: ease.inQuad,
       update: (v) => {

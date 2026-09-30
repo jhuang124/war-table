@@ -68,7 +68,20 @@ const PORTRAIT_TRAY_GAP = 10;
  */
 export function inkTrayTop(W: number, H: number, band: number, uiScale: number): number {
   const ink = inkTrayGeometry(W, H, band, uiScale);
-  if (W < H && W < 520) return Math.min(band, ink.trayH + PORTRAIT_TRAY_GAP);
+  if (Math.min(W, H) < 520) return Math.min(band, ink.trayH + PORTRAIT_TRAY_GAP);
   const hud = boardTrayGeometry(W, H, band, uiScale);
   return Math.floor((band - hud.trayH) / 2) + hud.trayH;
+}
+
+/** The ink ring's long-axis overshoot past the tray box (docs/INK2.md §2.3: 6 %). */
+export const INK_RING_OVERSHOOT = 0.06;
+
+/**
+ * The ink ring the dice land inside (docs/INK2.md §2.3): an ellipse inscribed in the ink tray's box with
+ * a 6 % overshoot on the long axis. `rx`/`ry` are the radii of the brush's centre line, CSS px; its top
+ * is the tray's top, so the fight header still rests on it.
+ */
+export function inkRingGeometry(W: number, H: number, band: number, uiScale: number): { rx: number; ry: number } {
+  const g = inkTrayGeometry(W, H, band, uiScale);
+  return { rx: (g.trayW * (1 + INK_RING_OVERSHOOT)) / 2, ry: g.trayH / 2 };
 }

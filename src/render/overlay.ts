@@ -33,11 +33,12 @@ const CSS = `
   font:600 calc(18px * var(--ui))/1 ${SERIF};font-variant-numeric:lining-nums tabular-nums;letter-spacing:0;display:none}
 .rb-loss{position:absolute;left:0;top:0;color:#f2ede2;font:600 calc(18px * var(--ui))/1 ${SERIF};font-variant-numeric:lining-nums tabular-nums;
   will-change:transform,opacity;white-space:nowrap}
-.rb-label{position:absolute;left:0;top:0;color:rgba(242,237,226,.94);font:600 calc(13.5px * var(--lab))/1.02 ${SERIF};
+.rb-label{position:absolute;left:0;top:0;transform-origin:0 0;color:rgba(242,237,226,.94);font:600 calc(13.5px * var(--lab))/1.02 ${SERIF};
   letter-spacing:.09em;font-variant-caps:all-small-caps;text-align:center;white-space:pre;will-change:transform;
   visibility:hidden;opacity:0;transition:opacity 120ms ease-out}
 .rb-label.focus{font-size:calc(15px * var(--lab));color:#f7f2e8;z-index:3}
 .rb-label.on{opacity:1}
+.rb-label.one{white-space:nowrap}
 .rb-cut{position:absolute;inset:0;background:#0b1224;opacity:0}
 `;
 
@@ -173,7 +174,11 @@ export class Overlay {
   width = 1;
   height = 1;
   /** Screen rect (container px) the dice tray covers while it shows; numbers under it hide. */
-  occluder: { x0: number; y0: number; x1: number; y1: number; on: boolean; hx0?: number; hx1?: number; hy0?: number } = { x0: 0, y0: 0, x1: 0, y1: 0, on: false };
+  /**
+   * What the dice tray covers while it shows (container px): x0..y1 = the dice (numbers under them hide);
+   * `ring` = the whole ink ring's box (names are never placed on it); hx0/hx1/hy0 = the phone header's words.
+   */
+  occluder: { x0: number; y0: number; x1: number; y1: number; on: boolean; hx0?: number; hx1?: number; hy0?: number; ring?: [number, number, number, number] } = { x0: 0, y0: 0, x1: 0, y1: 0, on: false };
 
   constructor(
     container: HTMLElement,
@@ -759,6 +764,9 @@ export class Overlay {
       for (let j = 0; j < n; j++) {
         const o = this.badgeList[j];
         if (!o.onScreen || o.pw <= 0) continue;
+        // A count hidden under the dice or the fight header for the fight doesn't hold its spot: when it
+        // comes back the names are laid out again (update() marks them dirty).
+        if (this.occluder.on && this.overTray(o.px - o.pw / 2, o.py - o.ph / 2, o.px + o.pw / 2, o.py + o.ph / 2, this.headerBand)) continue;
         if (o.px - o.pw / 2 < x1 + pad && o.px + o.pw / 2 > x0 - pad && o.py - o.ph / 2 < y1 + pad && o.py + o.ph / 2 > y0 - pad) return false;
       }
       return true;
@@ -780,9 +788,12 @@ export class Overlay {
         l.w = 0;
       }
       let place: [number, number] | null = null;
+      let small = false;
+      let one: [number, number] | null = null;
       if (want) {
         if (l.el.style.visibility !== 'visible') l.el.style.visibility = 'visible';
         if (!l.w) {
+          l.el.classList.remove('one');
           l.w = l.el.offsetWidth;
           l.h = l.el.offsetHeight;
         }
@@ -791,8 +802,14 @@ export class Overlay {
         const shown = b.visible && b.lastT !== 'off';
         const below = shown ? b.box[3] + 2 : b.cy + 2;
         const above = shown ? b.box[1] - 2 - l.h : b.cy - 2 - l.h;
-        if (free(i, x0, below, x1, below + l.h) && countsClear(x0, below, x1, below + l.h)) place = [b.cx, below];
-        else if (shown && free(i, x0, above, x1, above + l.h) && countsClear(x0, above, x1, above + l.h)) place = [b.cx, above];
+        // Phones: a spot is clear when it covers no army count (its own included) and stays off the fight
+        // header's line over the dice tray. (Desktop: counts and the tray are checked as before, below.)
+        const oc = this.occluder;
+        const onRing = (x0: number, y0: number, x1: number, y1: number) => !!oc.ring && x1 > oc.ring[0] && x0 < oc.ring[2] && y1 > oc.ring[1] && y0 < oc.ring[3];
+        const clear = (x0: number, y0: number, x1: number, y1: number): boolean =>
+          countsClear(x0, y0, x1, y1) && !(this.relax && oc.on && (this.overTray(x0, y0 + 2, x1, y1, this.headerBand) || onRing(x0, y0 + 2, x1, y1)));
+        if (free(i, x0, below, x1, below + l.h) && clear(x0, below, x1, below + l.h)) place = [b.cx, below];
+        else if (shown && free(i, x0, above, x1, above + l.h) && clear(x0, above, x1, above + l.h)) place = [b.cx, above];
         else if (isFocus && !this.relax) place = [b.cx, below];
         else if (isFocus) {
           // Phones: a name that must show: beside its piece if that is clear, else wherever it at least misses the
@@ -804,47 +821,88 @@ export class Overlay {
             const mid = (b.box[1] + b.box[3]) / 2 - l.h / 2;
             cands.push([b.box[2] + 2 + l.w / 2, mid], [b.box[0] - 2 - l.w / 2, mid]);
           }
-          place = cands.find(([cx, y]) => free(i, cx - l.w / 2, y, cx + l.w / 2, y + l.h) && countsClear(cx - l.w / 2, y, cx + l.w / 2, y + l.h)) ?? null;
-          if (!place) {
-            // Crowded (a landscape phone's Ural, Europe): a name never prints over an army count (its own included).
-            // Of the spots that miss the other names and every count, take the one that covers the least of
-            // the other figures; if there is none, the name stays hidden (the dock's line already says it,
-            // and the picked tiles are lit), rather than hide a number.
-            const all: [number, number][] = [...cands];
-            const ys = shown ? [below, above, below + 0.4 * l.h, above - 0.4 * l.h, (b.box[1] + b.box[3]) / 2 - l.h / 2] : [below, below + 0.4 * l.h];
-            for (const y of ys) for (const dx of [0, 0.3, -0.3, 0.55, -0.55, 0.8, -0.8, 1.05, -1.05]) all.push([b.cx + dx * l.w, y]);
+          place = cands.find(([cx, y]) => free(i, cx - l.w / 2, y, cx + l.w / 2, y + l.h) && clear(cx - l.w / 2, y, cx + l.w / 2, y + l.h)) ?? null;
+          // Crowded (a landscape phone's Ural, Europe): a name never prints over an army count (its own
+          // included). Of the spots that miss the other names and every count, take the one that covers the
+          // least of the other figures, then the nearest. None near at full size: the name steps down to
+          // 80 % and looks farther out (INK2 §6, John 2026-09-29). It hides only if even that fails.
+          const crowded = (k: number, far: boolean, lw = l.w, lh = l.h): [number, number] | null => {
+            const w = lw * k;
+            const h = lh * k;
+            const bl = shown ? b.box[3] + 2 : b.cy + 2;
+            const ab = shown ? b.box[1] - 2 - h : b.cy - 2 - h;
+            const mid = shown ? (b.box[1] + b.box[3]) / 2 - h / 2 : b.cy - h / 2;
+            const all: [number, number][] = [];
+            const ys = shown ? [bl, ab, bl + 0.4 * h, ab - 0.4 * h, mid] : [bl, bl + 0.4 * h];
+            // Farther out, but still plainly its own name: within about a line of its piece.
+            if (far) for (const m of [0.6, 1.1]) ys.push(bl + m * h, ab - m * h, mid - m * 0.5 * h, mid + m * 0.5 * h);
+            const dxs = [0, 0.3, -0.3, 0.55, -0.55, 0.8, -0.8, 1.05, -1.05];
+            if (far) dxs.push(1.3, -1.3);
+            for (const y of ys) for (const dx of dxs) all.push([b.cx + dx * w, y]);
+            if (far && shown) all.push([b.box[2] + 2 + w / 2, mid], [b.box[0] - 2 - w / 2, mid], [b.box[2] + 2 + w / 2, bl], [b.box[0] - 2 - w / 2, bl]);
             const ov = (a0: number, a1: number, c0: number, c1: number) => Math.max(0, Math.min(a1, c1) - Math.max(a0, c0));
             let best: [number, number] | null = null;
             let bestC = Infinity;
             for (const p of all) {
-              const x0 = p[0] - l.w / 2;
-              const x1 = p[0] + l.w / 2;
+              const x0 = p[0] - w / 2;
+              const x1 = p[0] + w / 2;
               const y0 = p[1];
-              const y1 = p[1] + l.h;
-              if (!freeOfNames(x0, y0, x1, y1) || !countsClear(x0, y0, x1, y1)) continue;
+              const y1 = p[1] + h;
+              if (x0 < 2 || y0 < 2 || x1 > this.width - 2 || y1 > this.height - 2) continue;
+              if (!freeOfNames(x0, y0, x1, y1) || !clear(x0, y0, x1, y1)) continue;
+              // It must still read as this piece's name: no other piece nearer to it than its own.
+              const mx = p[0];
+              const my = p[1] + h / 2;
+              const own = shown ? Math.hypot(mx - (b.box[0] + b.box[2]) / 2, my - (b.box[1] + b.box[3]) / 2) : Math.hypot(mx - b.cx, my - b.cy);
+              let mine = true;
+              for (let j = 0; j < n && mine; j++) {
+                const bb = tokenBox[j];
+                if (j !== i && bb && Math.hypot(mx - (bb[0] + bb[2]) / 2, my - (bb[1] + bb[3]) / 2) < own * 0.55) mine = false;
+              }
+              if (!mine) continue;
               let figs = 0;
               for (let j = 0; j < n; j++) {
                 const bb = tokenBox[j];
                 if (j !== i && bb) figs += ov(x0, x1, bb[0], bb[2]) * ov(y0, y1, bb[1], bb[3]);
               }
               // the least figure covered, then the nearest to its own piece
-              const c = figs + 2 * Math.hypot(p[0] - b.cx, p[1] + l.h / 2 - b.cy);
+              const c = figs + 3 * Math.hypot(p[0] - b.cx, p[1] + h / 2 - b.cy);
               if (c < bestC - 0.5) {
                 best = p;
                 bestC = c;
               }
             }
-            place = best;
+            return best;
+          };
+          if (!place) place = crowded(1, false);
+          if (!place) {
+            place = crowded(0.8, true);
+            if (place) small = true;
+          }
+          // A two-line name ('Southern / Europe') last tries itself on one line, at 80 %.
+          if (!place && l.el.textContent?.includes('\n')) {
+            l.el.classList.add('one');
+            const w1 = l.el.offsetWidth;
+            const h1 = l.el.offsetHeight;
+            place = crowded(0.8, true, w1, h1);
+            if (place) {
+              small = true;
+              one = [w1, h1];
+            }
           }
         }
       }
+      if (!one && l.el.classList.contains('one')) l.el.classList.remove('one');
+      const lw = one ? one[0] : l.w;
+      const lh = one ? one[1] : l.h;
+      const k = small ? 0.8 : 1;
       // While the dice tray shows, the HUD's header line above it names the fight: names that would sit in
       // that line (or on the tray) stay hidden rather than print over it.
-      if (place && this.occluder.on && this.overTray(place[0] - l.w / 2, place[1] + 2, place[0] + l.w / 2, place[1] + l.h, this.headerBand)) place = null;
+      if (place && this.occluder.on && this.overTray(place[0] - (lw * k) / 2, place[1] + 2, place[0] + (lw * k) / 2, place[1] + lh * k, this.headerBand)) place = null;
       const on = !!place;
       if (place) {
-        boxes.push(place[0] - l.w / 2, place[1], place[0] + l.w / 2, place[1] + l.h);
-        const tr = `translate3d(${snap(place[0] - l.w / 2, r)}px,${snap(place[1], r)}px,0)`;
+        boxes.push(place[0] - (lw * k) / 2, place[1], place[0] + (lw * k) / 2, place[1] + lh * k);
+        const tr = `translate3d(${snap(place[0] - (lw * k) / 2, r)}px,${snap(place[1], r)}px,0)${small ? ' scale(0.8)' : ''}`;
         if (tr !== l.lastT) {
           l.el.style.transform = tr;
           l.lastT = tr;
