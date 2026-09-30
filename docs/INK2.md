@@ -420,7 +420,19 @@ Risks the phases carry, with the guard:
 - **INK review F1** (the living calm is below perception) is *not* v2 work; it stays an INK.md polish item
   for the lead. Textured washes will make the wash breath more visible for free, but don't count on it.
 
-Questions that need John (each has a default; silence = the default ships):
+**Answered by John, 2026-09-29** (these bind; the list below is kept for the reasoning):
+1. The ensō slides along the rule to the current word. 2. One gold, and it moves (Blitz's ring while a
+commit is pending, the underline otherwise). 3 + 4. The seat mark stays as brush dab + name, no number.
+5. Phone-landscape behaviours from the 2026-09-29 fix (commit `45a6402`):
+   - **Keep**: the AI camera stays at home on landscape phones unless a piece is actually hidden.
+   - **Revert**: the dice tray no longer moves between fights (`placeTrayFor` / `--tray-shift`). It has one
+     fixed spot per layout; the ink ring's translucent inside wash (§2.3) is what keeps figures under it
+     readable. Phase A owns this.
+   - **Revert**: territory names no longer hide when crowded. A name still never covers an army count;
+     when no nearby spot is clear, it steps down in size (to 80 %) and searches farther out before
+     giving up, and gives up only if even that fails. Phase A owns this (`src/render/overlay.ts`).
+
+Questions that needed John (each had a default; now answered above):
 1. **The ensō as the phase marker.** Default: the ensō slides along the gold rule to sit over the current
    word (frame 5's ring at the current phase). Alternative: the ensō stays fixed at the centre and a second,
    smaller gold ring marks the phase. I think two gold circles on one hairline is one too many.
