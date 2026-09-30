@@ -49,6 +49,27 @@ export interface SharedUniforms {
   uContColor: { value: THREE.Vector3[] };
   /** Continent sweep: (centre bx, centre by, progress 0..1 clockwise from north, amount 0..1). */
   uContSweep: { value: THREE.Vector4[] };
+  // --- the pigment maps (docs/INK2.md §4.2), driven by the ink layer's texture ladder -------------------
+  /** Paper: R fibre · G mottle · B grain · A flecks (mask). A neutral grey texel until the map loads. */
+  uPaperTex: { value: THREE.Texture };
+  /** Wash: R pigment · G bloom (16 px blur) · B granulation · A tide lines (mask). */
+  uWashTex: { value: THREE.Texture };
+  /** 0 = procedural (the value noise, as before), 1 = the maps; eases 0 → 1 as the maps dry in. */
+  uTexOn: { value: number };
+  /**
+   * The ladder level the shaders read (INK2 §4.3 has "1 or 2"; three values here): 3 = paper 3 taps + wash 2,
+   * 2 = paper 1 + wash 2 (phones: ≤ 3 map taps), 1 = paper fibre tap + wash 1.
+   */
+  uTexTaps: { value: number };
+}
+
+/** A 1×1 mid-grey (mask channels unset): what the map samplers read before the maps load. */
+function neutralTexture(): THREE.DataTexture {
+  const t = new THREE.DataTexture(new Uint8Array([128, 128, 128, 128]), 1, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.NoColorSpace;
+  t.needsUpdate = true;
+  return t;
 }
 
 /** Per-territory data (64×1 RGBA8): R = coast glow 0..1, G = ink dim 0..1, B = continent index, A = spare. */
@@ -64,7 +85,7 @@ export function makeTerrTexture(ink: InkLayer): THREE.DataTexture {
 }
 
 export function makeSharedUniforms(ink: InkLayer, boardW: number, boardH: number): SharedUniforms {
-  return {
+  const u: SharedUniforms = {
     uInk: { value: ink.ink },
     uField: { value: ink.field },
     uNoise: { value: ink.noise },
@@ -90,7 +111,13 @@ export function makeSharedUniforms(ink: InkLayer, boardW: number, boardH: number
     uBreath: { value: 0 },
     uContColor: { value: Array.from({ length: 6 }, () => new THREE.Vector3(1, 1, 1)) },
     uContSweep: { value: Array.from({ length: 6 }, () => new THREE.Vector4(0, 0, 0, 0)) },
+    uPaperTex: { value: neutralTexture() },
+    uWashTex: { value: neutralTexture() },
+    uTexOn: { value: 0 },
+    uTexTaps: { value: 3 },
   };
+  ink.bindShared?.(u);
+  return u;
 }
 
 export const INK_GLSL = /* glsl */ `
@@ -119,6 +146,10 @@ uniform vec2 uLiftB;
 uniform float uBreath;
 uniform vec3 uContColor[6];
 uniform vec4 uContSweep[6];
+uniform sampler2D uPaperTex;
+uniform sampler2D uWashTex;
+uniform float uTexOn;
+uniform float uTexTaps;
 
 vec2 bUV(vec2 bp) { return vec2(bp.x / uBoard.x, 1.0 - bp.y / uBoard.y); }
 bool inBoard(vec2 bp) { return bp.x > 0.0 && bp.y > 0.0 && bp.x < uBoard.x && bp.y < uBoard.y; }
@@ -139,19 +170,65 @@ float landIdAt(vec2 bp) {
 }
 vec4 terrAt(float id) { return texelFetch(uTerr, ivec2(int(id + 0.5), 0), 0); }
 
+// The pigment maps (INK2 §4.2). Every channel is equalised to mean 128 / std 40; nz()'s channels have
+// std 33 (R, G), 36 (B) and 41 (A) of 255, so a map channel standing in for an nz() tap is scaled about 0.5
+// to that tap's std: the same coefficients and smoothstep thresholds then mean what they did. Each map is
+// read with all four channels from one tap, at the scale of its R (paper 14 units a repeat, wash 22): the
+// finer 1.9 / 4.5-unit taps would shrink a 1024 map 8–19× on screen and mip its detail to grey.
+const float PAPER_REP = 14.0;
+const float WASH_REP = 22.0;
+const float TAP2 = 1.37;
+float eqTo(float v, float k) { return 0.5 + (v - 0.5) * k; }
+const vec4 K_NZ = vec4(0.83, 0.82, 0.89, 1.0); // nz() std / map std, per nz() channel (r, g, b, a)
+
 // Washi: indigo, a little deeper toward the edges, long anisotropic fibres (6:1), soft mottling, fine grain.
-vec3 paperAt(vec2 bp) {
+// With the maps (uTexOn): fibres f1 / grain / flecks from one paper tap at 14 units, f2 and the medium mottle
+// from a second tap at 1.37× rotated 90°, the broad mottle from the fibre map's mottle channel at 37 units.
+// Taps per level (uTexTaps = the ladder level): L3 paper 3 + wash 2; L2 paper 1 + wash 2 (the mottle and f2
+// stay value noise); L1 paper 1 (fibre only) + wash 1.
+// fib = the fibre value (f1), which the wash reuses for the fibres showing through it.
+vec3 paperAt(vec2 bp, out float fib) {
   vec2 c = (bp - uBoard * 0.5) / (uBoard * vec2(0.62, 0.78));
   float r = length(c);
   vec3 col = mix(uPaper, uPaperDeep, smoothstep(0.2, 1.25, r));
-  float a = clamp((nz(bp / 37.0).r - 0.5) * 3.0, -1.0, 1.0);
-  float b = clamp((nz(bp / 8.5 + 0.37).g - 0.5) * 3.0, -1.0, 1.0);
-  float f1 = nz(bp / 5.5 + 0.71).b;
-  float f2 = nz(vec2(bp.y, -bp.x) / 7.5 + 0.23).b;
+  float tx = uTexOn;
+  bool full = uTexTaps > 2.5; // L3: three paper taps
+  bool grain = uTexTaps > 1.5; // L2: the fibre tap also gives the grain and flecks
+  float a = 0.0, b = 0.0, f1 = 0.0, f2 = 0.0, g = 0.0, fl = 0.0;
+  // the value noise, as before: all of it while the maps fade; below L3, whatever the maps don't give
+  if (tx < 0.999 || !full) {
+    a = clamp((nz(bp / 37.0).r - 0.5) * 3.0, -1.0, 1.0);
+    b = clamp((nz(bp / 8.5 + 0.37).g - 0.5) * 3.0, -1.0, 1.0);
+    f2 = nz(vec2(bp.y, -bp.x) / 7.5 + 0.23).b;
+  }
+  if (tx < 0.999 || !grain) g = nz(bp / 1.9 + 0.5).a;
+  if (tx < 0.999) f1 = nz(bp / 5.5 + 0.71).b;
+  if (tx > 0.001) {
+    vec4 p1 = texture2D(uPaperTex, bp / PAPER_REP + vec2(0.31, 0.17));
+    f1 = mix(f1, eqTo(p1.r, K_NZ.b), tx);
+    if (grain) {
+      g = mix(g, eqTo(p1.b, K_NZ.a), tx);
+      fl = smoothstep(0.6, 0.9, p1.a) * tx;
+    }
+    if (full) {
+      vec4 p2 = texture2D(uPaperTex, vec2(bp.y, -bp.x) / (PAPER_REP * TAP2) + vec2(0.57, 0.11));
+      vec4 p3 = texture2D(uPaperTex, bp / 37.0 + vec2(0.13, 0.71));
+      a = mix(a, clamp((eqTo(p3.g, K_NZ.r) - 0.5) * 3.0, -1.0, 1.0), tx);
+      b = mix(b, clamp((eqTo(p2.g, K_NZ.g) - 0.5) * 3.0, -1.0, 1.0), tx);
+      f2 = mix(f2, eqTo(p2.r, K_NZ.b), tx);
+    }
+  }
   col *= 1.0 + 0.055 * a + 0.03 * b;
   col = mix(col, uFibre, 0.3 * smoothstep(0.56, 0.84, f1) + 0.14 * smoothstep(0.6, 0.88, f2));
-  col *= 0.975 + 0.05 * nz(bp / 1.9 + 0.5).a;
+  col *= 0.975 + 0.05 * g;
+  // flecks: a few specks of fibre caught in the sheet
+  col = mix(col, uFibre, 0.25 * fl);
+  fib = f1;
   return col;
+}
+vec3 paperAt(vec2 bp) {
+  float fib;
+  return paperAt(bp, fib);
 }
 
 // Screen-space vignette, 12 % at the corners.
@@ -331,7 +408,8 @@ void main() {
   vec2 bp = vBP;
   vec4 f = fieldAt(bp);
   float prox = f.r;
-  vec3 paper = paperAt(bp);
+  float fib;
+  vec3 paper = paperAt(bp, fib);
   vec3 wash = uColor;
   vec3 deep = uDeep;
 
@@ -364,18 +442,45 @@ void main() {
   // Watercolour: broad pools where the pigment settled, medium blotches, backrun blooms (a paler pool with
   // a darker tide line where a wetter patch pushed the pigment out), pigment granulating in the paper's
   // tooth, fibres showing through, and a darker edge where the wash dried against its border.
-  float b1 = clamp((nz(bp / 23.0 + uSeed).r - 0.5) * 3.2, -1.0, 1.0);
-  float b2 = clamp((nz(bp / 7.0 + uSeed * 1.7).g - 0.5) * 3.0, -1.0, 1.0);
-  float bm = nz(bp / 13.0 + uSeed * 0.61 + 0.29).g;
-  float bloom = smoothstep(0.56, 0.66, bm);
-  float tide = 1.0 - smoothstep(0.0, 0.028, abs(bm - 0.575));
-  float gr = nz(bp / 3.6 + uSeed * 2.3).a;
-  float gr2 = nz(bp / 1.7 + uSeed * 0.9 + 0.4).a;
+  // With the maps (uTexOn), from two wash taps offset per territory (so neighbours never share a bloom):
+  // W1 at 22 units gives the broad pools and the bloom mask (G, the blurred pigment field: pale bloom centres
+  // are where the pools are pale), the tide lines round them (A) and the granulation (B); W2 at 1.37×
+  // rotated 90° gives the medium blotches from the raw pigment (R) and the second, fainter granulation (B).
+  // L1 (one tap): W1 only; the blotches and the second granulation stay value noise. The edge band's inner
+  // edge wanders with the bloom field, so the dried edge pools unevenly. Coefficients as before.
+  float tx = uTexOn;
+  bool full = uTexTaps > 1.5; // L2, L3: two wash taps
+  float b1 = 0.0, b2 = 0.0, bloom = 0.0, tide = 0.0, gr = 0.0, gr2 = 0.0, wander = 0.0;
+  if (tx < 0.999 || !full) {
+    b2 = clamp((nz(bp / 7.0 + uSeed * 1.7).g - 0.5) * 3.0, -1.0, 1.0);
+    gr2 = nz(bp / 1.7 + uSeed * 0.9 + 0.4).a;
+  }
+  if (tx < 0.999) {
+    b1 = clamp((nz(bp / 23.0 + uSeed).r - 0.5) * 3.2, -1.0, 1.0);
+    float bm = nz(bp / 13.0 + uSeed * 0.61 + 0.29).g;
+    bloom = smoothstep(0.56, 0.66, bm);
+    tide = 1.0 - smoothstep(0.0, 0.028, abs(bm - 0.575));
+    gr = nz(bp / 3.6 + uSeed * 2.3).a;
+  }
+  if (tx > 0.001) {
+    vec4 w1 = texture2D(uWashTex, bp / WASH_REP + vec2(uSeed, uSeed * 1.618));
+    b1 = mix(b1, clamp((eqTo(w1.g, K_NZ.r) - 0.5) * 3.2, -1.0, 1.0), tx);
+    bloom = mix(bloom, smoothstep(0.56, 0.66, w1.g), tx);
+    tide = mix(tide, smoothstep(0.55, 0.9, w1.a), tx);
+    wander = (w1.g - 0.5) * tx;
+    float g1 = eqTo(w1.b, K_NZ.a);
+    if (full) {
+      vec4 w2 = texture2D(uWashTex, vec2(bp.y, -bp.x) / (WASH_REP * TAP2) + vec2(uSeed * 0.73 + 0.41, uSeed * 1.31 + 0.07));
+      b2 = mix(b2, clamp((eqTo(w2.r, K_NZ.g) - 0.5) * 3.0, -1.0, 1.0), tx);
+      gr2 = mix(gr2, eqTo(w2.b, K_NZ.a), tx);
+    }
+    gr = mix(gr, g1, tx);
+  }
   wash *= 1.0 + 0.085 * b1 + 0.05 * b2;
   wash *= 1.0 + 0.05 * bloom - 0.07 * tide;
   wash *= 0.93 + 0.1 * smoothstep(0.28, 0.74, gr) + 0.04 * smoothstep(0.35, 0.7, gr2);
-  wash *= 0.97 + 0.06 * nz(bp / 5.5 + 0.71).b;
-  float edge = smoothstep(0.45, 1.0, prox);
+  wash *= 0.97 + 0.06 * fib;
+  float edge = smoothstep(0.45 - 0.12 * wander, 1.0, prox);
   wash = mix(wash, deep, 0.26 * edge * edge + 0.1 * smoothstep(0.93, 1.0, prox));
   // wash breath: ±2 % lightness (L*), its own slow phase
   wash *= 1.0 + 0.035 * uAmb * sin(uTime * 6.2831853 / uPeriod + uPhase);

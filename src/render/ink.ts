@@ -12,10 +12,14 @@
 // - `noise` a small tileable fbm texture (4 channels) the shaders use for mist, mottling and breathing,
 //           instead of evaluating fbm per pixel.
 // - `waves` an atlas of calligraphic wave strokes (the board places 6–8 of them per game, seeded).
+// - `maps`  the pigment maps (docs/INK2.md §4, texmaps.ts): the streaks shape the coasts' and waves' dry
+//           brush at build time (when decoded in time); the paper and wash load after the first frame and
+//           dry in (`uTexOn` 0 → 1, 400 ms). `setQuality()` steps the fallback ladder down.
 import * as THREE from 'three';
 import type { BoardGeometry, Vec2 } from '../map/types';
 import { TERRITORY_IDS, TERRITORIES, CONTINENT_IDS } from '../engine/mapData';
 import type { ContinentId, TerritoryId } from '../engine/types';
+import { loadStreaks, loadTexMaps, type StreakData, type TexMaps } from './texmaps';
 
 export interface InkLayer {
   ink: THREE.DataTexture;
@@ -37,6 +41,33 @@ export interface InkLayer {
   /** Board-space centre of each continent (the re-ink sweep turns about it). */
   continentCentre: Record<ContinentId, Vec2>;
   buildMs: number;
+  // --- the pigment maps (docs/INK2.md §4; all additive) ------------------------------------------------
+  /** Paper + wash maps once they have loaded (after the first frame); undefined until then or on failure. */
+  maps?: TexMaps;
+  /** Resolves when the maps have loaded (or null: the procedural board stays). */
+  mapsReady: Promise<TexMaps | null>;
+  /** The coasts and waves were drawn with the streak map (false: the value-noise brush, as before). */
+  streaked: boolean;
+  /** Current fallback-ladder level: 3 desktop, 2 phone, 1 one wash tap, 0 procedural (INK2 §4.3). */
+  readonly quality: number;
+  /**
+   * Step the texture ladder down (never back up within a session): 2 = 512 maps / anisotropy 1 and three map
+   * taps (paper 1, wash 2), 1 = one wash tap and the paper's fibre tap only, 0 = the procedural board
+   * (`uTexOn` → 0 over 300 ms; the coasts keep the brush they were drawn with at boot).
+   */
+  setQuality(level: number): void;
+  /** Called by the shared uniforms (inkGlsl.ts) so the ladder can drive `uPaperTex` / `uWashTex` / `uTexOn`. */
+  bindShared(u: TexUniforms): void;
+  /** Set by the tiles: asks the board for a frame while `uTexOn` eases (the board otherwise draws on demand). */
+  kick?: () => void;
+}
+
+/** The shared uniforms the ladder drives (a subset of inkGlsl's SharedUniforms). */
+export interface TexUniforms {
+  uPaperTex: { value: THREE.Texture };
+  uWashTex: { value: THREE.Texture };
+  uTexOn: { value: number };
+  uTexTaps: { value: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +124,15 @@ function fbmTile(u: number, v: number, cx: number, cy: number, seed: number, oct
   return s / norm;
 }
 
+/**
+ * Stroke widths per repeat of the streak map along the stroke. INK2 §4.2 says 48; at 48 the gaps come about
+ * once a unit and read as a steadier, wetter line than the value noise did. 24 keeps the streaks long (the map
+ * is still stretched ~3× along the stroke) and gives the coasts their dry breaks.
+ */
+const STREAK_WIDTHS = 24;
+/** A streak sampler's `on` value at the map's threshold (the source's 50 % ink level). */
+const STREAK_THRESHOLD = 0.5;
+
 const yieldFrame = () => new Promise<void>((r) => setTimeout(r, 0));
 
 // ---------------------------------------------------------------------------
@@ -117,6 +157,13 @@ export interface BrushOpts {
   endTaper: number;
   /** Width falloff along an open stroke: 0 = even, 1 = thick → thin (wave strokes, the arrow). */
   thin?: number;
+  /**
+   * Real dry-brush streaks (docs/INK2.md §4.2) instead of the 1-D value noise: for bristle `k` at `lateral`
+   * (−1..1 across the stroke) and arc length `sPx`, `on` = the source's ink density there, scaled so 0.5 is
+   * the map's threshold (the bristle shows where on > 0.5 · dry / 0.55) and `swell` = the stroke's
+   * slow thickening (0..1, mean 0.5), shared by every bristle so the whole line swells together.
+   */
+  streak?: (sPx: number, k: number, lateral: number) => { on: number; swell: number };
 }
 
 /**
@@ -184,7 +231,19 @@ export function dryBrush(ctx: CanvasRenderingContext2D, flat: number[], closed: 
     const side = isCore ? (hash1(k + 5, sd) * 2 - 1) * o.width * 0.08 : (hash1(k + 5, sd) * 2 - 1) * o.width * 0.62;
     const dry = isCore ? o.dry * 0.3 : Math.min(0.95, o.dry * (0.7 + 0.6 * hash1(k + 13, sd)));
     const on = new Uint8Array(n);
-    for (let i = 0; i < n; i++) on[i] = dry <= 0 || n1(S[i] * 0.07 + sd * 0.37, sd) * 0.75 + n1(S[i] * 0.23 + 3.3, sd + 5) * 0.25 > dry * 0.66 ? 1 : 0;
+    const st = o.streak;
+    const lateral = Math.max(-1, Math.min(1, side / (o.width * 0.62)));
+    const swell = st ? new Float32Array(n) : null;
+    if (st) {
+      // the map's threshold is the source's 50 % ink level at the coasts' dry 0.55; drier bristles need
+      // denser ink to show, the loaded core almost never lifts
+      const thr = STREAK_THRESHOLD * (dry / 0.55);
+      for (let i = 0; i < n; i++) {
+        const v = st(S[i], k, lateral);
+        on[i] = dry <= 0 || v.on > thr ? 1 : 0;
+        swell![i] = v.swell;
+      }
+    } else for (let i = 0; i < n; i++) on[i] = dry <= 0 || n1(S[i] * 0.07 + sd * 0.37, sd) * 0.75 + n1(S[i] * 0.23 + 3.3, sd + 5) * 0.25 > dry * 0.66 ? 1 : 0;
     // Runs of "on" samples. A closed ring starts at a gap (so no run straddles the seam); if it has none,
     // it is one closed ribbon.
     let start = 0;
@@ -203,7 +262,9 @@ export function dryBrush(ctx: CanvasRenderingContext2D, flat: number[], closed: 
     const W = new Float32Array(n);
     const OF = new Float32Array(n);
     for (let i = 0; i < n; i++) {
-      let w = o.width * wFrac * (0.5 + 1.0 * n1(S[i] * 0.035 + 11.3, sd + 1)) * (0.85 + 0.3 * n1(S[i] * 0.2, sd + 7));
+      // line weight: the value-noise swell per bristle, or the streak map's swell for the whole stroke
+      const sw = swell ? 0.7 + 0.6 * swell[i] : 0.5 + 1.0 * n1(S[i] * 0.035 + 11.3, sd + 1);
+      let w = o.width * wFrac * sw * (0.85 + 0.3 * n1(S[i] * 0.2, sd + 7));
       if (o.thin) {
         const u = total > 0 ? S[i] / total : 0;
         w *= 1 - o.thin * 0.78 * u * u;
@@ -285,6 +346,194 @@ export function dryBrush(ctx: CanvasRenderingContext2D, flat: number[], closed: 
 }
 
 // ---------------------------------------------------------------------------
+// the streak map as a brush (docs/INK2.md §4.2)
+// ---------------------------------------------------------------------------
+
+/** Per-row prefix sums of the streak map's R (bristle ink) and one swell profile for the whole stroke. */
+export interface StreakBrush {
+  w: number;
+  h: number;
+  /** (h × (w + 1)) prefix sums of R/255 along x, per row. */
+  cum: Float32Array;
+  /** Column swell (mean G across the rows), renormalised to mean 0.5, std 0.2, clamped 0..1. */
+  swell: Float32Array;
+  /** R/255 at the map's threshold (the source's 50 % ink level). */
+  threshold: number;
+}
+
+export function makeStreakBrush(sd: StreakData): StreakBrush {
+  const { w, h, data } = sd;
+  const cum = new Float32Array(h * (w + 1));
+  for (let y = 0; y < h; y++) {
+    const o = y * (w + 1);
+    let acc = 0;
+    for (let x = 0; x < w; x++) {
+      acc += data[(y * w + x) * 4] / 255;
+      cum[o + x + 1] = acc;
+    }
+  }
+  const col = new Float32Array(w);
+  for (let x = 0; x < w; x++) {
+    let a = 0;
+    for (let y = 0; y < h; y++) a += data[(y * w + x) * 4 + 1];
+    col[x] = a / h / 255;
+  }
+  let m = 0;
+  for (const v of col) m += v;
+  m /= w;
+  let va = 0;
+  for (const v of col) va += (v - m) ** 2;
+  const sdv = Math.sqrt(va / w) || 1;
+  const swell = new Float32Array(w);
+  for (let x = 0; x < w; x++) swell[x] = Math.max(0, Math.min(1, 0.5 + ((col[x] - m) / sdv) * 0.2));
+  return { w, h, cum, swell, threshold: sd.threshold };
+}
+
+/**
+ * A `BrushOpts.streak` for one stroke: the stroke runs along the map's x (one repeat per STREAK_WIDTHS stroke widths,
+ * wrapped, starting at a per-stroke offset); each bristle reads the row at its place across the stroke
+ * (the loaded middle rows for the core, the drier outer rows for the edge bristles), averaged over the
+ * stretch of map one resample step covers, so a gap in the ink is a gap in the stroke, not texel noise.
+ */
+function streakFor(b: StreakBrush, seed: number, widthPx: number, spacing: number): NonNullable<BrushOpts['streak']> {
+  const perPx = b.w / Math.max(1, widthPx * STREAK_WIDTHS);
+  const x0 = hash1(seed, 71) * b.w;
+  const win = Math.max(1, Math.round(perPx * spacing));
+  const scale = STREAK_THRESHOLD / b.threshold;
+  return (sPx, k, lateral) => {
+    let xs = Math.floor(x0 + sPx * perPx) % b.w;
+    if (xs < 0) xs += b.w;
+    const jitter = (hash1(k, seed * 7 + 3) - 0.5) * 0.1;
+    const row = Math.max(0, Math.min(b.h - 1, Math.round((0.5 + 0.4 * lateral + jitter) * (b.h - 1))));
+    const o = row * (b.w + 1);
+    const xe = xs + win;
+    const sum = xe <= b.w ? b.cum[o + xe] - b.cum[o + xs] : b.cum[o + b.w] - b.cum[o + xs] + b.cum[o + (xe - b.w)];
+    return { on: (sum / win) * scale, swell: b.swell[xs] };
+  };
+}
+
+// ---------------------------------------------------------------------------
+// the texture ladder (docs/INK2.md §4.3): uTexOn / uTexTaps and the maps
+// ---------------------------------------------------------------------------
+
+const smooth01 = (x: number) => {
+  const t = Math.max(0, Math.min(1, x));
+  return t * t * (3 - 2 * t);
+};
+
+class TexLadder {
+  level: number;
+  maps: TexMaps | null = null;
+  private u: TexUniforms | null = null;
+  private from = 0;
+  private to = 0;
+  private t0 = 0;
+  private dur = 0;
+  private raf = 0;
+  private small: boolean;
+  private swapping = false;
+  kick?: () => void;
+  /** Told when the maps change (loaded, or swapped for the 512 set at L2). */
+  onMaps?: (m: TexMaps) => void;
+
+  constructor(level: number, small: boolean) {
+    this.level = level;
+    this.small = small;
+  }
+
+  bind(u: TexUniforms): void {
+    this.u = u;
+    u.uTexTaps.value = Math.max(1, this.level);
+    if (this.maps) this.useMaps(this.maps, 400);
+  }
+
+  /** The maps arrived: the paper dries in (uTexOn 0 → 1 over 400 ms), unless the ladder is at L0. */
+  loaded(m: TexMaps | null): void {
+    if (!m) {
+      this.level = 0;
+      return;
+    }
+    this.maps = m;
+    this.onMaps?.(m);
+    if (this.u) this.useMaps(m, 400);
+  }
+
+  private useMaps(m: TexMaps, ms: number): void {
+    const u = this.u!;
+    u.uPaperTex.value = m.paper;
+    u.uWashTex.value = m.wash;
+    if (this.level >= 1) this.ramp(1, ms);
+  }
+
+  setQuality(level: number): void {
+    const l = Math.max(0, Math.min(3, Math.floor(level)));
+    if (!(l < this.level)) return; // never steps back up
+    this.level = l;
+    const u = this.u;
+    if (u) u.uTexTaps.value = Math.max(1, l);
+    if (l === 0) {
+      this.ramp(0, 300);
+      return;
+    }
+    // L2 on a desktop: the 512 set, anisotropy 1 (swapped in when it has loaded; no fade, same look)
+    if (l <= 2 && this.maps && this.maps.size > 512 && !this.swapping) {
+      this.swapping = true;
+      loadTexMaps(null, { small: true }).then((m) => {
+        if (!m || this.level === 0) return;
+        const old = this.maps;
+        this.maps = m;
+        this.onMaps?.(m);
+        if (this.u) {
+          this.u.uPaperTex.value = m.paper;
+          this.u.uWashTex.value = m.wash;
+        }
+        this.kick?.();
+        old?.paper.dispose();
+        old?.wash.dispose();
+      });
+    }
+    this.small = true;
+    this.kick?.();
+  }
+
+  private ramp(to: number, ms: number): void {
+    const u = this.u;
+    if (!u) return;
+    this.from = u.uTexOn.value;
+    this.to = to;
+    this.dur = ms;
+    this.t0 = performance.now();
+    if (this.raf) return;
+    const step = () => {
+      const k = this.dur > 0 ? (performance.now() - this.t0) / this.dur : 1;
+      u.uTexOn.value = this.from + (this.to - this.from) * smooth01(k);
+      this.kick?.();
+      if (k >= 1) {
+        u.uTexOn.value = this.to;
+        this.raf = 0;
+        return;
+      }
+      this.raf = requestAnimationFrame(step);
+    };
+    this.raf = requestAnimationFrame(step);
+  }
+
+  get isSmall(): boolean {
+    return this.small;
+  }
+}
+
+/** The dev / e2e hook `?tex=0|1|2|3`: start the ladder at that level (0 = the procedural board, no maps). */
+function texHook(): number | null {
+  const env = import.meta.env as Record<string, unknown> | undefined;
+  if (!env || !(env.DEV || env.VITE_E2E)) return null;
+  if (typeof location === 'undefined') return null;
+  const v = new URLSearchParams(location.search).get('tex');
+  if (v == null || !/^[0-3]$/.test(v)) return null;
+  return Number(v);
+}
+
+// ---------------------------------------------------------------------------
 // rasterising the territories (id map) and the distance field
 // ---------------------------------------------------------------------------
 
@@ -358,10 +607,23 @@ export interface InkOptions {
   /** Phones: the half-size canvas (2048). */
   small: boolean;
   maxTextureSize: number;
+  /** Optional: lets the pigment maps upload as soon as they decode (otherwise on the first frame using them). */
+  renderer?: THREE.WebGLRenderer;
 }
 
 export async function buildInk(g: BoardGeometry, opt: InkOptions): Promise<InkLayer> {
   const t0 = performance.now();
+  // The pigment maps (INK2 §4): fetched in parallel with the canvas work below and never waited for. The
+  // streaks are small and usually decoded by the time the coasts are drawn (else the noise brush runs, as
+  // before); the paper and wash arrive after the first frame and dry in.
+  const hook = texHook();
+  const ladder = new TexLadder(hook ?? (opt.small ? 2 : 3), opt.small || hook === 2);
+  let streakBrush: StreakBrush | null = null;
+  const streakP =
+    ladder.level === 0
+      ? Promise.resolve(null)
+      : loadStreaks(opt.small ? 1024 : 2048).then((d) => (streakBrush = d ? makeStreakBrush(d) : null));
+  void streakP;
   const BW = g.width;
   const BH = g.height;
   const inkW = Math.min(opt.small ? 2048 : 4096, opt.maxTextureSize || 4096);
@@ -586,18 +848,24 @@ export async function buildInk(g: BoardGeometry, opt: InkOptions): Promise<InkLa
     ctx.stroke();
   }
   ctx.restore();
+  const streakMs = Math.round(performance.now() - t0);
+  const sb: StreakBrush | null = streakBrush;
+  const streaked = !!sb;
   for (const r of coastRuns) {
     const len = ringLen(r.pts);
     const small = r.closed && len < 3;
+    const width = (small ? 0.13 : 0.2) * u;
+    const sdn = seed++;
     dryBrush(ctx, flatOf(r.pts), r.closed, {
-      width: (small ? 0.13 : 0.2) * u,
+      width,
       passes: small ? 5 : 10,
       alpha: 0.6,
       jitter: 0.03 * u,
       dry: small ? 0.2 : 0.55,
-      seed: seed++,
+      seed: sdn,
       spacing,
       endTaper: 0,
+      streak: sb ? streakFor(sb, sdn, width, spacing) : undefined,
     });
   }
   grab(0);
@@ -621,7 +889,18 @@ export async function buildInk(g: BoardGeometry, opt: InkOptions): Promise<InkLa
 
   // B: sea lanes as ink dabs, and the decorative (non-playable) coasts, finer.
   for (const p of g.decorativeLand) {
-    dryBrush(ctx, flatOf(p.outer), true, { width: 0.1 * u, passes: 4, alpha: 0.55, jitter: 0.02 * u, dry: 0.35, seed: seed++, spacing, endTaper: 0 });
+    const sdn = seed++;
+    dryBrush(ctx, flatOf(p.outer), true, {
+      width: 0.1 * u,
+      passes: 4,
+      alpha: 0.55,
+      jitter: 0.02 * u,
+      dry: 0.35,
+      seed: sdn,
+      spacing,
+      endTaper: 0,
+      streak: sb ? streakFor(sb, sdn, 0.1 * u, spacing) : undefined,
+    });
   }
   let dabSeed = 7;
   for (const lane of g.seaLanes) {
@@ -723,8 +1002,9 @@ export async function buildInk(g: BoardGeometry, opt: InkOptions): Promise<InkLa
         const y = yc - amp * Math.sin(Math.PI * 2 * (t * 0.85 + ph)) * (0.5 + 0.5 * t) - rise * t * t;
         f.push(x, y);
       }
+      const width = rowH * (0.068 - 0.008 * l);
       dryBrush(wctx, f, false, {
-        width: rowH * (0.068 - 0.008 * l),
+        width,
         passes: 7,
         alpha: 0.72,
         jitter: rowH * 0.006,
@@ -733,6 +1013,7 @@ export async function buildInk(g: BoardGeometry, opt: InkOptions): Promise<InkLa
         spacing: 1,
         endTaper: 1,
         thin: 0.55,
+        streak: sb ? streakFor(sb, 900 + r * 10 + l, width, 1) : undefined,
       });
     }
   }
@@ -767,7 +1048,23 @@ export async function buildInk(g: BoardGeometry, opt: InkOptions): Promise<InkLa
     continentCentre[c] = [(x0 + x1) / 2, (y0 + y1) / 2];
   }
 
-  return {
+  // The paper and wash: loaded after this returns (the first frame is never held for them).
+  const mapsReady: Promise<TexMaps | null> =
+    ladder.level === 0
+      ? Promise.resolve(null)
+      : new Promise<TexMaps | null>((resolve) => {
+          const go = () =>
+            loadTexMaps(opt.renderer ?? null, { small: ladder.isSmall }).then((m) => {
+              ladder.onMaps = (mm) => (layer.maps = mm);
+              ladder.loaded(m);
+              resolve(m);
+            });
+          // after the first frame has been painted (two rAFs: the board's first draw happens in the first)
+          if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => requestAnimationFrame(go));
+          else setTimeout(go, 0);
+        });
+
+  const layer: InkLayer = {
     ink: inkTex,
     field: fieldTex,
     noise,
@@ -782,5 +1079,20 @@ export async function buildInk(g: BoardGeometry, opt: InkOptions): Promise<InkLa
     seaDistance,
     continentCentre,
     buildMs: Math.round(performance.now() - t0),
+    mapsReady,
+    streaked,
+    get quality() {
+      return ladder.level;
+    },
+    setQuality: (level: number) => ladder.setQuality(level),
+    bindShared: (u: TexUniforms) => ladder.bind(u),
+    get kick() {
+      return ladder.kick;
+    },
+    set kick(f: (() => void) | undefined) {
+      ladder.kick = f;
+    },
   };
+  if (import.meta.env?.DEV || import.meta.env?.VITE_E2E) (layer as unknown as { streakMs: number }).streakMs = streakMs;
+  return layer;
 }

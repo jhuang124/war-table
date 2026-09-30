@@ -203,6 +203,12 @@ export class TileSet {
       this.materials.push(top, side);
     }
     this.buildEntryPoints(g);
+    // While the pigment maps dry in (or fade out on the ladder's L0), the board needs frames even when
+    // nothing else moves (reduced motion, the ambient loop off): a dirty tile asks for one.
+    ink.kick = () => {
+      const t = this.list[0];
+      if (t) t.dirty = true;
+    };
   }
 
   get(id: TerritoryId): Tile {
