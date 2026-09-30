@@ -3,7 +3,9 @@
      .form-phone  a phone-sized viewport: the dock, compact seat rings, bottom sheets, one-column screens
      .form-tablet a touch screen with room: the desktop layout with 44 px targets
      .touch       pointer: coarse (phones and tablets): no hover-only affordances
-   Phase icons are gone: the Turn Track is words everywhere. Paper sheets, hairlines, one gold. */
+   Phase icons are gone: the Turn Track is words everywhere. Paper sheets (straight-edged, one hairline
+   across the top), hairlines, words and brush marks, one gold; no rounded rectangle or pill at any size
+   (docs/INK2.md §3). Every tap target keeps a transparent hit box of at least 44×44 px. */
 
 :root {
   --sa-t: env(safe-area-inset-top, 0px);
@@ -26,16 +28,23 @@
 .touch .ui-root input { font-size: max(16px, 1.0625rem); } /* never an iOS focus zoom */
 @media (hover: none) {
   /* A tap leaves :hover stuck on iOS: no hover ink from it. */
-  .touch .track.is-live:not(.is-disabled) .tr-seg.is-eligible:not(.gold):hover { box-shadow: none; color: var(--ivory-78); }
-  .touch .btn:hover { border-color: var(--ivory-28); color: var(--ivory-90); }
-  .touch .btn.gold:hover { border-color: var(--gold); color: var(--gold); }
+  .touch .track.is-live:not(.is-disabled) .tr-seg.is-eligible:not(.gold):not(.is-rec):hover { color: var(--ivory-78); }
+  .touch .track.is-live:not(.is-disabled) .tr-seg.is-eligible:hover::before { opacity: 0; }
+  .touch .btn:not(.role-primary):not(.role-exit):hover { color: var(--ivory-78); }
+  .touch .btn.gold:hover > .btn-ring { color: var(--gold); }
   .touch .swatch:hover { opacity: 1; }
 }
 
-/* The long-press name card: serif lines on a patch of deeper paper above the finger. */
+/* The long-press name card: serif lines on the paper above the finger, a soft radial deepening behind
+   them (as the tray header's halo); no border, no box. */
 .touch .name-card:not(.hidden) {
   display: block; position: fixed; z-index: 40; pointer-events: none; min-width: 11rem; max-width: 16rem;
-  padding: 0.55rem 0.9rem 0.65rem; border-radius: 0.75rem; background: rgba(11, 18, 36, 0.9); border: 1px solid var(--ivory-12);
+  padding: 0.55rem 0.9rem 0.65rem; border: 0; border-radius: 0; background: transparent;
+  text-shadow: 0 0 0.35em rgba(11, 18, 36, 0.9), 0 0 0.12em rgba(11, 18, 36, 0.9);
+}
+.touch .name-card:not(.hidden)::before {
+  content: ''; position: absolute; inset: -1.2rem -1.6rem; z-index: -1; pointer-events: none;
+  background: radial-gradient(closest-side, rgba(11, 18, 36, 0.86), rgba(11, 18, 36, 0.6) 55%, rgba(11, 18, 36, 0));
 }
 .nc-title { font-weight: 600; font-size: 1.375rem; color: var(--ivory); line-height: 1.1; }
 .nc-cont { margin-top: 0.1rem; font-size: 1rem; color: var(--ivory-55); }
@@ -44,11 +53,12 @@
 .nc-armies { margin-left: auto; padding-left: 0.9rem; color: var(--ivory); white-space: nowrap; }
 .nc-nub { display: none; }
 
-/* Every device: the board's WebGL context was lost and is rebuilding. */
+/* Every device: the board's WebGL context was lost and is rebuilding — one serif line on the paper. */
 .board-lost {
   position: absolute; z-index: 95; left: 0; right: 0; top: 50%; margin: -1.4rem auto 0; width: max-content; height: 2.8rem;
-  display: flex; align-items: center; padding: 0 1.3rem; border-radius: 999px; font-size: 1.25rem; font-weight: 500; color: var(--ivory-90);
-  border: 1px solid var(--ivory-28); background: rgba(11, 18, 36, 0.86); animation: lost-breathe 2.4s ease-in-out infinite alternate;
+  display: flex; align-items: center; padding: 0 1.3rem; border: 0; border-radius: 0; background: transparent;
+  font-size: 1.25rem; font-weight: 500; color: var(--ivory-90);
+  text-shadow: 0 0 0.35em rgba(11, 18, 36, 0.9), 0 0 0.12em rgba(11, 18, 36, 0.9); animation: lost-breathe 2.4s ease-in-out infinite alternate;
 }
 @keyframes lost-breathe { from { opacity: 0.65; } to { opacity: 1; } }
 
@@ -68,9 +78,7 @@
 .form-tablet .house-toggle { min-height: 2.75rem; }
 .form-tablet .btn.link, .form-tablet .btn.role-exit { min-height: 2.75rem; }
 .form-tablet .sp-btn { width: 2.75rem; height: 2.75rem; }
-/* The Turn Track's words are 44 px touch targets: each word's hit area reaches 4 px up and down into the
-   pill's own padding and border (data-slop 8), so the dock stays slim (phones and tablets alike). */
-.touch .tr-seg::after { content: ''; position: absolute; left: 0; right: 0; top: -4px; bottom: -4px; }
+/* The Turn Track's words are 44 px touch targets on their own (each word is its transparent box). */
 
 /* ------------------------------------------------------------------------ */
 /* Phone                                                                      */
@@ -102,8 +110,8 @@
 .form-phone .sc-by { display: none; }
 .form-phone .ts-right { position: relative; gap: 6px; }
 .form-phone .ts-menu { width: 2.75rem; height: 2.75rem; }
-.form-phone .ts-reset.pill { height: 2.75rem; padding: 0 1rem; font-size: 1rem; }
-.form-phone.portrait .ts-reset.pill { position: absolute; top: calc(100% + 8px); right: 0; }
+.form-phone .ts-reset { height: 2.75rem; padding: 0 0.6rem; font-size: 1rem; }
+.form-phone.portrait .ts-reset { position: absolute; top: calc(100% + 8px); right: 0; }
 .form-phone .hud::before { height: 4.5rem; }
 
 /* ---- The dock ---- */
@@ -115,19 +123,22 @@
 .form-phone .ln-text.ln-ghost { width: 100%; }
 .form-phone .st-zone { gap: 6px; }
 .form-phone .st-buttons { gap: 6px; }
-.form-phone .st-buttons .btn { min-width: 4.5rem; padding: 0 1.05rem; font-size: 1.125rem; }
+.form-phone .st-buttons .btn { min-width: 4.5rem; padding: 0 0.9rem; font-size: 1.125rem; }
+.form-phone .st-buttons .btn.role-primary { padding: 0 1.25rem; }
 .form-phone .sp-btn { width: 2.75rem; height: 2.75rem; font-size: 1.5rem; }
 .form-phone .sp-n { min-width: 1.9rem; font-size: 1.375rem; }
 .form-phone .stepper-ctl { padding: 0; }
+.form-phone .tr-seg { min-width: 0; padding: 0 0.75rem; }
 .form-phone .count-slider { width: 9rem; gap: 0.2rem; }
 .form-phone .cs-track { margin: 0 0.8rem; }
 .form-phone .cs-knob { width: 1.5rem; height: 1.5rem; margin: -0.75rem 0 0 -0.75rem; }
+.form-phone .count-slider { min-height: 2.75rem; }
 /* `Cards 3` stays a word on phones too (iconography is the emblems and the ensō only) */
 .form-phone .st-buttons .btn[data-id='cards'] { min-width: 0; padding: 0 0.85rem; }
 .form-phone .st-rule { height: 1.6rem; }
 .form-phone .sr-enso { width: 1.7rem; height: 1.7rem; margin: -0.85rem 0 0 -0.85rem; }
-.form-phone .sr-l { right: calc(50% + 1.2rem); }
-.form-phone .sr-r { left: calc(50% + 1.2rem); }
+.form-phone .st-rule { --gap-r: 1.2rem; }
+.form-phone .tr-ul { top: calc(100% + 0.2rem); height: 0.45rem; }
 
 /* Landscape: the rule, then one row — the track words · the line · the actions */
 .form-phone.landscape .strip {
@@ -135,10 +146,8 @@
 }
 .form-phone.landscape .st-say { height: auto; align-items: center; min-height: var(--pill-h); }
 .form-phone.landscape .st-line { align-items: center; }
-.form-phone.landscape .track { height: var(--pill-h); padding: 3px; }
-.form-phone.landscape .tr-fill { top: 3px; bottom: 3px; }
-.form-phone.landscape .tr-seg { min-width: 0; padding: 0 0.7rem; font-size: 1.0625rem; }
-.form-phone.landscape .tr-sep { height: 1rem; }
+.form-phone.landscape .track { height: var(--pill-h); gap: 8px; }
+.form-phone.landscape .tr-seg { min-width: 0; padding: 0 12px; font-size: 1.0625rem; }
 /* The breath line rises just above the dock (the row has no room for two lines). */
 .form-phone.landscape .announce { position: fixed; left: 0; right: 0; bottom: calc(var(--dock-clear, 70px) + 0.35rem); }
 .form-phone.landscape .rb-title { font-size: 1.375rem; }
@@ -152,10 +161,9 @@
   grid-template-columns: minmax(0, 1fr); grid-template-areas: 'say' 'rule' 'track' 'zone'; row-gap: 6px;
 }
 .dock-stacked .st-say { height: auto; min-height: 2.6rem; padding: 0 0.25rem; }
-.dock-stacked .track { height: 3rem; padding: 3px; }
-.dock-stacked .tr-fill { top: 3px; bottom: 3px; }
+.dock-stacked .track { height: 3rem; gap: 8px; }
 .dock-stacked .tr-seg { flex: 1 1 0; min-width: 0; padding: 0 0.25rem; font-size: 1.125rem; }
-.dock-stacked .st-zone { display: flex; min-width: 0; }
+.dock-stacked .st-zone { display: flex; min-width: 0; justify-self: stretch; }
 .dock-stacked .st-zone.is-empty { display: none; }
 .dock-stacked .st-buttons { flex: 1 1 auto; min-width: 0; }
 .dock-stacked .st-buttons .btn { height: 3rem; flex: 0 1 auto; font-size: 1.1875rem; }
@@ -176,8 +184,6 @@
 /* ---- Dice tray header ---- */
 /* Only with the tray under it; each side's name gives way before its number does. */
 .form-phone .battle { width: calc(100vw - 16px); }
-/* Landscape phones: the board moves the tray up or down, away from the fight; the header stays on its rim. */
-.form-phone.landscape .battle { transform: translate(-50%, var(--tray-shift, 0px)); }
 .form-phone .bt-head { gap: 0.55rem; padding: 0 0.5rem 0.15rem; }
 .form-phone .bt-side { font-size: 1.1875rem; gap: 0.35rem; min-width: 0; max-width: 45%; }
 .form-phone .bt-terr { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -198,7 +204,7 @@
 .form-phone .scrim { place-items: end center; align-content: end; padding: calc(var(--sa-t) + 12px) 0 0; background: rgba(8, 13, 27, 0.45); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
 .form-phone .scrim > .sheet {
   width: 100%; max-width: 100%; max-height: 100%; display: flex; flex-direction: column; overflow: hidden;
-  border-radius: 1.25rem 1.25rem 0 0; border-bottom: 0; background: rgba(16, 26, 48, 0.98);
+  border: 0; border-top: 1px solid var(--ivory-20); border-radius: 0; background: rgba(16, 26, 48, 0.98);
   padding: 0.3rem max(1.25rem, var(--sa-r)) calc(var(--sa-b) + 1rem) max(1.25rem, var(--sa-l));
 }
 .form-phone.landscape .scrim > .sheet { max-width: 38rem; padding-left: 1.5rem; padding-right: 1.5rem; padding-bottom: calc(var(--sa-b) + 0.75rem); }
@@ -248,12 +254,13 @@
 .form-phone .confirm-text { font-size: 1.3125rem; margin: 0.35rem 0.25rem 1.1rem; }
 .form-phone .confirm-row { flex-direction: column-reverse; gap: 0.5rem; }
 .form-phone .confirm-row .btn { width: 100%; height: 3.25rem; font-size: 1.25rem; }
+.form-phone .confirm-row .btn.role-primary { height: 3.75rem; }
 
 /* Cards: a sheet over the dock, with a scrim */
 .form-phone .cards-scrim:not(.hidden) { display: block; position: absolute; inset: 0; z-index: 19; pointer-events: auto; background: rgba(8, 13, 27, 0.45); }
 .form-phone .cards-sheet {
   left: 0; right: 0; bottom: 0; width: 100%; max-width: 36rem; margin: 0 auto;
-  border-radius: 1.25rem 1.25rem 0 0; border-bottom: 0; background: rgba(16, 26, 48, 0.98);
+  border: 0; border-top: 1px solid var(--ivory-20); border-radius: 0; background: rgba(16, 26, 48, 0.98);
   padding: 0.3rem max(1.25rem, var(--sa-r)) calc(var(--sa-b) + 1rem) max(1.25rem, var(--sa-l)); gap: 0.75rem;
 }
 .form-phone .cs-head .icon-btn { width: 2.75rem; height: 2.75rem; }
@@ -266,17 +273,17 @@
 .form-phone .handoff { place-items: end center; }
 .form-phone .ho-box {
   width: 100%; max-width: 36rem; gap: 0.6rem; background: rgba(16, 26, 48, 0.98);
-  padding: 0.3rem 1.5rem calc(var(--sa-b) + 1.25rem); border-radius: 1.25rem 1.25rem 0 0; border: 1px solid var(--ivory-20); border-bottom: 0;
+  padding: 0.3rem 1.5rem calc(var(--sa-b) + 1.25rem); border-radius: 0; border: 0; border-top: 1px solid var(--ivory-20);
 }
 .form-phone .ho-box .grab { align-self: stretch; }
 .form-phone .ho-emb { width: 4.5rem; height: 4.5rem; }
 .form-phone .ho-title { font-size: 2.375rem; }
 .form-phone .ho-sub { font-size: 1.1875rem; margin-bottom: 0.35rem; }
-.form-phone .ho-box .btn.big { width: 100%; height: 3.5rem; font-size: 1.3125rem; }
+.form-phone .ho-box .btn.big { width: 100%; height: 3.75rem; font-size: 1.3125rem; }
 .form-phone.landscape .ho-box { gap: 0.35rem; padding-bottom: calc(var(--sa-b) + 0.8rem); }
 .form-phone.landscape .ho-title { font-size: 1.875rem; }
 .form-phone.landscape .ho-emb { width: 3rem; height: 3rem; margin-bottom: 0; }
-.form-phone.landscape .ho-box .btn.big { height: 3rem; }
+.form-phone.landscape .ho-box .btn.big { height: 3.25rem; }
 
 /* ---- Title ---- */
 .form-phone.portrait .title-col {
@@ -288,14 +295,15 @@
 .form-phone.portrait .lk-enso { width: 3.6rem; height: 3.6rem; }
 .form-phone.portrait .title-menu { margin-top: 0; align-self: stretch; align-items: stretch; gap: 0.35rem; }
 .form-phone.portrait .title-item { width: 100%; }
-.form-phone.portrait .title-item.gold { height: 3.5rem; margin-bottom: 0.3rem; }
+.form-phone.portrait .title-item.gold { height: 4rem; margin-bottom: 0.3rem; }
 .form-phone.portrait .title-item.continue { height: auto; }
 .form-phone.landscape .title-col { width: min(40rem, 90vw); transform: translate(-50%, -50%); }
 .form-phone.landscape .lk-name { font-size: 3rem; }
 .form-phone.landscape .lk-rule { margin-top: 0.6rem; width: 80%; }
 .form-phone.landscape .lk-enso { width: 3rem; height: 3rem; }
 .form-phone.landscape .title-menu { margin-top: 1.1rem; flex-direction: row; flex-wrap: wrap; justify-content: center; align-items: center; gap: 0.35rem 0.75rem; }
-.form-phone.landscape .title-item.gold { margin-bottom: 0; min-width: 12rem; }
+.form-phone.landscape .title-item.gold { margin-bottom: 0; min-width: 12rem; height: 3.5rem; }
+.form-phone.landscape .title-item.continue.gold { height: auto; padding: 0.9rem 2rem 0.95rem; }
 .form-phone.landscape .title-item { font-size: 1.3125rem; }
 
 /* ---- New game: one column, sticky Start ---- */
@@ -354,7 +362,7 @@
   display: flex; align-items: flex-end; justify-content: center; background: rgba(8, 13, 27, 0.5);
 }
 .form-phone .sw-sheet {
-  width: 100%; max-width: 36rem; background: rgba(16, 26, 48, 0.98); border: 1px solid var(--ivory-20); border-bottom: 0; border-radius: 1.25rem 1.25rem 0 0;
+  width: 100%; max-width: 36rem; background: rgba(16, 26, 48, 0.98); border: 0; border-top: 1px solid var(--ivory-20); border-radius: 0;
   padding: 0.3rem 1.25rem calc(var(--sa-b) + 1.5rem);
 }
 .form-phone .sw-title { display: block; text-align: center; font-weight: 500; font-size: 1.5rem; letter-spacing: 0.06em; font-variant: small-caps; margin-bottom: 1.1rem; }

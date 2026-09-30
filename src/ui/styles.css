@@ -1,8 +1,12 @@
-/* War Table · HTML UI — ink & night (docs/INK.md B3, B5)
-   Ink on indigo paper. One family (Cormorant Garamond, lining tabular figures). Nothing is filled:
-   hairline outlines and words. ONE GOLD on screen (`.gold`, aliased `.brass`): a gold outline with gold
-   words. No glass, no blur panels, no shadows, no glows. Things are drawn in (a brush mask) and dry
-   out (alpha); nothing slides or scales. All sizes in rem (text size = root font scale). */
+/* War Table · HTML UI — ink & night (docs/INK.md B3, docs/INK2.md §3 "UI as ink")
+   Ink on indigo paper. One family (Cormorant Garamond, lining tabular figures). Nothing is filled, and
+   there is no rounded rectangle and no pill anywhere: controls are words, hairlines and brush marks on
+   the paper — the hairline (structure), the word (the control), the brush underline ("this one") and the
+   brush ring ("press this"). Every control is a transparent hit box of at least 44×44 px. Straight-edged
+   rectangles only for things that are rectangles in the world: a paper sheet (one hairline across its
+   top), a card. ONE GOLD on screen (`.gold`, aliased `.brass`), and it moves. No glass, no blur panels,
+   no shadows, no glows. Things are drawn in (a brush mask) and dry out (alpha); nothing slides or
+   scales. All sizes in rem (text size = root font scale). */
 
 :root {
   --paper: #101a30;
@@ -97,21 +101,25 @@
 /* Surfaces: paper sheets                                                     */
 /* ------------------------------------------------------------------------ */
 
+/* The paper sheet: deeper paper, straight-edged, one hairline across its top; the title sits on it the
+   way the phase words sit on the gold rule. No side or bottom border, no radius. */
 .panel, .sheet {
   pointer-events: auto;
   position: relative;
   background: var(--paper-96);
-  border: 1px solid var(--ivory-20);
-  border-radius: 0.875rem;
+  border: 0;
+  border-top: 1px solid var(--ivory-20);
+  border-radius: 0;
 }
 .sheet { padding: 1.9rem 2.25rem 2.1rem; }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.4rem; }
 .sheet-title { font-weight: 500; font-size: 2rem; line-height: 1.05; letter-spacing: 0.06em; font-variant: small-caps; color: var(--ivory); }
 
 /* ------------------------------------------------------------------------ */
-/* Buttons: hairline outline pills and words                                 */
+/* Buttons: words; the primary inside a brush ring                           */
 /* ------------------------------------------------------------------------ */
 
+/* A button is a word inside its own transparent hit box (≥ 44 px tall). No border, no radius, no fill. */
 .btn {
   pointer-events: auto;
   appearance: none;
@@ -122,125 +130,130 @@
   justify-content: center;
   gap: 0.5rem;
   height: var(--pill-h);
-  padding: 0 1.35rem;
-  border-radius: 999px;
-  border: 1px solid var(--ivory-28);
+  min-height: 2.75rem;
+  padding: 0 1.1rem;
+  border: 0;
+  border-radius: 0;
   background: transparent;
-  color: var(--ivory-90);
+  color: var(--ivory-78);
   font: 600 1.1875rem/1 var(--serif);
   font-variant-numeric: lining-nums tabular-nums;
   letter-spacing: 0.01em;
   white-space: nowrap;
   cursor: pointer;
-  transition: color 120ms ease-out, border-color 120ms ease-out, opacity 120ms ease-out;
+  transition: color 120ms ease-out, opacity 120ms ease-out;
 }
-.btn:hover { color: var(--ivory); border-color: var(--ivory-55); }
-.btn:active, .btn.is-down { color: var(--ivory-70); transition-duration: 40ms; }
-.btn.role-exit { border-color: transparent; color: var(--ivory-70); padding: 0 0.5rem; font-weight: 500; }
-.btn.role-exit:hover { color: var(--ivory); border-color: transparent; }
-/* THE gold: a gold outline and gold words (never a fill, never a glow) */
-.btn.gold, .btn.brass { color: var(--gold); border-color: var(--gold); }
+.btn > .btn-label, .btn > .btn-sub { position: relative; }
+.btn:hover { color: var(--ivory); }
+/* Press: the word dims 20 %; nothing scales. */
+.btn:active, .btn.is-down { opacity: 0.8; transition-duration: 40ms; }
+.btn.role-exit { color: var(--ivory-70); padding: 0 0.6rem; font-weight: 500; }
+.btn.role-exit:hover { color: var(--ivory); }
+.btn.role-primary { color: var(--ivory); }
+
+/* The brush ring behind a primary word (src/ui/controls.ts attachRing sizes it to the word): ivory 55 %,
+   or THE gold when the button holds the one gold. The word itself stays ivory (frame 5's Blitz). */
+.btn > .btn-ring { position: absolute; left: 0; top: 0; display: none; pointer-events: none; overflow: visible; color: var(--ivory-55); }
+.btn.role-primary > .btn-ring, .btn.gold > .btn-ring, .btn.brass > .btn-ring { display: block; }
+.btn.gold > .btn-ring, .btn.brass > .btn-ring { color: var(--gold); }
 /* Gold moves; it never doubles (INK A9): it leaves at once and arrives over the element's own transition,
    so the old and the new gold are never on screen together. Same for a screen drying out underneath. */
 .btn:not(.gold):not(.brass) { transition-property: opacity; }
-.tr-seg:not(.gold) { transition: none; }
-.tr-fill:not(.gold) { transition-property: transform, width; }
+.btn:not(.gold):not(.brass) > .btn-ring { transition: none; }
+.tr-seg:not(.gold), .tr-seg:not(.gold) .tr-ul { transition: none; }
 /* ...and it arrives a beat (100 ms) after the old gold has gone (the board's stroke or arrow drying, a
    segment handing over), so the eye follows one gold moving, never two. */
-.btn.gold, .btn.brass, .tr-seg.gold { transition-delay: 100ms; }
+.btn.gold > .btn-ring, .btn.brass > .btn-ring { transition: color 180ms ease-out 100ms; }
+.tr-seg.gold, .tr-seg.gold .tr-ul { transition: color 180ms ease-out 100ms; }
 /* A button that is born gold (Blitz as an attack arms) starts in ivory and takes the gold on the beat too. */
 @starting-style {
-  .btn.gold, .btn.brass { color: var(--ivory-90); border-color: var(--ivory-28); }
+  .btn.gold > .btn-ring, .btn.brass > .btn-ring { color: var(--ivory-55); }
 }
-.btn.gold:hover, .btn.gold:active, .btn.brass:hover, .tr-seg.gold:hover { transition-delay: 0ms; }
-.tr-fill.gold { transition: transform 180ms var(--brush), width 180ms var(--brush), border-color 200ms ease-out 100ms; }
-.screen.leaving .btn.gold, .screen.leaving .btn.brass { color: var(--ivory-78); border-color: var(--ivory-55); transition: none; }
-.btn.gold:hover, .btn.brass:hover { color: var(--gold-hi); border-color: var(--gold-hi); }
-.btn.gold:active, .btn.gold.is-down { color: rgba(201, 169, 97, 0.75); }
+.btn.gold:hover > .btn-ring, .btn.brass:hover > .btn-ring, .tr-seg.gold:hover, .tr-seg.gold:hover .tr-ul { transition-delay: 0ms; }
+.screen.leaving .btn.gold > .btn-ring, .screen.leaving .btn.brass > .btn-ring { color: var(--ivory-55); transition: none; }
+.btn.gold:hover > .btn-ring, .btn.brass:hover > .btn-ring { color: var(--gold-hi); }
 .btn.is-disabled, .btn[aria-disabled='true'] { opacity: 0.38; cursor: default; }
-.btn.is-disabled:hover, .btn[aria-disabled='true']:hover { color: var(--ivory-90); border-color: var(--ivory-28); }
-.btn.gold.is-disabled:hover { color: var(--gold); border-color: var(--gold); }
-.btn.is-busy { pointer-events: none; overflow: hidden; }
-.btn.is-busy::after {
-  content: ''; position: absolute; left: 20%; right: 20%; bottom: 0.45rem; height: 1px;
-  background: var(--gold); transform-origin: left; animation: busy-sweep 700ms var(--brush) both;
-}
-@keyframes busy-sweep { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.btn.is-disabled:hover, .btn[aria-disabled='true']:hover { color: var(--ivory-78); }
+.btn.role-primary.is-disabled:hover { color: var(--ivory); }
+.btn.gold.is-disabled:hover > .btn-ring { color: var(--gold); }
+/* Busy (a short hold): the ring redraws itself once along its spine (controls.ts), clicks are ignored. */
+.btn.is-busy { pointer-events: none; }
 .btn.big { height: 3.25rem; padding: 0 1.75rem; font-size: 1.3125rem; }
 .btn .btn-sub { font-weight: 500; font-size: 1rem; color: var(--ivory-55); }
-.btn.link { border: 0; height: auto; padding: 0.25rem 0; color: var(--ivory-70); font-weight: 500; }
+.btn.link { height: auto; min-height: 2.75rem; padding: 0.25rem 0; color: var(--ivory-70); font-weight: 500; }
 .btn.link:hover { color: var(--ivory); }
 .kc { display: none; }
 
+/* An icon word (× close, × remove): the mark in a transparent 44 px box; no ring, no border. */
 .icon-btn {
-  pointer-events: auto; appearance: none; display: inline-grid; place-items: center; width: 2.75rem; height: 2.75rem;
-  border-radius: 50%; border: 1px solid transparent; background: transparent; color: var(--ivory-55); cursor: pointer;
-  transition: color 120ms, border-color 120ms;
+  pointer-events: auto; appearance: none; display: inline-grid; place-items: center; width: 2.75rem; height: 2.75rem; padding: 0;
+  border: 0; border-radius: 0; background: transparent; color: var(--ivory-55); cursor: pointer;
+  transition: color 120ms;
 }
 .icon-btn svg { width: 1.2rem; height: 1.2rem; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; }
-.icon-btn:hover { color: var(--ivory); border-color: var(--ivory-20); }
+.icon-btn:hover { color: var(--ivory); }
 .icon-btn.is-disabled { opacity: 0.35; cursor: default; }
+
+/* The brush underline (src/ui/dom.ts underlineEl): a bowed stroke, 1.1× the word, 3–4 px. */
+.brush-ul { position: absolute; left: -5%; width: 110%; height: 0.55rem; pointer-events: none; overflow: visible; }
 
 /* Words that act (menus, title): a hairline appears under the word on hover / focus */
 .menu-item, .title-item, .seg-opt, .house-toggle { --u: transparent; }
 .ui-root .menu-item:focus-visible, .ui-root .title-item:not(.gold):focus-visible, .ui-root .seg-opt:focus-visible,
-.ui-root .house-toggle:focus-visible, .ui-root .switch:focus-visible, .ui-root .btn.link:focus-visible, .ui-root .btn.role-exit:focus-visible {
+.ui-root .house-toggle:focus-visible, .ui-root .switch:focus-visible, .ui-root .btn.link:focus-visible, .ui-root .btn.role-exit:focus-visible,
+.ui-root .ts-reset:focus-visible {
   outline: none; text-decoration: underline; text-decoration-color: var(--gold); text-decoration-thickness: 1px; text-underline-offset: 0.3em;
 }
 
-/* Segmented: words, the active one ivory with a gold hairline under it */
+/* Segmented: words; the active one ivory with the brush underline (ivory 70 %) under it */
 .seg { display: inline-flex; align-items: baseline; gap: 1.35rem; pointer-events: auto; flex-wrap: wrap; }
 .seg-opt {
-  appearance: none; position: relative; border: 0; background: transparent; padding: 0.45rem 0 0.5rem; color: var(--ivory-55);
-  font: 500 1.1875rem/1.1 var(--serif); cursor: pointer; transition: color 120ms ease-out; text-align: left;
+  appearance: none; position: relative; border: 0; border-radius: 0; background: transparent; padding: 0.45rem 0 0.5rem; color: var(--ivory-55);
+  min-width: 2.75rem; min-height: 2.75rem; font: 500 1.1875rem/1.1 var(--serif); cursor: pointer; transition: color 120ms ease-out; text-align: left;
 }
-.seg-opt::after {
-  content: ''; position: absolute; left: 0; right: 0; bottom: 0.15rem; height: 1px; background: var(--gold-55);
-  transform: scaleX(0); transform-origin: left; transition: transform 240ms var(--brush);
-}
+.seg-opt .seg-label { position: relative; display: inline-block; }
+.seg-ul { top: calc(100% + 0.05rem); color: var(--ivory-70); opacity: 0; clip-path: inset(0 100% 0 0); transition: opacity 140ms var(--dry), clip-path 0ms linear 140ms; }
+.seg-opt.on .seg-ul { opacity: 1; clip-path: inset(0 0 0 0); transition: clip-path 240ms var(--brush), opacity 60ms ease-out; }
 .seg-opt:hover { color: var(--ivory-90); }
 .seg-opt.on { color: var(--ivory); }
-.seg-opt.on::after { transform: scaleX(1); }
 .seg-opt[aria-disabled='true'] { opacity: 0.4; cursor: default; }
-.seg-row .seg-opt { display: inline-flex; flex-direction: column; align-items: flex-start; }
-.seg-row .seg-detail { font-size: 0.9375rem; color: var(--ivory-40); margin-top: 0.15rem; }
+.seg-row .seg-opt { display: inline-flex; flex-direction: column; align-items: flex-start; justify-content: center; }
+.seg-row .seg-detail { font-size: 0.9375rem; color: var(--ivory-40); margin-top: 0.35rem; }
 .seg-row .seg-opt.on .seg-detail { color: var(--ivory-55); }
-.seg-row:has(.seg-detail) .seg-opt::after { bottom: auto; top: 1.65rem; }
 .seg-mini .seg-opt { font-size: 1rem; }
 
 /* Option words (Length / Setup): a label, its detail and estimate under it */
 .seg-cards { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 1.75rem; width: 100%; }
 .seg-cards .seg-opt { display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem; padding: 0.3rem 0 0.2rem; }
-.seg-cards .seg-opt::after { display: none; }
-.seg-cards .seg-label { position: relative; font-size: 1.3125rem; font-weight: 600; color: inherit; padding-bottom: 0.15rem; }
-.seg-cards .seg-label::after {
-  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: var(--gold-55);
-  transform: scaleX(0); transform-origin: left; transition: transform 240ms var(--brush);
-}
-.seg-cards .seg-opt.on .seg-label::after { transform: scaleX(1); }
+.seg-cards .seg-label { position: relative; font-size: 1.3125rem; font-weight: 600; color: inherit; padding-bottom: 0.3rem; }
+.seg-cards .seg-ul { top: auto; bottom: -0.2rem; }
 .seg-cards .seg-detail { font-size: 1rem; color: var(--ivory-40); line-height: 1.3; }
 .seg-cards .seg-meta { font-size: 1rem; color: var(--ivory-40); }
 .seg-cards .seg-opt.on .seg-detail, .seg-cards .seg-opt.on .seg-meta { color: var(--ivory-70); }
 
-/* Switch: the words, and a small hairline capsule with an ink dot */
+/* Switch: the words, and a short hairline with a small brush-ring knob that slides */
 .switch {
   appearance: none; pointer-events: auto; display: flex; align-items: center; justify-content: space-between; gap: 1rem;
-  width: 100%; padding: 0.6rem 0; background: transparent; border: 0; color: var(--ivory-90); font: 500 1.1875rem/1.25 var(--serif);
+  width: 100%; min-height: 2.75rem; padding: 0.6rem 0; background: transparent; border: 0; border-radius: 0; color: var(--ivory-90); font: 500 1.1875rem/1.25 var(--serif);
   text-align: left; cursor: pointer;
 }
 .switch-text { display: flex; flex-direction: column; gap: 0.1rem; }
 .switch-detail { font-size: 0.9375rem; color: var(--ivory-40); }
-.switch-track { flex: none; position: relative; width: 2.4rem; height: 1.3rem; border-radius: 1rem; border: 1px solid var(--ivory-28); transition: border-color 160ms; }
-.switch-knob { position: absolute; top: 50%; left: 0.3rem; width: 0.6rem; height: 0.6rem; margin-top: -0.3rem; border-radius: 50%; background: var(--ivory-40); transition: transform 240ms var(--brush), background-color 160ms; }
+.switch-track { flex: none; position: relative; width: 2.4rem; height: 1.3rem; }
+.switch-track::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--ivory-28); transition: background-color 160ms; }
+.switch-knob { position: absolute; top: 50%; left: -0.1rem; width: 1rem; height: 1rem; margin-top: -0.5rem; color: var(--ivory-40); transition: transform 240ms var(--brush), color 160ms; }
+.knob-ring { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .switch.on { color: var(--ivory); }
-.switch.on .switch-track { border-color: var(--ivory-70); }
-.switch.on .switch-knob { transform: translateX(1.05rem); background: var(--ivory); }
+.switch.on .switch-track::before { background: var(--ivory-55); }
+.switch.on .switch-knob { transform: translateX(1.5rem); color: var(--ivory); }
 
-/* Slider: a hairline, an ink ring for the knob */
-.slider { pointer-events: auto; width: 100%; padding: 0.75rem 0; cursor: pointer; touch-action: none; }
-.slider-track { position: relative; height: 1px; background: var(--ivory-20); }
+/* Slider: a hairline, a brush ring for the knob */
+.slider { pointer-events: auto; width: 100%; min-height: 2.75rem; padding: 0.75rem 0; cursor: pointer; touch-action: none; display: flex; align-items: center; }
+.slider-track { position: relative; flex: 1; height: 1px; background: var(--ivory-20); }
 .slider-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--ivory-70); }
-.slider-knob { position: absolute; top: 50%; width: 0.95rem; height: 0.95rem; margin: -0.475rem 0 0 -0.475rem; border-radius: 50%; border: 1px solid var(--ivory); background: var(--paper); }
+.slider-knob { position: absolute; top: 50%; width: 1.05rem; height: 1.05rem; margin: -0.525rem 0 0 -0.525rem; color: var(--ivory); }
+.slider:focus-visible { outline: none; }
+.slider:focus-visible .slider-knob { color: var(--gold); }
 
 /* Text inputs: a hairline under the word */
 .name-input {
@@ -298,32 +311,36 @@
 .seat-chip.out .sc-ring { opacity: 0.4; color: var(--ivory-55); }
 .seat-chip.out .sc-crack {
   display: block; position: absolute; left: 50%; top: -6%; width: 2px; height: 34%; margin-left: 0.28rem;
-  background: var(--paper-deep); transform: rotate(24deg); border-radius: 1px;
+  background: var(--paper-deep); transform: rotate(24deg); border-radius: 0;
 }
 .seat-chip.out .sc-emb { opacity: 0.4; }
 .ts-right { flex: none; display: flex; align-items: center; gap: 0.75rem; pointer-events: auto; }
-.pill {
-  pointer-events: auto; appearance: none; display: inline-flex; align-items: center; justify-content: center;
-  height: 2.5rem; padding: 0 1.1rem; border-radius: 999px; border: 1px solid var(--ivory-28); background: transparent;
-  color: var(--ivory-78); font: 600 1.0625rem/1 var(--serif); white-space: nowrap; cursor: pointer; transition: color 120ms, border-color 120ms;
+/* `Reset view`: the words with a 1 px hairline under them, ivory 78 %, in a 44 px hit box */
+.ts-reset {
+  pointer-events: auto; appearance: none; position: relative; display: inline-flex; align-items: center; justify-content: center;
+  height: 2.75rem; padding: 0 0.6rem; border: 0; border-radius: 0; background: transparent;
+  color: var(--ivory-78); font: 600 1.0625rem/1 var(--serif); white-space: nowrap; cursor: pointer; transition: color 120ms;
 }
-.pill:hover { color: var(--ivory); border-color: var(--ivory-55); }
+.ts-reset::after { content: ''; position: absolute; left: 0.6rem; right: 0.6rem; bottom: 0.7rem; height: 1px; background: currentColor; opacity: 0.6; }
+.ts-reset:hover { color: var(--ivory); }
 .ts-menu {
-  appearance: none; display: grid; place-items: center; width: 2.75rem; height: 2.75rem; padding: 0.3rem; border: 0; border-radius: 50%;
+  appearance: none; display: grid; place-items: center; width: 2.75rem; height: 2.75rem; padding: 0.3rem; border: 0; border-radius: 0;
   background: transparent; color: var(--ivory-70); cursor: pointer; transition: color 160ms ease-out;
 }
 .ts-menu .ts-enso { width: 100%; height: 100%; }
 .ts-menu:hover { color: var(--ivory); }
 
-/* Bottom: the one line · the gold rule with the ensō · the Turn Track pill and the action pills */
+/* Bottom (frame 5): the one line · the gold rule with the ensō over the current word · the seat mark,
+   the Turn Track's four words and the action words, all on the paper */
 .strip {
   position: absolute; z-index: 8; left: 0; right: 0; bottom: 0;
   padding: 0 var(--edge) max(var(--gap), env(safe-area-inset-bottom, 0px));
-  /* The track sits centred under the ensō and never moves (ROUND2 §A: one fixed phase control); the
-     actions grow to its right (the moodboard's Blitz), so a button appearing never shifts the track. */
+  /* The track's words sit centred as a group and never move (ROUND2 §A: one fixed phase control); the
+     seat mark sits at the far left and the actions grow to the track's right, so a button appearing
+     never shifts the track. */
   display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
-  grid-template-areas: 'say say say' 'rule rule rule' '. track zone';
-  row-gap: 0.5rem; column-gap: 0.9rem; align-items: center;
+  grid-template-areas: 'say say say' 'rule rule rule' 'seat track zone';
+  row-gap: 0.35rem; column-gap: 0.9rem; align-items: center;
   pointer-events: none;
 }
 .st-say { grid-area: say; position: relative; min-width: 0; height: 2.2rem; display: flex; align-items: flex-end; justify-content: center; }
@@ -342,11 +359,12 @@
 .st-line.is-rejection { color: var(--ivory); }
 .st-line.is-rejection .ln-text:not(.ln-ghost)::before { content: '— '; color: var(--ivory-40); }
 
-/* The gold rule: a hairline that fades toward both edges, broken by the ensō at the centre */
-.st-rule { grid-area: rule; position: relative; height: 2.25rem; margin: 0 calc(-1 * var(--edge)); pointer-events: none; }
-.sr-half { position: absolute; top: 50%; height: 1px; }
-.sr-l { left: 0; right: calc(50% + 1.55rem); background: linear-gradient(90deg, rgba(201, 169, 97, 0) 0%, var(--gold-55) 42%, var(--gold) 100%); transform-origin: right center; }
-.sr-r { right: 0; left: calc(50% + 1.55rem); background: linear-gradient(270deg, rgba(201, 169, 97, 0) 0%, var(--gold-55) 42%, var(--gold) 100%); transform-origin: left center; }
+/* The gold rule: a hairline that fades toward both edges, broken by the ensō wherever it sits (--ex, set
+   by strip.ts over the current word). It slides there on an advance (180 ms, the brush); `.sr-cut` jumps. */
+.st-rule { grid-area: rule; position: relative; height: 2.25rem; margin: 0 calc(-1 * var(--edge)); pointer-events: none; --ex: 50%; --gap-r: 1.55rem; }
+.sr-half { position: absolute; top: 50%; height: 1px; transition: left 180ms var(--brush), right 180ms var(--brush); }
+.sr-l { left: 0; right: calc(100% - var(--ex) + var(--gap-r)); background: linear-gradient(90deg, rgba(201, 169, 97, 0) 0%, var(--gold-55) 42%, var(--gold) 100%); transform-origin: right center; }
+.sr-r { right: 0; left: calc(var(--ex) + var(--gap-r)); background: linear-gradient(270deg, rgba(201, 169, 97, 0) 0%, var(--gold-55) 42%, var(--gold) 100%); transform-origin: left center; }
 .sr-glint {
   position: absolute; top: 50%; left: 0; width: 16rem; height: 1px; margin-top: 0; pointer-events: none;
   background: linear-gradient(90deg, rgba(255, 238, 196, 0), rgba(255, 238, 196, 0.85) 50%, rgba(255, 238, 196, 0));
@@ -359,7 +377,11 @@
   19% { transform: translateX(calc(100vw + 2rem)); opacity: 0; }
   100% { transform: translateX(calc(100vw + 2rem)); opacity: 0; }
 }
-.sr-enso { position: absolute; left: 50%; top: 50%; width: 2.35rem; height: 2.35rem; margin: -1.175rem 0 0 -1.175rem; color: var(--gold); animation: enso-breathe 8s ease-in-out infinite alternate; }
+.sr-enso {
+  position: absolute; left: var(--ex); top: 50%; width: 2.35rem; height: 2.35rem; margin: -1.175rem 0 0 -1.175rem; color: var(--gold);
+  transition: left 180ms var(--brush); animation: enso-breathe 8s ease-in-out infinite alternate;
+}
+.sr-cut .sr-half, .sr-cut .sr-enso { transition: none !important; }
 .sr-enso .enso { width: 100%; height: 100%; }
 @keyframes enso-breathe { from { opacity: 1; } to { opacity: 0.84; } }
 /* After 3 minutes without input the ambient layer slows to half speed (INK A1). */
@@ -369,78 +391,85 @@
 .is-striking .sr-glint, .is-striking .sr-enso { animation-play-state: paused; }
 .is-striking .sr-glint { opacity: 0; }
 
-/* The Turn Track: words in one outlined pill; the marker is a hairline outline round the current word */
+/* The seat mark (desktop): a brush dab in the seat's colour and its name, far left of the track row */
+.st-seat { grid-area: seat; justify-self: start; display: none; align-items: center; gap: 0.7rem; min-width: 0; pointer-events: none; }
+:root:not(.form-phone):not(.dock-stacked) .st-seat { display: flex; }
+.sm-dab { flex: none; width: 2.2rem; height: 1rem; overflow: visible; }
+.sm-name { min-width: 0; font-weight: 500; font-size: 1.3125rem; color: var(--ivory-78); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* The Turn Track: four words, no border, no separators; the current word carries the brush underline */
 .track {
-  grid-area: track; position: relative; display: flex; align-items: stretch; height: var(--pill-h); padding: 0.25rem;
-  border-radius: 999px; border: 1px solid var(--ivory-28); pointer-events: auto;
+  grid-area: track; position: relative; display: flex; align-items: stretch; gap: 0.5rem; height: var(--pill-h); min-height: 2.75rem;
+  padding: 0; border: 0; border-radius: 0; pointer-events: auto;
 }
-.tr-fill {
-  position: absolute; left: 0; top: 0.25rem; bottom: 0.25rem; border-radius: 999px; z-index: 0; pointer-events: none;
-  border: 1px solid var(--ivory-70);
-  transition: transform 180ms var(--brush), width 180ms var(--brush), border-color 200ms ease-out;
-}
-.tr-fill.gold { border-color: var(--gold); }
-.tr-sep { flex: none; align-self: center; width: 1px; height: 1.25rem; background: var(--ivory-20); transition: opacity 160ms; }
-.tr-sep:has(+ .tr-seg.is-current), .tr-seg.is-current + .tr-sep, .tr-sep:has(+ .tr-seg.gold), .tr-seg.gold + .tr-sep { opacity: 0; }
 .tr-seg {
   position: relative; z-index: 1; appearance: none; display: inline-flex; align-items: center; justify-content: center;
-  min-width: 6.75rem; padding: 0 1.2rem; border-radius: 999px; border: 0; background: transparent;
+  min-width: 5.5rem; min-height: 2.75rem; padding: 0 0.75rem; border: 0; border-radius: 0; background: transparent;
   font: 500 1.3125rem/1 var(--serif); letter-spacing: 0.015em; white-space: nowrap; color: var(--ivory-78); cursor: default;
-  transition: color 180ms ease-out, box-shadow 180ms ease-out;
+  transition: color 180ms ease-out;
 }
+/* Each word reserves its 600-weight width (data-w), so the current word's weight never nudges the group. */
+.tr-words { position: relative; display: inline-grid; justify-items: center; }
+.tr-label, .tr-short { grid-area: 1 / 1; }
+.tr-label::after, .tr-short::after { content: attr(data-w); display: block; height: 0; overflow: hidden; visibility: hidden; font-weight: 600; }
 .tr-short { display: none; }
+/* The brush underline: under the current word (ivory 70 %), gold when the word holds the one gold. */
+.tr-ul { top: calc(100% + 0.28rem); color: var(--ivory-70); opacity: 0; }
+.tr-ul.on, .tr-ul.drying { opacity: 1; }
+.tr-seg.gold .tr-ul.on { color: var(--gold); }
 .tr-seg.is-done { color: var(--ivory-40); }
 .tr-seg.is-current { color: var(--ivory); font-weight: 600; }
 .tr-seg.is-locked { color: var(--ivory-28); }
 .tr-seg.is-rec:not(.gold) { color: var(--ivory); }
-/* THE gold on the track: the current word inside a gold marker, or the recommended next word outlined in gold */
+/* THE gold on the track: the current word (or the recommended next word) and its underline, in gold */
 .tr-seg.gold { color: var(--gold); font-weight: 600; }
-.tr-seg.gold:not(.is-current) { box-shadow: inset 0 0 0 1px var(--gold); }
 .track.is-live:not(.is-disabled) .tr-seg.is-eligible { cursor: pointer; }
-.track.is-live:not(.is-disabled) .tr-seg.is-eligible:hover { color: var(--ivory); box-shadow: inset 0 0 0 1px var(--ivory-40); }
-.track.is-live:not(.is-disabled) .tr-seg.gold.is-eligible:hover { color: var(--gold-hi); box-shadow: inset 0 0 0 1px var(--gold-hi); }
+/* Hover on an eligible word: the word inks ivory and a 1 px hairline (not the brush) appears under it. */
+.tr-seg::before { content: ''; position: absolute; left: 50%; width: 3.2rem; bottom: 0.45rem; height: 1px; margin-left: -1.6rem; background: currentColor; opacity: 0; transition: opacity 120ms; pointer-events: none; }
+.track.is-live:not(.is-disabled) .tr-seg.is-eligible:not(.gold):not(.is-rec):hover { color: var(--ivory); }
+.track.is-live:not(.is-disabled) .tr-seg.is-eligible:hover::before { opacity: 0.5; }
+.track.is-live:not(.is-disabled) .tr-seg.gold.is-eligible:hover { color: var(--gold-hi); }
 .tr-seg.is-down { color: var(--ivory-70); }
 /* A sheet or confirm over the board carries the one gold: the HUD's gold steps down to ivory beneath it. */
-.overlay-open .hud .tr-seg.gold, .overlay-open .hud .btn.gold, .overlay-open .title-screen .btn.gold,
-.ui-root:has(> .handoff:not(.hidden)) .hud .tr-seg.gold, .ui-root:has(> .handoff:not(.hidden)) .hud .btn.gold { color: var(--ivory-78); }
-.overlay-open .hud .tr-fill.gold, .overlay-open .hud .btn.gold, .overlay-open .title-screen .btn.gold,
-.ui-root:has(> .handoff:not(.hidden)) .hud .tr-fill.gold, .ui-root:has(> .handoff:not(.hidden)) .hud .btn.gold { border-color: var(--ivory-55); }
-.overlay-open .hud .gold, .overlay-open .title-screen .gold, .ui-root:has(> .handoff:not(.hidden)) .hud .gold { transition: none; }
-.overlay-open .hud .tr-seg.gold:not(.is-current), .ui-root:has(> .handoff:not(.hidden)) .hud .tr-seg.gold:not(.is-current) { box-shadow: inset 0 0 0 1px var(--ivory-55); }
+.overlay-open .hud .tr-seg.gold, .ui-root:has(> .handoff:not(.hidden)) .hud .tr-seg.gold { color: var(--ivory-78); }
+.overlay-open .hud .tr-seg.gold .tr-ul, .ui-root:has(> .handoff:not(.hidden)) .hud .tr-seg.gold .tr-ul,
+.overlay-open .hud .btn.gold > .btn-ring, .overlay-open .title-screen .btn.gold > .btn-ring,
+.ui-root:has(> .handoff:not(.hidden)) .hud .btn.gold > .btn-ring { color: var(--ivory-55); }
+.overlay-open .hud .gold, .overlay-open .hud .gold *, .overlay-open .title-screen .gold, .overlay-open .title-screen .gold *,
+.ui-root:has(> .handoff:not(.hidden)) .hud .gold, .ui-root:has(> .handoff:not(.hidden)) .hud .gold * { transition: none; }
 /* Disabled (a roll, a mandatory occupy or trade): the whole track steps back */
-.track.is-disabled { border-color: var(--ivory-12); }
 .track.is-disabled .tr-seg:not(.is-current) { opacity: 0.5; }
-.track.is-disabled .tr-fill { opacity: 0.55; }
-/* Watching someone else's turn: the marker moves through the same words, nothing to click */
+.track.is-disabled .tr-ul.on { opacity: 0.55; }
+/* Watching someone else's turn: the ensō moves through the same words, nothing to click */
 .track.is-watch .tr-seg:not(.is-current):not(.gold) { color: var(--ivory-40); }
 .track.is-watch .tr-seg.is-done { color: var(--ivory-28); }
 
-.st-zone { grid-area: zone; justify-self: start; display: flex; align-items: center; gap: 0.75rem; pointer-events: auto; }
+.st-zone { grid-area: zone; justify-self: start; display: flex; align-items: center; gap: 0.5rem; pointer-events: auto; }
 .st-count { flex: none; display: flex; align-items: center; }
-.st-buttons { flex: none; display: flex; align-items: center; gap: 0.75rem; }
+.st-buttons { flex: none; display: flex; align-items: center; gap: 0.5rem; }
 .st-buttons:empty { display: none; }
-.st-buttons .btn { min-width: 6.25rem; }
+.st-buttons .btn { min-width: 5.5rem; }
 .st-zone.is-empty { display: none; }
 
-/* Count, ≤ 6 options: ( −  3  + ) */
-.stepper-ctl { display: flex; align-items: center; gap: 0.1rem; height: var(--pill-h); padding: 0 0.3rem; border-radius: 999px; border: 1px solid var(--ivory-28); }
+/* Count, ≤ 6 options: −  3  +  as words (the − and + are 44 px transparent hit boxes) */
+.stepper-ctl { display: flex; align-items: center; gap: 0; height: var(--pill-h); padding: 0; border: 0; border-radius: 0; }
 .sp-btn {
-  appearance: none; width: 2.35rem; height: 2.35rem; border-radius: 50%; border: 0; background: transparent; color: var(--ivory-78);
+  appearance: none; width: 2.75rem; height: 2.75rem; padding: 0; border-radius: 0; border: 0; background: transparent; color: var(--ivory-78);
   font: 500 1.5rem/1 var(--serif); cursor: pointer; display: grid; place-items: center; transition: color 120ms;
 }
 .sp-btn:hover { color: var(--ivory); }
 .sp-btn:active, .sp-btn.is-down { color: var(--ivory-55); }
 .sp-btn[aria-disabled='true'] { opacity: 0.3; cursor: default; }
-.sp-n { min-width: 2.4rem; text-align: center; font-size: 1.5rem; font-weight: 600; color: var(--ivory); display: inline-block; }
+.sp-n { min-width: 1.6rem; text-align: center; font-size: 1.5rem; font-weight: 600; color: var(--ivory); display: inline-block; }
 
-/* Count, more than 6 options: a hairline slider */
-.count-slider { display: flex; align-items: center; gap: 0.5rem; width: 13rem; height: var(--pill-h); cursor: pointer; touch-action: none; }
+/* Count, more than 6 options: a hairline slider with a small brush-ring knob */
+.count-slider { display: flex; align-items: center; gap: 0.5rem; width: 13rem; height: var(--pill-h); min-height: 2.75rem; cursor: pointer; touch-action: none; }
 .cs-end { flex: none; min-width: 1.4rem; text-align: center; font-size: 1.0625rem; font-weight: 600; color: var(--ivory-55); }
 .cs-track { position: relative; flex: 1; height: 1px; margin: 0 0.7rem; background: var(--ivory-28); }
 .cs-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--ivory-78); }
-.cs-knob { position: absolute; top: 50%; width: 1.25rem; height: 1.25rem; margin: -0.625rem 0 0 -0.625rem; border-radius: 50%; border: 1px solid var(--ivory); background: var(--paper); }
+.cs-knob { position: absolute; top: 50%; width: 1.3rem; height: 1.3rem; margin: -0.65rem 0 0 -0.65rem; color: var(--ivory); }
 .count-slider:focus-visible { outline: none; }
-.count-slider:focus-visible .cs-knob { border-color: var(--gold); }
+.count-slider:focus-visible .cs-knob { color: var(--gold); }
 
 /* The dice tray's header: serif words on the paper above the tray */
 .battle {
@@ -483,13 +512,14 @@
 .cs-title { font-weight: 500; font-size: 1.5rem; letter-spacing: 0.06em; font-variant: small-caps; }
 .cards-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.7rem; }
 .cs-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding-top: 0.7rem; border-top: 1px solid var(--ivory-12); }
+.cs-foot .btn { min-width: 5.5rem; }
 .cards-status { font-size: 1.125rem; font-weight: 600; color: var(--ivory-90); }
 
 /* Cards: ink on paper — a hairline card, the board's own figure, the words under it */
 .card {
-  position: relative; aspect-ratio: 5 / 7; border-radius: 0.5rem; padding: 0.5rem 0.35rem 0.45rem;
+  position: relative; aspect-ratio: 5 / 7; border-radius: 0; padding: 0.5rem 0.35rem 0.45rem;
   display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 0.15rem; color: var(--ivory-90);
-  border: 1px solid var(--ivory-20); background: rgba(240, 235, 224, 0.025); transition: border-color 200ms;
+  border: 1px solid var(--ivory-28); background: rgba(240, 235, 224, 0.025); transition: border-color 200ms;
 }
 .card.in-set { border-color: var(--ivory-78); }
 .card-art { flex: 1; display: grid; place-items: center; width: 100%; min-height: 0; }
@@ -500,7 +530,7 @@
 .card-terr { font-size: 0.9375rem; color: var(--ivory-55); text-align: center; line-height: 1.1; min-height: 2.1em; display: flex; align-items: center; }
 .card-bonus { position: absolute; top: 0.35rem; right: 0.45rem; font-size: 1rem; font-weight: 600; color: var(--ivory); }
 
-/* Hand-off cover: the board dims to indigo; the seat's ring, "Pass to Sam", one gold button */
+/* Hand-off cover: the board dims to indigo; the seat's ring, "Pass to Sam", the words in one gold brush ring */
 .handoff {
   position: absolute; inset: 0; z-index: 60; pointer-events: auto; display: grid; place-items: center;
   background: rgba(11, 18, 36, 0.93); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
@@ -510,6 +540,7 @@
 .ho-emb .enso { width: 100%; height: 100%; }
 .ho-title { font-weight: 500; font-size: 3.25rem; line-height: 1.05; letter-spacing: 0.01em; }
 .ho-sub { font-size: 1.3125rem; color: var(--ivory-70); margin-bottom: 0.8rem; }
+.ho-box .btn.big { height: 3.6rem; padding: 0 2.2rem; }
 
 /* Scrims: the board dims 40 % and softens; the paper sheets sit on it */
 .scrim {
@@ -559,12 +590,19 @@
 .rule-title { font-weight: 600; font-size: 1.4375rem; letter-spacing: 0.04em; font-variant: small-caps; color: var(--ivory); margin-bottom: 0.1rem; }
 .rule.house { display: block; padding-top: 1.1rem; border-top: 1px solid var(--ivory-12); }
 .rule.house p { font-size: 1.0625rem; color: var(--ivory-70); }
-.ra-track { display: flex; align-items: center; gap: 0.3rem; padding: 0.2rem 0.45rem; border: 1px solid var(--ivory-28); border-radius: 999px; font-size: 0.8125rem; white-space: nowrap; }
-.ra-track i { width: 1px; height: 0.7rem; background: var(--ivory-20); }
-.ra-track span { color: var(--ivory-55); }
-.ra-track span.on { color: var(--ivory); padding: 0.1rem 0.35rem; border: 1px solid var(--ivory-70); border-radius: 999px; }
+/* The Turn Track in miniature: a tiny gold rule with the ensō over Attack, four words, a brush underline */
+.ra-track { position: relative; display: flex; flex-direction: column; align-items: stretch; gap: 0.2rem; width: 11.5rem; font-size: 0.875rem; white-space: nowrap; }
+.ra-rule { position: relative; height: 1rem; }
+.ra-rule i { position: absolute; top: 50%; height: 1px; }
+.ra-rule i:first-child { left: 0; right: calc(100% - var(--rx) + 0.6rem); background: linear-gradient(90deg, rgba(201, 169, 97, 0), var(--gold)); }
+.ra-rule i:nth-child(2) { right: 0; left: calc(var(--rx) + 0.6rem); background: linear-gradient(270deg, rgba(201, 169, 97, 0), var(--gold)); }
+.ra-rule .enso { position: absolute; top: 50%; left: var(--rx); width: 0.95rem; height: 0.95rem; margin: -0.475rem 0 0 -0.475rem; color: var(--gold); }
+.ra-words { display: flex; justify-content: space-between; }
+.ra-words span { position: relative; color: var(--ivory-55); }
+.ra-words span.on { color: var(--ivory); font-weight: 600; }
+.ra-words span .brush-ul { top: calc(100% + 0.1rem); height: 0.35rem; color: var(--ivory-70); }
 .ra-cards { display: flex; align-items: center; gap: 0.35rem; }
-.ra-card { display: grid; place-items: center; width: 2.1rem; height: 2.9rem; border: 1px solid var(--ivory-28); border-radius: 0.3rem; }
+.ra-card { display: grid; place-items: center; width: 2.1rem; height: 2.9rem; border: 1px solid var(--ivory-28); border-radius: 0; }
 .ra-card img { max-width: 80%; max-height: 2rem; object-fit: contain; }
 .ra-plus { margin-left: 0.3rem; font-size: 1rem; color: var(--ivory-70); }
 .ra-units { display: flex; align-items: flex-end; gap: 0.9rem; }
@@ -609,13 +647,16 @@
 .lk-half { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(201, 169, 97, 0), var(--gold) 100%); }
 .lk-half:last-child { background: linear-gradient(270deg, rgba(201, 169, 97, 0), var(--gold) 100%); }
 .lk-enso { flex: none; width: 4.25rem; height: 4.25rem; color: var(--gold); }
-.title-menu { margin-top: 2.1rem; display: flex; flex-direction: column; align-items: center; gap: 0.5rem; }
-.title-item { border-color: transparent; font-size: 1.5rem; font-weight: 500; height: 3rem; color: var(--ivory-90); }
-.title-item:hover { border-color: transparent; }
-.title-item.gold { border-color: var(--gold); font-weight: 600; min-width: 14rem; height: 3.25rem; margin-bottom: 0.4rem; }
-.title-item.continue { flex-direction: column; gap: 0.2rem; height: auto; padding-top: 0.6rem; padding-bottom: 0.65rem; border-radius: 1.75rem; }
+.title-menu { margin-top: 2.1rem; display: flex; flex-direction: column; align-items: center; gap: 0.35rem; }
+/* Words: the primary inside a gold brush ring (Continue's save summary under the word, inside the same
+   ring); New game / How to play bare ivory 90 %; Settings quiet at 55 %. */
+.title-item { font-size: 1.5rem; font-weight: 500; height: 3rem; color: var(--ivory-90); }
+.title-item:hover { color: var(--ivory); }
+.title-item.gold { color: var(--ivory); font-weight: 600; min-width: 14rem; height: 4rem; padding: 0 2.25rem; margin-bottom: 0.5rem; }
+.title-item.continue { flex-direction: column; gap: 0.25rem; height: auto; min-height: 3rem; padding-top: 0.6rem; padding-bottom: 0.65rem; }
+.title-item.continue.gold { padding: 1.35rem 2.5rem 1.4rem; }
 .title-item.continue .btn-sub { color: var(--ivory-55); font-size: 1rem; }
-.title-item.quiet { font-size: 1.1875rem; color: var(--ivory-55); height: 2.5rem; }
+.title-item.quiet { font-size: 1.1875rem; color: var(--ivory-55); height: 2.75rem; }
 .title-item.quiet:hover { color: var(--ivory-90); }
 
 /* ------------------------------------------------------------------------ */
@@ -637,10 +678,10 @@
 .seat-num { font-weight: 600; color: var(--ivory-28); font-size: 1.0625rem; }
 .seat-color { position: relative; }
 .swatch {
-  appearance: none; position: relative; width: 2.25rem; height: 2.25rem; border-radius: 50%; border: 0; padding: 0; display: grid; place-items: center;
+  appearance: none; position: relative; width: 2.75rem; height: 2.75rem; border-radius: 0; border: 0; padding: 0; display: grid; place-items: center;
   cursor: pointer; background: transparent; color: var(--seat); transition: opacity 140ms;
 }
-.swatch .sw-ring { position: absolute; inset: 0; width: 100%; height: 100%; }
+.swatch .sw-ring { position: absolute; inset: 0.2rem; width: calc(100% - 0.4rem); height: calc(100% - 0.4rem); }
 .swatch .emb { position: relative; width: 0.8rem; height: 0.8rem; color: var(--seat-light); }
 .seat-emblem.swatch { width: 2.9rem; height: 2.9rem; }
 .seat-emblem.swatch .emb { width: 0.95rem; height: 0.95rem; }
@@ -650,9 +691,9 @@
 .seat-emblem.clash::after, .swatch.clash::after { content: ''; position: absolute; left: 22%; right: 22%; bottom: -0.35rem; height: 1px; background: var(--gold); }
 .swatch-pop {
   position: absolute; z-index: 6; left: calc(100% + 0.6rem); top: 50%; transform: translateY(-50%);
-  padding: 0.55rem 0.8rem 0.7rem; border-radius: 1.75rem; background: var(--paper-96); border: 1px solid var(--ivory-20);
+  padding: 0.35rem 0.6rem 0.6rem; border-radius: 0; border: 0; border-top: 1px solid var(--ivory-20); background: var(--paper-deep);
 }
-.swatches { display: flex; gap: 0.55rem; }
+.swatches { display: flex; gap: 0.5rem; }
 .swatch:hover { opacity: 0.85; }
 .swatch.taken { opacity: 0.3; }
 .diff-wrap { transition: opacity 160ms; }
@@ -717,14 +758,15 @@
 .st-name { color: var(--seat-light); font-weight: 600; }
 .st-terr { color: var(--ivory-78); }
 .v-actions { display: flex; align-items: center; justify-content: center; gap: 0.9rem; flex-wrap: wrap; }
-.v-actions .role-secondary { border-color: transparent; }
-.v-actions .role-secondary:hover { border-color: var(--ivory-28); }
+.v-actions .btn.big { height: 3.75rem; padding: 0 2.4rem; }
+.v-actions .role-secondary { color: var(--ivory-78); }
+.v-actions .role-secondary:hover { color: var(--ivory); }
 .v-spacer { display: none; }
 /* Full stats: stats down, players across (winner first), fitted to the sheet; names give way first. */
-.v-stats { overflow-x: auto; padding-top: 0.5rem; scrollbar-width: none; }
+.v-stats { overflow-x: hidden; padding-top: 0.5rem; }
 .stats-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 1.0625rem; }
-.stats-table .sx-label { width: 11rem; text-align: left; font-weight: 500; color: var(--ivory-70); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.stats-table th, .stats-table td { padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--ivory-06); }
+.stats-table .sx-label { width: 34%; text-align: left; font-weight: 500; color: var(--ivory-70); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stats-table th, .stats-table td { padding: 0.4rem 0.45rem; border-bottom: 1px solid var(--ivory-06); overflow: hidden; text-overflow: ellipsis; }
 .stats-table thead th { border-bottom-color: var(--ivory-20); }
 .stats-table .sx-seat { text-align: right; font-weight: 600; color: var(--ivory-78); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stats-table .sx-seat.first { color: var(--ivory); }
@@ -750,10 +792,10 @@
   .count-slider { width: 11.5rem; }
 }
 @media (max-width: 1366px) {
-  .tr-seg { min-width: 5.9rem; padding: 0 1rem; }
+  .tr-seg { padding: 0 0.6rem; }
 }
 @media (max-width: 1100px) {
-  .tr-seg { min-width: 0; padding: 0 0.8rem; font-size: 1.125rem; }
+  .tr-seg { min-width: 0; padding: 0 0.75rem; font-size: 1.125rem; }
   .count-slider { width: 10rem; }
   .strip { column-gap: 0.6rem; }
 }

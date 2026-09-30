@@ -1,7 +1,8 @@
 // Victory (docs/INK.md B2.8, B5): a scroll, not fireworks. On the dimmed board one paper sheet rises
 // with the game's ensō in the winner's wash drawing itself, `John holds the world`, `Round 14 · 31
 // territories`, three award lines (Nemesis first), one ink timeline per player with no grid, a quiet
-// standings line, then Rematch (the only gold) · New setup · Title, and Full stats folded away.
+// standings line, then Rematch (the one gold: the word in a gold brush ring) · New setup · Title as bare
+// words, and Full stats folded away (fitted to the sheet: no sideways scroll).
 // Nothing makes anyone wait: Enter / a click finishes the drawing at once.
 
 import type { PlayerStats } from '../../engine/types';

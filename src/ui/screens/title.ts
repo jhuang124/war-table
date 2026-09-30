@@ -1,7 +1,8 @@
-// Title (docs/INK.md B5): the painting, flat, and on it "War Table" in serif small caps with the ensō
-// drawing itself beneath on the gold rule (~900 ms). Three lines: New game · Continue · How to play, and
-// one quiet Settings word (text size lives in Settings). One gold: Continue when a save exists, else
-// New game — a gold outline with gold words; the rest are words.
+// Title (docs/INK.md B5, INK2 §3.4): the painting, flat, and on it "War Table" in serif small caps with
+// the ensō drawing itself beneath on the gold rule (~900 ms). Three lines: New game · Continue · How to
+// play, and one quiet Settings word (text size lives in Settings). One gold: Continue when a save
+// exists, else New game — the word inside a gold brush ring (Continue's save summary under the word,
+// inside the same ring); the rest are bare words.
 
 import type { UiIntent, ViewModel } from '../../game/viewModel';
 import { uiButton } from '../controls';
@@ -32,8 +33,9 @@ export class TitleScreen {
     lock.append(this.name, rule);
 
     const menu = (this.menu = h('div', 'title-menu'));
-    this.ng = uiButton('New game', 'title-item', () => send({ type: 'nav', screen: 'newGame' }), undefined, 'title-new');
-    this.cont = uiButton('Continue', 'title-item continue', () => send({ type: 'continue' }), undefined, 'title-continue');
+    // Both can be the primary (it depends on a save): each carries a ring, shown only while it is the gold.
+    this.ng = uiButton('New game', 'title-item ringable', () => send({ type: 'nav', screen: 'newGame' }), undefined, 'title-new');
+    this.cont = uiButton('Continue', 'title-item continue ringable', () => send({ type: 'continue' }), undefined, 'title-continue');
     this.contSub = h('span', 'btn-sub num');
     this.cont.append(this.contSub);
     const rules = uiButton('How to play', 'title-item', () => send({ type: 'overlay', overlay: 'rules' }), undefined, 'title-rules');

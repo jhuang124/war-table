@@ -1,6 +1,6 @@
 // Top of the board (docs/INK.md B5 "In-game HUD"): the seats as ink rings on the paper, in turn order,
 // the territory count inside each ring and the name beside it; the game's ensō at the top right is the
-// menu, with `Reset view` beside it only while the camera is off home.
+// menu, with the words `Reset view` beside it only while the camera is off home.
 //   (11) John   (9) Sam   (8) Ochre   ( ) Sage                                   Reset view   (ensō)
 // The current seat's ring is inked at full strength and its name underlined in a hairline; the others
 // stay quieter. Losing a territory dims your ring for 300 ms (A5). An eliminated seat's ring is empty
@@ -90,7 +90,8 @@ export class TopStrip {
     this.seats = h('div', 'ts-seats');
     this.seats.setAttribute('aria-label', 'Players');
     const right = h('div', 'ts-right');
-    this.reset = h('button', 'pill ts-reset nofocus hidden', 'Reset view');
+    // `Reset view`: the words with a hairline under them (INK2 §3.2), a 44 px hit box; never a pill.
+    this.reset = h('button', 'ts-reset nofocus hidden', 'Reset view');
     this.reset.type = 'button';
     this.reset.dataset.testid = 'reset-view';
     this.reset.addEventListener('click', () => send({ type: 'resetView' }));

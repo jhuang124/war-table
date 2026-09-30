@@ -1,12 +1,13 @@
-// New game (UX.md §4.1, INK.md B5): seats, length, setup, house rules drawer, summary + Start, on one paper
-// sheet. Each seat is an ensō ring in its wash (tap → the six washes), a serif name, `Human · AI` and the
-// difficulty as words (the active one underlined in a gold hairline). Start is the gold outline.
+// New game (UX.md §4.1, INK.md B5, INK2 §3.4): seats, length, setup, house rules drawer, summary + Start,
+// on one paper sheet (one hairline across its top). Each seat is an ensō ring in its wash (tap → six
+// brush-ring swatches on a patch of deeper paper), a serif name, `Human · AI` and the difficulty as words
+// (the active one carries the brush underline, ivory 70 %). Start is the word in the gold brush ring.
 
 import type { AiDifficulty, PlayerColorId, PlayerKind } from '../../engine/types';
 import type { HouseRulesDraft, LengthPreset, NewGameVM, SeatDraft, SetupPreset, UiIntent } from '../../game/viewModel';
 import { PLAYER_COLOR_IDS, PLAYER_COLORS } from '../../shared/palette';
 import { Segmented, Switch, uiButton } from '../controls';
-import { animateIn, emblem, ensoEl, h, hashSeed, setAttr, setEmblem, setStyle, setText, toggle } from '../dom';
+import { animateIn, emblem, ensoEl, h, hashSeed, ringEl, setAttr, setEmblem, setStyle, setText, toggle } from '../dom';
 import { isPhone, layout } from '../layout';
 import { dragToDismiss, grabHandle, sheetIn } from '../sheet';
 
@@ -66,7 +67,7 @@ class SeatRow {
       b.dataset.testid = `seat-color-${index}-${c}`;
       setStyle(b, '--seat', PLAYER_COLORS[c].base);
       setStyle(b, '--seat-light', PLAYER_COLORS[c].light);
-      b.append(ensoEl(hashSeed(`sw${c}`), 'enso sw-ring', { small: true }), emblem(c, 'emb', 'light'), h('span', 'sw-name', PLAYER_COLORS[c].name));
+      b.append(ringEl(hashSeed(`sw${c}`), 1, undefined, { cls: 'sw-ring', weight: 1.7 }), emblem(c, 'emb', 'light'), h('span', 'sw-name', PLAYER_COLORS[c].name));
       b.addEventListener('click', () => {
         send({ type: 'seat', index: this.index, patch: { color: c } });
         this.setOpen(false);

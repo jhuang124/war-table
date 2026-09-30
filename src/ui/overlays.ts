@@ -1,13 +1,14 @@
 // Modal-ish layers: the hand-off cover, the confirm dialog, and the menu (the ensō / Esc) with the sheets
 // it opens: rules, settings (AI speed and the seat hand-off live here) and the read-only log. Every one
-// is a paper sheet (docs/INK.md B5): indigo at 96 %, a hairline ivory border, a serif title, items as
-// words with room between them; focus is a gold hairline underline. Phones: bottom sheets.
+// is a paper sheet (docs/INK2.md §3.3): straight-edged deeper paper with one ivory hairline across its
+// top and the title sitting on it, items as words with room between them; focus is a gold hairline
+// underline. No radius, no box round a control. Phones: bottom sheets (the same paper, rising).
 
 import type { GameVM, LogLineVM, SeatRef, Settings, UiIntent, ViewModel } from '../game/viewModel';
 
 import { PLAYER_COLORS } from '../shared/palette';
 import { Segmented, Slider, Switch, uiButton } from './controls';
-import { animateIn, drawEnso, drawIn, EASE_IN_QUAD, emblem, ensoEl, h, hashSeed, minus, motion, setAttr, setEnso, setStyle, setText, titleText, toggle } from './dom';
+import { animateIn, drawEnso, drawIn, EASE_IN_QUAD, emblem, ensoEl, h, hashSeed, minus, motion, setAttr, setEnso, setStyle, setText, titleText, toggle, underlineEl } from './dom';
 import { unitSrc } from './hud/pictograms';
 import { isPhone } from './layout';
 import { dragToDismiss, grabHandle, resetSheet, sheetIn, sheetOut } from './sheet';
@@ -43,6 +44,7 @@ export class Handoff {
     this.emb.append(this.ring);
     this.title = h('h1', 'ho-title');
     this.sub = h('p', 'ho-sub num');
+    // The words `I'm Sam · start turn` inside a gold brush ring: the cover's own gold (GoldVM 'handoff').
     const btn = uiButton('', 'brass role-primary big', () => send({ type: 'handoffAccept' }), undefined, 'handoff-accept');
     this.btnLabel = btn.querySelector('.btn-label')!;
     box.append(this.emb, this.title, this.sub, btn);
@@ -109,9 +111,10 @@ export class Confirm {
     });
     dragToDismiss(this.box, [this.box], { scrim: () => this.el, onDismiss: () => send({ type: 'confirm', yes: false }) });
     const row = h('div', 'confirm-row');
-    this.yes = uiButton('', 'brass role-primary', () => send({ type: 'confirm', yes: true }), undefined, 'confirm-yes');
+    // Two words: the safe one (`Keep playing`) carries the gold ring; the destructive one is a bare word.
+    this.yes = uiButton('', 'role-secondary', () => send({ type: 'confirm', yes: true }), undefined, 'confirm-yes');
     this.yesLabel = this.yes.querySelector('.btn-label')!;
-    row.append(uiButton('Keep playing', 'role-secondary', () => send({ type: 'confirm', yes: false }), undefined, 'confirm-no'), this.yes);
+    row.append(uiButton('Keep playing', 'brass role-primary', () => send({ type: 'confirm', yes: false }), undefined, 'confirm-no'), this.yes);
     this.box.append(this.text, row);
     this.el.append(this.box);
   }
@@ -147,11 +150,28 @@ const RULE_BLOCKS: { title: string; text: string[]; art: () => HTMLElement }[] =
       'Take at least one territory in a turn to earn a card.',
     ],
     art: () => {
+      // The Turn Track in miniature (INK2 §3.3): a tiny gold rule with the ensō over Attack, the four
+      // words, and the brush underline under the current one.
       const t = h('div', 'ra-track');
+      const rule = h('div', 'ra-rule');
+      rule.append(h('i'), h('i'), ensoEl(2026, 'enso', { small: true }));
+      const words = h('div', 'ra-words');
       ['Place', 'Attack', 'Fortify', 'End turn'].forEach((w, i) => {
-        if (i) t.append(h('i'));
-        t.append(h('span', i === 1 ? 'on' : '', w));
+        const s = h('span', i === 1 ? 'on' : '', w);
+        if (i === 1) s.append(underlineEl(hashSeed('ra-attack')));
+        words.append(s);
       });
+      t.append(rule, words);
+      // The ensō sits over Attack: once laid out, put it there.
+      requestAnimationFrame(function place() {
+        const on = words.querySelector<HTMLElement>('.on');
+        if (!on || !t.offsetWidth) return void (t.isConnected || requestAnimationFrame(place));
+        t.style.setProperty('--rx', `${on.offsetLeft + on.offsetWidth / 2}px`);
+      });
+      new ResizeObserver(() => {
+        const on = words.querySelector<HTMLElement>('.on');
+        if (on && t.offsetWidth) t.style.setProperty('--rx', `${on.offsetLeft + on.offsetWidth / 2}px`);
+      }).observe(t);
       return t;
     },
   },
