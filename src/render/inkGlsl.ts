@@ -178,6 +178,7 @@ vec4 terrAt(float id) { return texelFetch(uTerr, ivec2(int(id + 0.5), 0), 0); }
 const float PAPER_REP = 14.0;
 const float WASH_REP = 22.0;
 const float TAP2 = 1.37;
+const float GRAIN_TEX = 0.67; // the maps' granulation spread vs the noise's (see the wash block)
 float eqTo(float v, float k) { return 0.5 + (v - 0.5) * k; }
 const vec4 K_NZ = vec4(0.83, 0.82, 0.89, 1.0); // nz() std / map std, per nz() channel (r, g, b, a)
 
@@ -468,11 +469,13 @@ void main() {
     bloom = mix(bloom, smoothstep(0.56, 0.66, w1.g), tx);
     tide = mix(tide, smoothstep(0.55, 0.9, w1.a), tx);
     wander = (w1.g - 0.5) * tx;
-    float g1 = eqTo(w1.b, K_NZ.a);
+    // The map's granulation is finer and crisper than the noise it replaces, so it reads as sponge
+    // speckle up close; its spread round the mean is taken down by a third (John, 2026-09-30: grain busy).
+    float g1 = 0.5 + (eqTo(w1.b, K_NZ.a) - 0.5) * GRAIN_TEX;
     if (full) {
       vec4 w2 = texture2D(uWashTex, vec2(bp.y, -bp.x) / (WASH_REP * TAP2) + vec2(uSeed * 0.73 + 0.41, uSeed * 1.31 + 0.07));
       b2 = mix(b2, clamp((eqTo(w2.r, K_NZ.g) - 0.5) * 3.0, -1.0, 1.0), tx);
-      gr2 = mix(gr2, eqTo(w2.b, K_NZ.a), tx);
+      gr2 = mix(gr2, 0.5 + (eqTo(w2.b, K_NZ.a) - 0.5) * GRAIN_TEX, tx);
     }
     gr = mix(gr, g1, tx);
   }
