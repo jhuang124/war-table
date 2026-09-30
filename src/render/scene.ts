@@ -4,7 +4,6 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { BoardGeometry } from '../map/types';
-import { walnutTexture } from './textures';
 import { GROUND_FRAG, GROUND_VERT, INK_GLSL, type SharedUniforms } from './inkGlsl';
 import type { InkLayer } from './ink';
 import { PAPER_DEEP } from './util';
@@ -15,8 +14,6 @@ export interface SceneParts {
   waves: WaveStrokes;
   key: THREE.DirectionalLight;
   envTexture: THREE.Texture;
-  /** Kept for the dice tray's wood (dice.ts); the board itself has no wood. */
-  walnut: THREE.Texture;
   materials: THREE.Material[];
 }
 
@@ -196,6 +193,5 @@ export function buildScene(renderer: THREE.WebGLRenderer, g: BoardGeometry, ink:
   scene.add(waves.group);
   materials.push(...waves.materials);
 
-  const walnut = walnutTexture(256);
-  return { scene, ground, waves, key, envTexture, walnut, materials };
+  return { scene, ground, waves, key, envTexture, materials };
 }

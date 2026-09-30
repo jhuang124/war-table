@@ -2,7 +2,8 @@
 // landscape, and on the iPad Pro 11 in portrait (the stacked tablet dock): place with the stepper (−),
 // place the rest, the Turn Track to Attack, one Roll, Blitz to the capture, Occupy with the slider,
 // the Track to Fortify, pick a route, `Move N · end turn`. After every step: the document never
-// scrolled or zoomed, the dock and seat pills sit inside the safe area, every dock control is ≥ 44 px.
+// scrolled or zoomed, the dock and seat pills sit inside the safe area, every dock control is ≥ 44 px (on
+// the phones every control in the UI: the dock, the top strip, the menu and Settings sheets).
 // 0 console errors.
 import { check, finish, idle, loadScenario, scenario, state, ui } from './lib';
 import { DEVICES, openDevice, pageStill, smallTargets, tapId, tapT, type DeviceName } from './mobile-lib';
@@ -51,8 +52,10 @@ async function run(dev: DeviceName): Promise<void> {
     }
   };
   const tiny: string[] = [];
-  const targets = async () => {
-    for (const t of await smallTargets(page, '.strip')) if (!tiny.includes(t)) tiny.push(t);
+  // Phones: every control in the whole UI (the dock, the top strip, the sheets; INK2 §3); the tablet: the dock.
+  const scope = dev.startsWith('iphone') ? '.ui-root' : '.strip';
+  const targets = async (where = '') => {
+    for (const t of await smallTargets(page, scope)) if (!tiny.includes(t + where)) tiny.push(t + where);
   };
 
   await loadScenario(page, turnScenario());
@@ -76,6 +79,22 @@ async function run(dev: DeviceName): Promise<void> {
     results,
   );
   check(geo.t.t >= safe.top && geo.m.t >= safe.top && geo.m.w >= 44 && geo.m.h >= 44, `${tag} pills below the top inset, ≡ is ${Math.round(geo.m.w)}×${Math.round(geo.m.h)}`, results);
+  if (scope === '.ui-root') {
+    // The sheets' controls too: the menu and Settings (then back to the board).
+    await targets();
+    await tapId(page, 'menu');
+    await page.waitForTimeout(500);
+    await targets(' (menu)');
+    await tapId(page, 'pause-settings');
+    await page.waitForTimeout(500);
+    await targets(' (settings)');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+    if (await page.locator('[data-testid="settings"]').isVisible().catch(() => false)) await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+    if (await page.locator('.pause-sheet').isVisible().catch(() => false)) await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+  }
 
   // Place: Ural → − → Place 4; Ukraine → Place 1.
   await tapT(page, 'ural');
@@ -177,7 +196,7 @@ async function run(dev: DeviceName): Promise<void> {
   await still('fortify');
 
   check(scrolled === 0, `${tag} the document never scrolled or zoomed`, results);
-  check(tiny.length === 0, `${tag} every dock control ≥ 44 px${tiny.length ? ` (small: ${tiny.join(', ')})` : ''}`, results);
+  check(tiny.length === 0, `${tag} every ${scope === '.ui-root' ? 'control (dock, top strip, sheets)' : 'dock control'} ≥ 44 px${tiny.length ? ` (small: ${tiny.join(', ')})` : ''}`, results);
   check(errors.length === 0, `${tag} 0 console errors${errors.length ? `: ${errors.slice(0, 3).join(' | ')}` : ''}`, results);
   allErrors.push(...errors.map((e) => `${tag} ${e}`));
   await ctx.browser.close();

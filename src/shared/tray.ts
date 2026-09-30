@@ -48,7 +48,8 @@ export function inkTrayGeometry(W: number, H: number, band: number, uiScale: num
   const compact = Math.min(W, H) < 520;
   const maxW = compact ? (W > H ? 0.44 * W : 0.72 * W) : Math.min(560 * uiScale, 0.46 * W);
   const span = 2 * (INK_TRAY_MID_GAP + 0.5 + 2 * INK_TRAY_STEP + 0.5 + INK_TRAY_PAD); // tray width in die edges
-  let die = compact ? Math.min(W, H) * 0.086 : H * 0.052 * uiScale;
+  // Landscape phones: the dice (and the ring) at ~80 %, so fewer army counts hide under them mid-roll.
+  let die = compact ? Math.min(W, H) * (W > H ? 0.069 : 0.086) : H * 0.052 * uiScale;
   die = Math.min(die, (maxW - 8) / span, hud.die, (hud.trayH - 8) / 1.75);
   die = Math.max(compact ? 26 : 34, die);
   const trayW = Math.round(die * span + 8);

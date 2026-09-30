@@ -189,6 +189,12 @@
 .form-phone .bt-terr { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .form-phone .bt-captured { font-size: 1.1875rem; }
 .form-phone .bt-vs { font-size: 1.125rem; flex: none; }
+/* Landscape phones: the board is shortest here, so the header steps down to ~80 % with the dice
+   (src/shared/tray.ts) and fewer army counts hide under them mid-roll. */
+.form-phone.landscape .bt-head { gap: 0.45rem; padding-bottom: 0.1rem; }
+.form-phone.landscape .bt-side { font-size: 0.9375rem; gap: 0.28rem; }
+.form-phone.landscape .bt-captured { font-size: 0.9375rem; }
+.form-phone.landscape .bt-vs { font-size: 0.9rem; }
 
 /* ---- The rotate hint (portrait, once): one serif line on the paper, in the dock's line slot ---- */
 .form-phone.portrait .rotate-hint:not(.hidden) {

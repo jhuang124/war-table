@@ -1,5 +1,9 @@
 # INK: the ink & night overhaul (build spec)
 
+> **Superseded in part by docs/INK2.md (v2, 2026-09-29).** Where this file and INK2 disagree, INK2 wins:
+> A10's fixed ensō (it now travels the rule to the current word, INK2 §3.1), B §4 Attack's arrowhead and
+> lacquer tray (INK2 §2.1–2.3), and B5's hairline pills (no pills anywhere, INK2 §3). Part A otherwise binds.
+
 **SOUL.md outranks this file on intent and feel.** This spec is how the soul gets built now. It also outranks
 docs/UX.md, SIMPLIFY.md and SPEC.md §6–7 on visuals and motion. Rules, the engine, the Turn Track semantics,
 "board clicks select, buttons commit" (docs/ROUND2.md), and the mobile layouts and gestures (docs/MOBILE.md)

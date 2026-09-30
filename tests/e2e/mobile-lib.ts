@@ -169,7 +169,7 @@ export async function smallTargets(page: Page, scope = '.ui-root', min = 44): Pr
   return page.evaluate(
     ([q, m]) => {
       const out: string[] = [];
-      for (const el of document.querySelectorAll<HTMLElement>(`${q} button, ${q} [role="slider"], ${q} input`)) {
+      for (const el of document.querySelectorAll<HTMLElement>(`${q} button, ${q} [role="button"], ${q} [role="slider"], ${q} input`)) {
         if (el.offsetParent === null || el.closest('.hidden, .off')) continue;
         const cs = getComputedStyle(el);
         if (cs.visibility === 'hidden' || Number(cs.opacity) === 0 || cs.pointerEvents === 'none') continue;

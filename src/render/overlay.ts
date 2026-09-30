@@ -31,6 +31,7 @@ const CSS = `
 .rb-badge.ghosted{z-index:2}
 .rb-ghost{position:absolute;left:calc(100% + 2px);top:50%;transform:translateY(-54%);color:#f2ede2;
   font:600 calc(18px * var(--ui))/1 ${SERIF};font-variant-numeric:lining-nums tabular-nums;letter-spacing:0;display:none}
+.rb-ghost.at-left{left:auto;right:calc(100% + 2px)}
 .rb-loss{position:absolute;left:0;top:0;color:#f2ede2;font:600 calc(18px * var(--ui))/1 ${SERIF};font-variant-numeric:lining-nums tabular-nums;
   will-change:transform,opacity;white-space:nowrap}
 .rb-label{position:absolute;left:0;top:0;transform-origin:0 0;color:rgba(242,237,226,.94);font:600 calc(13.5px * var(--lab))/1.02 ${SERIF};
@@ -126,6 +127,8 @@ interface Chip {
   t: number;
   side: number;
   lastT: string;
+  /** Where the chip sits against its ring, chosen on its first frame (then it only rises). */
+  spot?: 'right' | 'left' | 'above';
 }
 
 interface TravEl {
@@ -361,6 +364,44 @@ export class Overlay {
       return;
     }
     this.anim.tween({ ms: 700, ease: ease.linear, update: (v) => (chip.t = v), done: remove });
+  }
+
+  /**
+   * The first clear spot for a loss chip `cw` px wide beside badge `b` (clear of every other count by a
+   * little air): the ring's right (as always), else its left (over its own figure for a moment), else above.
+   */
+  private chipSpot(b: Badge, cw: number, order: ('right' | 'left' | 'above')[] = ['right', 'left', 'above'], rise = 14 * this._ui): 'right' | 'left' | 'above' {
+    const u = this._ui;
+    const h = 20 * u;
+    const air = 6 * u;
+    const boxOf = (spot: 'right' | 'left' | 'above'): [number, number, number, number] => {
+      const x0 = spot === 'right' ? b.px + b.pw / 2 + 4 * u : spot === 'left' ? b.px - b.pw / 2 - 4 * u - cw : b.px - cw / 2;
+      const yc = spot === 'above' ? b.py - b.ph / 2 - 10 * u : b.py - 2 * u;
+      return [x0, yc - h / 2 - rise, x0 + cw, yc + h / 2];
+    };
+    // How much of the other counts the box covers, grown by `pad` (0 = touching is fine).
+    const cover = (bx: [number, number, number, number], pad: number) => {
+      let a = 0;
+      for (const o of this.badges.values()) {
+        if (o === b || !o.visible || o.lastT === 'off') continue;
+        const w = Math.min(bx[2], o.px + o.pw / 2 + pad) - Math.max(bx[0], o.px - o.pw / 2 - pad);
+        const hh = Math.min(bx[3], o.py + o.ph / 2 + pad) - Math.max(bx[1], o.py - o.ph / 2 - pad);
+        if (w > 0 && hh > 0) a += w * hh;
+      }
+      return a;
+    };
+    for (const s of order) if (cover(boxOf(s), air) === 0) return s;
+    // Crowded everywhere: the spot that touches the fewest counts (in order when tied).
+    let best = order[0];
+    let min = Infinity;
+    for (const s of order) {
+      const a = cover(boxOf(s), 0);
+      if (a < min - 0.5) {
+        min = a;
+        best = s;
+      }
+    }
+    return best;
   }
 
   /** Settings "Territory names": every name on (collision-culled). */
@@ -642,13 +683,24 @@ export class Overlay {
       this.labelsDirty = true;
     }
     this.updateLabels(moved, r);
+    // The "+N" preview beside a ring (placing) moves to the ring's left when a neighbour's count sits on its
+    // right ("12 +7" beside a "1" reads as "+71").
+    for (const b of this.badgeList) {
+      if (b.ghostN <= 0) continue;
+      const left = this.chipSpot(b, b.ghost.offsetWidth || 22 * this._ui, ['right', 'left'], 0) === 'left';
+      if (left !== b.ghost.classList.contains('at-left')) b.ghost.classList.toggle('at-left', left);
+    }
     for (const c of this.chips) {
       const b = this.badges.get(c.id)!;
       const e = ease.outCubic(Math.min(1, c.t));
       const op = c.t < 0.55 ? 1 : 1 - (c.t - 0.55) / 0.45;
-      // −N beside the ring (the right of the piece), rising a little as it dries
-      const x = b.px + b.pw / 2 + 4 * this._ui;
-      const y = b.py - 2 * this._ui - 14 * e * this._ui;
+      // −N beside the ring (the right of the piece by default), rising a little as it dries. It never
+      // lands against a neighbour's count (a "−2" beside a "1" reads as "−21"): then the left, or above.
+      const u = this._ui;
+      const cw = c.el.offsetWidth || 22 * u;
+      if (!c.spot) c.spot = this.chipSpot(b, cw);
+      const x = c.spot === 'right' ? b.px + b.pw / 2 + 4 * u : c.spot === 'left' ? b.px - b.pw / 2 - 4 * u - cw : b.px - cw / 2;
+      const y = (c.spot === 'above' ? b.py - b.ph / 2 - 10 * u : b.py - 2 * u) - 14 * e * u;
       const tr = `translate3d(${snap(x, r)}px,${snap(y, r)}px,0) translate(0,-50%)`;
       if (tr !== c.lastT) {
         if (!c.lastT) c.el.style.visibility = 'visible';

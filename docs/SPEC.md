@@ -574,18 +574,8 @@ loudness across effects. `audio.html` dev page with a button per sound.
   autoplay(on: boolean): void        // AI plays every seat (for soak/e2e)
   screenPos(t: TerritoryId): { x: number; y: number } | null
   stats(): BoardStats                // incl. activeTweens, cameraMoving, particles (§11.2)
-  ui(): {
-    screen: string
-    actionBarText: string            // line 1
-    actionBarSub: string             // line 2 ('' when empty)
-    primary: string | null           // label of the brass button, if any
-    buttons: { label: string; enabled: boolean; why?: string }[]
-    banners: string[]; toasts: string[]
-    battle: { header: string; odds: string | null; stakes: string[]; result: string | null } | null
-    recap: string[]                  // current turn banner's recap lines
-    tooltip: string | null
-    hints: boolean                   // current seat
-  }
+  ui(): UiSnapshot                   // src/game/controller.ts is the source of truth: screen, line,
+                                     // primary, buttons (labels), count, track, gold, battle, banners, seats…
   explain(t: TerritoryId): { ok: boolean; code?: string; text: string }   // explainTerritory now
   metrics(): {
     turns: { player: PlayerId; kind: 'human' | 'ai'; ms: number; clicks: number; rejected: number;
@@ -601,12 +591,13 @@ Clicks in e2e go through real pointer events at `screenPos(t)`, so click counts 
 are exercised for real. Add Playwright flows for: the §10 click budgets, a 1-human + 3-AI round timed
 by `metrics().turns`, every reason code via `explain` + a real click, and resume mid-occupy.
 
-Headless browser checks: use Playwright directly from a node script (NOT agent-browser, NOT the Browser
-pane). For real GPU numbers launch with
-`chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] })`.
+The flows live in `tests/e2e/` and are sorted into lanes in `tests/e2e/lanes.ts`; `npm run test:e2e`
+builds the game with the hooks (`VITE_E2E=1`) and serves it itself on a free port (see CLAUDE.md). A flow
+or tool run by hand needs a server on `RISK_URL`: start your own dev server on the port in your brief
+(`npx vite --port <p> --strictPort`) and stop it when done. Headless browser checks: Playwright from a node
+script (NOT agent-browser, NOT the Browser pane), launched with
+`chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--mute-audio'] })`.
 Save screenshots under `artifacts/<your-area>/` and open them with the Read tool — look at your work.
-Start your own dev server on the port assigned in your brief (`npx vite --port <p> --strictPort`) and
-stop it when done.
 
 ## 10. Definition of done (whole game)
 
@@ -630,7 +621,7 @@ stop it when done.
     victory holds).
   - 10 clicks in 1.5 s on one tile = exactly +10 (`inputDropped` 0).
   - Timings:
-    - single roll ≤ 1.2 s
+    - single roll ≤ 1.25 s including the 250 ms verdict silence (INK A6, INK2 §2.2)
     - any blitz ≤ 3.0 s
     - brief AI-vs-AI engagement ≤ 0.8 s
     - AI turn median ≤ 6 s, p95 ≤ 12 s; a full round with 3 AIs ≤ 25 s
@@ -640,7 +631,7 @@ stop it when done.
   - Hover ≤ 1 frame; click → first visible effect ≤ 50 ms.
   - The idle board reports `activeTweens` 0.
   - ≤ 1 banner and ≤ 2 toasts on screen at any time.
-  - Badges ≥ 22 px tall at home on 1280×800; dice ≥ 56 px; no frame > 50 ms on the first roll after a
+  - Badges ≥ 22 px tall at home on 1280×800; dice legible across a room (the ink tray's dice are ~47 px at 1440×900, INK F2); no frame > 50 ms on the first roll after a
     cold load.
 - The UX.md §11 polish checklist passes, and an Opus review with the UX.md §12 rubric scores ≥ 8 on
   every axis and ≥ 9 on Flow and Clarity.

@@ -62,15 +62,20 @@ view on 1440×900 (scale with `homePxPerUnit`, as today):
 
 ### 2.2 The roll, beat by beat (single roll at 1×, `mode: 'single'`)
 
+**John, 2026-09-30: "could you have dice rolls just be a tad slower".** The tumble went 380 → 450 ms for single
+and repeat rolls and for a blitz's final roll (`BLITZ_FINAL_MS` 850 → 1020; the middle rolls absorb it, so
+23 rolls still take ≤ 3.0 s). The settle stayed at 100: at 120 the single roll measured 1249 ms against the
+1250 budget. The AI brief is unchanged.
+
 | t (ms) | Existing beat | What renders now | Files |
 |---|---|---|---|
 | 0 | `Roll`/`Blitz` pressed; `rolling++`; arrow inks gold (120) | The **ink ring brushes itself onto the paper** clockwise from the west (220 ms; replaces the lacquer tray rising). Inside it a **deep-paper wash** (`#0b1224` at 30 %, 12 px feather) fades in with it, so the dice have ground over ocean or land. The **rest of the board recedes**: every territory not in the pair goes to `uDim` 1.3 on desktop (1.0 on phones) over 180 ms; the pair stays at 0; count rings never drop below 60 % opacity. Ambient yields (existing). | dice.ts, index.ts, shared/tray.ts |
 | 0–120 | shake (wood) | unchanged | |
-| 120–500 | tumble (380), bone clicks on landing | Dice land **on the paper** inside the ring, matte, seat-wash faces with ivory pips (as today). Contact shadow stays; it is the only thing that says they are objects. | dice.ts |
-| 500–600 | settle (100) | unchanged | |
-| 600–850 | **silence** (250) | Nothing moves. Ring, stroke, dice, figures all still. Score ducks (existing). | |
-| 850–1110 | verdict (260): ivory hairlines join pairs from the winner; losers dim 50 % under a splash; `applyLosses` re-inks −N | **The losing figure puffs**: each side that lost a die gets `smoke` 0 → 0.3 → 0 over the verdict's 260 ms (ink lifts a little off the figure and settles). A defender at 0 starts the **full dissolve** on the verdict frame (existing 320 ms `fall`; it runs into the conquest beat, as today). | tokens.ts, index.ts |
-| 1110 | done; `rolling--` | ≤ 1250 ✓ (unchanged: 120+380+100+250+260) | |
+| 120–570 | tumble (450; `DICE_TUMBLE_MS`), bone clicks on landing | Dice land **on the paper** inside the ring, matte, seat-wash faces with ivory pips (as today). Contact shadow stays; it is the only thing that says they are objects. | dice.ts |
+| 570–670 | settle (100) | unchanged | |
+| 670–920 | **silence** (250) | Nothing moves. Ring, stroke, dice, figures all still. Score ducks (existing). | |
+| 920–1180 | verdict (260): ivory hairlines join pairs from the winner; losers dim 50 % under a splash; `applyLosses` re-inks −N | **The losing figure puffs**: each side that lost a die gets `smoke` 0 → 0.3 → 0 over the verdict's 260 ms (ink lifts a little off the figure and settles). A defender at 0 starts the **full dissolve** on the verdict frame (existing 320 ms `fall`; it runs into the conquest beat, as today). | tokens.ts, index.ts |
+| 1180 | done; `rolling--` | ≤ 1250 ✓ (120+450+100+250+260; measured 1228–1232) | |
 | decided +~1 s | tray lingers (`TRAY_DECIDED_MS`) then fades 300 | Ring and inside wash **dry out** (300 ms, alpha only); dice fade with them; the board's washes come back (300 ms). Stroke dries to ivory (240) or hides if the target still stands and the arrow was event-sourced (existing). | dice.ts, index.ts |
 
 - **`repeat`** (another single roll on the same pair within 3 s): ring already up, no shake, same beats.

@@ -53,6 +53,7 @@ export const FLOWS: Record<string, FlowSpec> = {
   hotseat: { lane: 'logic', why: 'manual setup, hand-off cover, forced + mid-turn trades, all humans out → watch to victory' },
   'mobile-sheets': { lane: 'logic', why: 'every sheet opens and dismisses, long-press, pinch, haptics' },
   'mobile-turn': { lane: 'logic', why: 'a full turn by taps on phone + tablet: layout, safe areas, target sizes' },
+  ink2: { lane: 'logic', why: 'no rounded rectangles on any screen (3 form factors), the ensō over the current word; one real roll (realtime(page)) for the mid-roll count rings' },
   endgame: { lane: 'logic', why: 'menu, log, settings, End game now → victory → rematch (its autoplay only fills the ledgers)' },
   'mobile-flow': { lane: 'logic', why: 'phone screens by taps, rotation, victory, rematch' },
   smoke: { lane: 'logic', quick: true, why: 'title → new game → first turn: screens, seats, the Turn Track' },

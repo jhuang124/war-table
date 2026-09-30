@@ -68,13 +68,13 @@ async function loadFonts(): Promise<void> {
 
 /**
  * Blitz roll durations (UX.md §8.2, docs/INK.md B §4 "Blitz"): the first roll full (660 ms, no held
- * silence), the last full with the 250 ms silence (850 ms), the middle ones snapping, compressed so the
- * whole blitz stays ≤ 3.0 s.
+ * silence), the last full with the 250 ms silence and the single roll's tumble and settle (1020 ms), the
+ * middle ones snapping, compressed so the whole blitz stays ≤ 3.0 s.
  */
 const BLITZ_FIRST_MS = 660;
-const BLITZ_FINAL_MS = 850;
+const BLITZ_FINAL_MS = 1020;
 export function blitzRollMs(index: number, count: number): number {
-  if (count <= 1) return 1110;
+  if (count <= 1) return 1180;
   if (index === 0) return BLITZ_FIRST_MS;
   if (index === count - 1) return BLITZ_FINAL_MS;
   const ends = BLITZ_FIRST_MS + BLITZ_FINAL_MS;
@@ -144,7 +144,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
 
   const anim = new Animator();
   // The ink layer: built once, before the first frame (the canvas stays hidden until it has drawn).
-  const ink = await buildInk(G, { small: phoneGpu, maxTextureSize: renderer.capabilities.maxTextureSize });
+  const ink = await buildInk(G, { small: phoneGpu, maxTextureSize: renderer.capabilities.maxTextureSize, renderer });
   const shared = makeSharedUniforms(ink, G.width, G.height);
   const terrData = shared.uTerr.value.image.data as Uint8Array;
   const parts = buildScene(renderer, G, ink, shared);
@@ -170,7 +170,7 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   route.anchorOf = feetOf;
   arrow.reduced = route.reduced = tokens.reduced;
   const overlay = new Overlay(container, G, tiles, tokens, anim);
-  const tray = new DiceTray(anim, parts.envTexture, parts.walnut);
+  const tray = new DiceTray(anim, parts.envTexture);
   const rig = new CameraRig(G.width, G.height);
   // The home view fits the land (not the frame) inside the HUD-free region.
   rig.landHull = convexHull(TERRITORY_IDS.flatMap((id) => G.territories[id].polygons.flatMap((p) => p.outer)));
@@ -2118,7 +2118,10 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
   /** Adaptive pixel ratio (touch GPUs): a smoothed frame time and how long it has been over budget. */
   let emaMs = 16.7;
   let overMs = 0;
+  /** The frame-budget ladder (MOBILE §7, INK2 §4.3): 0 = DPR 2 + maps; 1 = DPR 1.5 + texture L1; 2 = L0. */
+  let budgetStep = 0;
   let contextLost = false;
+  let lossCount = 0;
   const applyPixelRatio = () => {
     renderer.setPixelRatio(pixelRatio());
     renderer.setSize(W, H, false);
@@ -2212,14 +2215,20 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     shared.uMist.value = mistAmp;
     if (hot > 0) hot--;
     // Adaptive pixel ratio on touch GPUs: over budget (< ~48 fps smoothed) for 2 s of continuous drawing
-    // drops the cap from 2 to 1.5, once.
-    if (coarse && drewLast && rawDt > 0 && rawDt < 250 && dprCap > 1.5 && (window.devicePixelRatio || 1) > 1.5) {
+    // drops the cap from 2 to 1.5 and the pigment maps to L1 (one wash tap), once; still over budget for a
+    // further 4 s drops the maps to L0 (the procedural board). Never steps back up (INK2 §4.3).
+    if (coarse && drewLast && rawDt > 0 && rawDt < 250 && budgetStep < 2 && (window.devicePixelRatio || 1) > 1.5) {
       emaMs = emaMs * 0.92 + rawDt * 0.08;
       overMs = emaMs > 21 ? overMs + rawDt : 0;
-      if (overMs > 2000) {
+      if (budgetStep === 0 && overMs > 2000) {
         dprCap = 1.5;
         overMs = 0;
         applyPixelRatio();
+        ink.setQuality(1);
+        budgetStep = 1;
+      } else if (budgetStep === 1 && overMs > 4000) {
+        ink.setQuality(0);
+        budgetStep = 2;
       }
     }
     drewLast = true;
@@ -2364,6 +2373,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     if (disposed || contextLost) return;
     contextLost = true;
     reloading = true;
+    // A second loss in a session: the pigment maps go (L0, the procedural board; INK2 §4.3).
+    if (++lossCount >= 2) ink.setQuality(0);
     // Numbers and names would float over an empty canvas: they wait for the board to come back.
     overlay.root.style.transition = 'opacity 160ms ease-out';
     overlay.root.style.opacity = '0';
@@ -2624,7 +2635,6 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       });
       parts.materials.forEach((m) => m.dispose());
       parts.envTexture.dispose();
-      parts.walnut.dispose();
       renderer.dispose();
       canvas.remove();
     },

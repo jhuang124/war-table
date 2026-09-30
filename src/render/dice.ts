@@ -29,6 +29,12 @@ const FACE_VALUES = [3, 4, 2, 5, 1, 6];
 const TILT = -0.42; // tray pitch (top edge recedes)
 /** The verdict's held stillness (B §4): after the dice settle, nothing moves, then the verdict. */
 export const VERDICT_SILENCE_MS = 250;
+/**
+ * A full roll's tumble and settle (single, repeat, a blitz's final roll). 2026-09-30: the tumble slowed
+ * 380 → 450; the settle stays 100 (120 measured 1249 ms against the 1250 budget in the game flow).
+ */
+export const DICE_TUMBLE_MS = 450;
+export const DICE_SETTLE_MS = 100;
 /** The ring brushes itself on (INK2 §2.2 t = 0): 220 ms, clockwise from the west. Reduced motion: a 150 ms fade. */
 const RING_DRAW_MS = 220;
 /** The ring's ink (`--coast`, silver on indigo) and the wash inside it (the deep paper). */
@@ -145,8 +151,8 @@ export interface RollSpec {
   attacker: PlayerPalette;
   defender: PlayerPalette;
   /**
-   * 'single' 1.11 s · 'repeat' 0.99 s (both with the 250 ms silence) · 'first' 660 ms · 'middle' (durMs) ·
-   * 'final' 850 ms (keeps the silence) · 'static'
+   * 'single' 1.18 s · 'repeat' 1.06 s (both with the 250 ms silence) · 'first' 660 ms · 'middle' (durMs) ·
+   * 'final' 1.02 s (keeps the silence and the single roll's tumble) · 'static'
    */
   mode: 'single' | 'repeat' | 'first' | 'middle' | 'final' | 'static';
   durMs?: number;
@@ -196,9 +202,7 @@ export class DiceTray {
   constructor(
     private anim: Animator,
     env: THREE.Texture,
-    walnut?: THREE.Texture,
   ) {
-    void walnut;
     this.scene.environment = env;
     this.scene.environmentIntensity = 0.12;
     // A soft, low key from the top left: the dice are lit about as the washes are (matte bone and pigment,
@@ -727,15 +731,17 @@ export class DiceTray {
       return;
     }
 
-    // Timings (1×). Single roll 120 + 380 + 100 + 250 + 260 = 1110 ms (≤ 1.25 s with the silence).
+    // Timings (1×). Single roll 120 + 450 + 100 + 250 + 260 = 1180 ms (≤ 1.25 s with the silence). Since
+    // 2026-09-30 the tumble is 450 (was 380); a blitz's final roll gets
+    // the same tumble and settle so the decisive roll reads like a single roll (its middles absorb it).
     const T =
       spec.mode === 'single'
-        ? { shake: 120, tumble: 380, settle: 100, silence: VERDICT_SILENCE_MS, verdict: 260, full: true }
+        ? { shake: 120, tumble: DICE_TUMBLE_MS, settle: DICE_SETTLE_MS, silence: VERDICT_SILENCE_MS, verdict: 260, full: true }
         : spec.mode === 'repeat'
-          ? { shake: 0, tumble: 380, settle: 100, silence: VERDICT_SILENCE_MS, verdict: 260, full: true }
+          ? { shake: 0, tumble: DICE_TUMBLE_MS, settle: DICE_SETTLE_MS, silence: VERDICT_SILENCE_MS, verdict: 260, full: true }
           : spec.mode === 'first'
             ? { shake: 80, tumble: 320, settle: 60, silence: 0, verdict: 200, full: false }
-            : { shake: 0, tumble: 320, settle: 60, silence: VERDICT_SILENCE_MS, verdict: 220, full: true }; // final
+            : { shake: 0, tumble: DICE_TUMBLE_MS, settle: DICE_SETTLE_MS, silence: VERDICT_SILENCE_MS, verdict: 220, full: true }; // final
 
     // Start positions: from outside each side, raised toward the viewer (shaken in a cup, off the tray).
     const starts = all.map((d, i) => new THREE.Vector3(d.pos.x + d.side * s * (1.5 + 0.25 * i), s * (0.25 - 0.18 * (i % 3)), s * 1.6));

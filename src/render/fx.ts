@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import type { TerritoryId } from '../engine/types';
 import { seaLaneBetween } from '../map';
 import { Animator, ease, type Run } from './anim';
-import { loadInkMap } from './textures';
+import { loadTexmap } from './texmaps';
 import { GOLD, IVORY, TILE_TOP, hexToRgb, toWorld, type RGB } from './util';
 import type { TileSet } from './tiles';
 
@@ -16,8 +16,10 @@ const STROKE_Y = TILE_TOP + 0.34;
 
 /**
  * The brush-tip map (public/tex/tip.png, Phase 0; docs/INK2.md §4.1): the end of a real dry stroke where
- * the brush lifted, alpha = ink, stroke axis left → right. Loaded once, on the first brush; until it arrives
- * (or if it fails) the strokes fray with the procedural noise alone.
+ * the brush lifted, alpha = ink, stroke axis left → right (u = 1 where the brush lifts). Served by texmaps.ts
+ * with flipY off (v = 0 is the image's top row), so the shader samples v = 0.5 − d (the side the hairs sit on
+ * matches Phase A's flipped load). Loaded once, on the first brush; until it arrives (or if it fails) the
+ * strokes fray with the procedural noise alone.
  */
 const TIP: { tex: THREE.Texture | null; mats: Set<THREE.ShaderMaterial>; asked: boolean } = { tex: null, mats: new Set(), asked: false };
 function useTip(mat: THREE.ShaderMaterial): void {
@@ -29,7 +31,8 @@ function useTip(mat: THREE.ShaderMaterial): void {
   }
   if (TIP.asked || typeof document === 'undefined') return;
   TIP.asked = true;
-  loadInkMap('tip.png', { flipY: true }, (t) => {
+  void loadTexmap('tip').then((t) => {
+    if (!t) return; // the procedural fray stays
     TIP.tex = t;
     for (const m of TIP.mats) {
       m.uniforms.uTip.value = t;
@@ -103,7 +106,7 @@ void main() {
     // the last 30 %: the real brush tip's fray (u-mapped along the stroke, v across it)
     float env = max(vW.y, 1.4 + 1.3 * smoothstep(0.9, 1.0, w));
     float tipA = 1.0;
-    if (w > 0.7 && uTipOn > 0.5) tipA = texture2D(uTip, vec2(clamp((w - 0.7) / 0.3, 0.02, 0.98), clamp(0.5 + 0.46 * d / env, 0.02, 0.98))).a;
+    if (w > 0.7 && uTipOn > 0.5) tipA = texture2D(uTip, vec2(clamp((w - 0.7) / 0.3, 0.02, 0.98), clamp(0.5 - 0.46 * d / env, 0.02, 0.98))).a;
     body *= mix(1.0, tipA, smoothstep(0.7, 0.76, w));
     // the lift: the body gives way to 3–5 bristle hairs, 0.6–1.2 px, each ending on its own
     float hz = smoothstep(0.9, 1.0, w);
@@ -117,7 +120,7 @@ void main() {
         float wk = 0.6 + 0.6 * h1(fk + 7.0);
         float endK = 0.94 + 0.06 * h1(fk + 11.0);
         float hk = (1.0 - smoothstep(wk * 0.5 - 0.35, wk * 0.5 + 0.35, abs(d - c))) * (1.0 - smoothstep(endK - 0.03, endK, w));
-        if (uTipOn > 0.5) hk *= mix(0.45, 1.0, texture2D(uTip, vec2(clamp((w - 0.7) / 0.3, 0.02, 0.98), clamp(0.5 + 0.46 * c / env, 0.02, 0.98))).a);
+        if (uTipOn > 0.5) hk *= mix(0.45, 1.0, texture2D(uTip, vec2(clamp((w - 0.7) / 0.3, 0.02, 0.98), clamp(0.5 - 0.46 * c / env, 0.02, 0.98))).a);
         else hk *= mix(0.55, 1.0, smoothstep(0.35, 0.6, texture2D(uNoise, vec2(s / 3.0 + fk * 0.37, 0.5)).b));
         hairs = max(hairs, hk * 0.9);
       }

@@ -1,7 +1,7 @@
 // Screenshot sweep for the visual review (docs/INK.md A9; a tool, not in test:e2e), on the real board +
 // HUD, desktop sizes and emulated phones: title, new game, place (picked), a drawn attack mid-stroke,
-// the dice at the verdict, a conquest (smoke + flood, a human's territory: the torn rim), an AI turn,
-// the menu sheet, the rules scroll, the victory scroll, and three idle frames 4 s apart (the living
+// the armed stroke, the dice at the held silence, the verdict (the losing figure's puff), a conquest (smoke + flood, a human's territory: the torn rim), an AI turn,
+// the hand-off cover, the menu sheet, the rules scroll, the victory scroll, and three idle frames 4 s apart (the living
 // calm). Ceremony shots run the board in slow motion (__debug.anim.speed) so the frame is the beat.
 // Also reports the words on screen per state and the idle redraw rate (frames drawn / s).
 // Usage: npx tsx tests/e2e/screens.ts [outDir] [1440x900,1920x1080,iphone,iphone-land]   (server on RISK_URL)
@@ -12,7 +12,7 @@ import { TERRITORY_IDS } from '../../src/engine';
 import type { Browser, CDPSession, Page } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
-const OUT = process.argv[2] ?? 'artifacts/ink/final';
+const OUT = process.argv[2] ?? 'artifacts/ink2/final';
 const TARGETS = (process.argv[3] ?? '1440x900,1920x1080,iphone,iphone-land').split(',');
 mkdirSync(OUT, { recursive: true });
 
@@ -176,10 +176,14 @@ for (const target of TARGETS) {
   await step('verdict', async () => {
     await speed(page, 0.3);
     await press('btn-roll');
-    // Single roll at 1×: shake 120 · tumble 380 · settle 100 · silence 250 · verdict 260 → the verdict
-    // lands at ~850 ms; at 0.3× that's ~2.8 s, and its hairlines are drawn ~0.4 s later.
-    await page.waitForTimeout(850 / 0.3 + 420);
-    await shot('06-dice-verdict');
+    // Single roll at 1×: shake 120 · tumble 450 · settle 100 · silence 250 (670–920) · verdict 260 → at
+    // 0.3× the silence is mid-way at ~2.65 s; the verdict's hairlines and the losing figure's puff (it
+    // peaks half-way through the 260 ms verdict) ~0.4 s after the verdict lands at ~3.07 s.
+    const t0 = Date.now();
+    await page.waitForTimeout(795 / 0.3);
+    await shot('06a-dice-silence');
+    await page.waitForTimeout(Math.max(0, 920 / 0.3 + 420 - (Date.now() - t0)));
+    await shot('06-dice-verdict-puff');
     await speed(page, 1);
     await idle(page);
   });
@@ -225,6 +229,32 @@ for (const target of TARGETS) {
     await page.waitForTimeout(250);
     await shot('08-ai-turn');
     await idle(page, 40000).catch(() => undefined);
+  });
+
+  await step('handoff', async () => {
+    // Two humans, "Hide cards between turns" on, Sam holds cards: John ends his turn, the cover comes.
+    const settings = await page.evaluate(() => ({ ...JSON.parse(localStorage.getItem('risk3d.settings.v1') ?? '{}'), hideCardsBetweenTurns: true }));
+    await loadScenario(
+      page,
+      base({ kind: 'attack' }, (s) => {
+        s.players[1].cards = [
+          { id: 0, territory: 'ural', symbol: 'infantry' },
+          { id: 1, territory: 'peru', symbol: 'cavalry' },
+        ];
+      }),
+      { settings },
+    );
+    await page.waitForTimeout(1700);
+    await press('seg-endTurn');
+    await page.locator('[data-testid="handoff"]').waitFor({ state: 'visible', timeout: 8000 });
+    await page.waitForTimeout(1200); // the ensō draws itself
+    await shot('09a-handoff');
+    await press('handoff-accept');
+    await page.waitForTimeout(400);
+    await page.evaluate(() => {
+      const k = 'risk3d.settings.v1';
+      localStorage.setItem(k, JSON.stringify({ ...JSON.parse(localStorage.getItem(k) ?? '{}'), hideCardsBetweenTurns: false }));
+    });
   });
 
   await step('menu', async () => {

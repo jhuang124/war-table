@@ -1,5 +1,5 @@
-// Procedural canvas textures: walnut, felt, paint grain, the ocean chart, dice faces, the tray's ink ring,
-// text; and a small loader for the pigment maps in public/tex (docs/INK2.md §4).
+// Procedural canvas textures: felt, paint grain, the ocean chart, dice faces, the tray's ink ring, text.
+// (The pigment maps in public/tex are served by texmaps.ts.)
 import * as THREE from 'three';
 import type { BoardGeometry, Vec2 } from '../map/types';
 import { brushRing } from '../shared/enso';
@@ -63,43 +63,8 @@ function tex(c: HTMLCanvasElement, srgb = true, repeat = false): THREE.CanvasTex
 }
 
 // ---------------------------------------------------------------------------
-// Wood / felt / grain
+// Felt / grain
 // ---------------------------------------------------------------------------
-
-/** Dark walnut, grain running along x. Tiles seamlessly. */
-export function walnutTexture(size = 1024): THREE.CanvasTexture {
-  const [c, ctx] = canvas(size, size);
-  const img = ctx.createImageData(size, size);
-  const d = img.data;
-  const base = [52, 33, 21];
-  const dark = [24, 14, 9];
-  const light = [92, 60, 38];
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const u = x / size;
-      const v = y / size;
-      // Long, mostly straight grain with gentle waviness (walnut plank, not burl).
-      const warp = fbm(u * 2, v * 3, 3, 4, 2, 3) * 1.2;
-      const g = fbm(u * 3, v * 40 + warp * 2.5, 7, 3, 3, 40);
-      const ring = Math.pow(0.5 + 0.5 * Math.sin((v * 64 + warp * 2.2 + g * 2.4) * Math.PI), 3);
-      const fine = vnoise(u * 900, v * 60, 11, 900, 60);
-      const t = Math.min(1, Math.max(0, g * 0.8 + ring * 0.25 - 0.15));
-      const k = (i: number) => {
-        let col = base[i] + (dark[i] - base[i]) * ring * 0.8;
-        col += (light[i] - base[i]) * t * 0.55;
-        col *= 0.92 + fine * 0.16;
-        return col;
-      };
-      const o = (y * size + x) * 4;
-      d[o] = k(0);
-      d[o + 1] = k(1);
-      d[o + 2] = k(2);
-      d[o + 3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return tex(c, true, true);
-}
 
 /** Near-white matte paint grain for tile tops (multiplied by the owner color). */
 export function paintGrainTexture(size = 512): THREE.CanvasTexture {
@@ -605,30 +570,4 @@ export function inkRingTexture(seed: number, aspect: number, w: number, h: numbe
   }
   ringCache.set(key, t);
   return t;
-}
-
-/**
- * A pigment map from public/tex (Phase 0's `tip.png`, `smoke-512.webp`), for the strokes and the figures
- * until src/render/texmaps.ts serves them (docs/INK2.md §5 Phase A). Data texture: premultiply off, no
- * colour space, mipmapped. `onLoad` fires once it has arrived; a failure leaves the caller's fallback.
- */
-export function loadInkMap(file: string, opts: { repeat?: boolean; flipY?: boolean } = {}, onLoad?: (t: THREE.Texture) => void): void {
-  const base = (import.meta.env?.BASE_URL as string | undefined) ?? './';
-  new THREE.TextureLoader().load(
-    `${base}tex/${file}`,
-    (t) => {
-      t.colorSpace = THREE.NoColorSpace;
-      t.premultiplyAlpha = false;
-      t.flipY = opts.flipY ?? true;
-      t.generateMipmaps = true;
-      t.minFilter = THREE.LinearMipmapLinearFilter;
-      t.magFilter = THREE.LinearFilter;
-      if (opts.repeat) t.wrapS = t.wrapT = THREE.RepeatWrapping;
-      else t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
-      t.needsUpdate = true;
-      onLoad?.(t);
-    },
-    undefined,
-    () => console.warn(`[render] pigment map ${file} failed to load; the procedural noise stays`),
-  );
 }

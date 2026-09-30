@@ -23,7 +23,7 @@ import { TERRITORY_IDS } from '../engine/mapData';
 import { Animator, ease, type Run } from './anim';
 import { IVORY, TILE_TOP, hexToRgb, type RGB } from './util';
 import { deepOf, type TileSet } from './tiles';
-import { loadInkMap } from './textures';
+import { loadTexmap } from './texmaps';
 import ATLAS from './unitsAtlas.json';
 
 /** 0 = infantry (1–4), 1 = cavalry (5–9), 2 = artillery (10+). */
@@ -195,10 +195,13 @@ void main() {
   vec2 sc = vec2(sp.x * 0.5 + seed, sp.y * 0.4 - smoke * 0.45 + seed * 0.37);
   vec4 nz = texture2D(uNoise, sc);
   if (smoke > 0.0 && uSmokeOn > 0.5) {
-    // real ink in water (the smoke map): rise, curl and the thinning edge from three taps of it
-    nz.r = texture2D(uSmoke, sc).r;
-    nz.g = texture2D(uSmoke, sc * vec2(1.0, 0.8) + vec2(0.37, 0.61)).r;
-    nz.b = texture2D(uSmoke, sc * 1.6 + vec2(0.71, 0.13)).r;
+    // real ink in water (the smoke map): rise, curl and the thinning edge from three taps of it. The map is
+    // uploaded with flipY off (texmaps.ts), so y is mirrored: the wisps rise the way they did before.
+    nz.r = texture2D(uSmoke, vec2(sc.x, -sc.y)).r;
+    vec2 s2 = sc * vec2(1.0, 0.8) + vec2(0.37, 0.61);
+    nz.g = texture2D(uSmoke, vec2(s2.x, -s2.y)).r;
+    vec2 s3 = sc * 1.6 + vec2(0.71, 0.13);
+    nz.b = texture2D(uSmoke, vec2(s3.x, -s3.y)).r;
   }
   if (smoke > 0.0) {
     // the ink lifts off the paper as smoke: every part rises (the top most), curling as it goes
@@ -444,7 +447,8 @@ export class TokenSystem {
     this.materials.push(this.figMat, this.blotMat);
     // The smoke pigment (Phase 0); until it lands (or if it fails) the smoke curls with the value noise.
     if (typeof document !== 'undefined')
-      loadInkMap('smoke-512.webp', { repeat: true }, (t) => {
+      void loadTexmap('smoke').then((t) => {
+        if (!t) return;
         this.figMat.uniforms.uSmoke.value = t;
         this.figMat.uniforms.uSmokeOn.value = 1;
         this.dirty = true;
