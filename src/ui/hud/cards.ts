@@ -1,5 +1,6 @@
 // The cards sheet behind `Cards N` (docs/SIMPLIFY.md §1): your hand, one status line, and a single
-// `Trade for +8` when a set is ready. It is for looking: the best set is chosen for you.
+// `Trade for +8` (the word in a gold brush ring, GoldVM 'cardsTrade') when a set is ready. It is for
+// looking: the best set is chosen for you. A card is a card: a straight-edged hairline rectangle.
 
 import type { CardVM, CardsVM, UiIntent } from '../../game/viewModel';
 import { uiButton } from '../controls';

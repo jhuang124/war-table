@@ -1,18 +1,21 @@
-// The bottom of the board (docs/INK.md B5): the one line on the paper, the gold hairline rule across
-// the width with the game's ensō at its centre, and under it the Turn Track as words in one outlined
-// pill with the action pills beside it.
+// The bottom of the board (docs/INK2.md §3.1, frame 5): the one line on the paper, the gold hairline rule
+// across the width with the game's ensō sitting on it above the current phase word, and under it the
+// Turn Track as four words with the action words beside them. Desktop also shows the seat mark at the
+// far left (a brush dab in the seat's colour and its name).
 //                         Ural → Siberia · 64% · likely
-//   ────────────────────────────────  ◯  ────────────────────────────────
-//              ( Place │ Attack │ Fortify │ End turn )   ( Roll )  ( Blitz )
-// Nothing is filled. ONE GOLD (GameVM.gold): the pending commit, or the recommended / current track
-// segment, drawn as a gold outline with gold text; everything else is ivory hairline. The line swaps
+//   ─────────────────────────────  ◯  ───────────────────────────────────────
+//   ~ John          Place    Attack    Fortify    End turn           ( Blitz )   Roll
+//                            ‾‾‾‾‾‾
+// No boxes, no pills. ONE GOLD (GameVM.gold), and it moves: the pending commit's brush ring, or the
+// current (or recommended next) word and its brush underline; everything else is ivory. The line swaps
 // (the old one dries, the new one is drawn in; never two at once) when its wording changes; when only
 // a number changes it re-inks (±1) or counts (≥ 5). Everything is patched in place.
 
 import type { ButtonVM, CountVM, GoldVM, StripVM, TrackSegId, TrackVM, UiIntent } from '../../game/viewModel';
 import { PLAYER_COLORS } from '../../shared/palette';
 import { ActionButton } from '../controls';
-import { countUp, drawIn, EASE_BRUSH, EASE_IN_QUAD, ensoEl, h, minus, motion, pop, setAttr, setEnso, setStyle, setText, toggle } from '../dom';
+import { brushMark } from '../../shared/enso';
+import { countUp, drawIn, EASE_BRUSH, EASE_IN_QUAD, ensoEl, h, hashSeed, minus, motion, pop, ringEl, setAttr, setEnso, setStyle, setText, svg, toggle, underlineEl } from '../dom';
 
 /** Short labels on phones: the track's segments are equal-width words there. */
 const SEG_SHORT: Partial<Record<TrackSegId, string>> = { endTurn: 'End' };
@@ -145,50 +148,50 @@ class Line {
 }
 
 /**
- * The Turn Track (docs/ROUND2.md §A, INK.md B5): Place · Attack · Fortify · End turn (or Setup · Done) as
- * words in one outlined pill. The marker is a hairline outline that slides to the new segment (180 ms);
- * it is gold when the current segment carries the one gold, bright ivory otherwise. A recommended next
- * segment that carries the gold gets its own gold outline and gold words. Forward segments are the
- * buttons that change phase; it never hides or renames.
+ * The Turn Track (docs/ROUND2.md §A, INK2 §3.1): Place · Attack · Fortify · End turn (or Setup · Done) as
+ * four words centred as a group (the group never moves). The current word carries a brush underline:
+ * gold when the track holds the one gold, ivory 70 % otherwise. A recommended next word that carries
+ * the gold is a gold word with a gold underline. The ensō on the rule above sits over the current word
+ * (the GoldRule reads `currentX()`). Forward segments are the buttons that change phase; the track never
+ * hides or renames. Each word is a transparent ≥ 44 px hit box.
  */
 class Track {
   readonly el: HTMLDivElement;
-  private fill: HTMLSpanElement;
   private segs = new Map<TrackSegId, HTMLButtonElement>();
+  private uls = new Map<TrackSegId, SVGSVGElement>();
   private order: TrackSegId[] = [];
   private vm: TrackVM | null = null;
   private gold: TrackSegId | null = null;
   private turnKey = '';
   private placed: TrackSegId | null = null;
+  private lined = new Set<TrackSegId>();
+  /** The ensō follows the current word: `slide` false = a cut (the turn changed hands, a resize). */
+  onPlace: ((slide: boolean) => void) | null = null;
 
   constructor(private send: (i: UiIntent) => void) {
     this.el = h('div', 'track');
     this.el.dataset.testid = 'track';
     this.el.setAttribute('role', 'group');
     this.el.setAttribute('aria-label', 'Turn');
-    this.fill = h('span', 'tr-fill');
-    this.fill.setAttribute('aria-hidden', 'true');
-    this.el.append(this.fill);
-    new ResizeObserver(() => this.placeFill(false)).observe(this.el);
   }
 
   private build(ids: TrackSegId[]): void {
     for (const b of this.segs.values()) b.remove();
-    this.el.querySelectorAll('.tr-sep').forEach((x) => x.remove());
     this.segs.clear();
+    this.uls.clear();
+    this.lined.clear();
     this.order = ids;
-    ids.forEach((id, i) => {
-      if (i) {
-        const sep = h('i', 'tr-sep');
-        sep.setAttribute('aria-hidden', 'true');
-        this.el.append(sep);
-      }
+    for (const id of ids) {
       const b = h('button', `tr-seg nofocus seg-${id}`);
       b.type = 'button';
       b.dataset.testid = `seg-${id}`;
-      b.dataset.slop = '8'; // touch: the hit area reaches into the pill's padding (mobile.css)
+      b.dataset.slop = '0'; // the word's own transparent box is the ≥ 44 px hit area (no pill to reach into)
       b.dataset.seg = id;
-      b.append(h('span', 'tr-label'), h('span', 'tr-short'));
+      const words = h('span', 'tr-words');
+      words.append(h('span', 'tr-label'), h('span', 'tr-short'));
+      const ul = underlineEl(hashSeed(`seg-${id}`), undefined, 'brush-ul tr-ul');
+      words.append(ul);
+      b.append(words);
       b.addEventListener('click', () => {
         const vm = this.vm;
         const seg = vm?.segments.find((x) => x.id === id);
@@ -196,34 +199,45 @@ class Track {
         if (seg.state === 'eligible' || seg.state === 'locked') this.send({ type: 'track', seg: id });
       });
       this.segs.set(id, b);
+      this.uls.set(id, ul);
       this.el.append(b);
-    });
+    }
     this.placed = null;
   }
 
-  /** Put the marker round the current segment: a slide (180 ms), or a cut when the turn changed hands. */
-  private placeFill(slide: boolean): void {
-    const vm = this.vm;
-    const cur = vm?.segments.find((x) => x.state === 'current');
+  /** The current word's centre, in px from the left of `ref` (the rule), or null when there's none. */
+  currentX(ref: HTMLElement): number | null {
+    const cur = this.vm?.segments.find((x) => x.state === 'current');
     const b = cur ? this.segs.get(cur.id) : null;
-    if (!vm || !b || !b.offsetWidth) {
-      toggle(this.fill, 'hidden', !b);
-      return;
+    if (!b || !b.offsetWidth) return null;
+    const r = b.getBoundingClientRect();
+    return r.left + r.width / 2 - ref.getBoundingClientRect().left;
+  }
+
+  /**
+   * Which words carry an underline: the current one, and a gold recommended one. A new underline is
+   * drawn in left → right (180 ms); one that goes dries out (140 ms, and never in gold: the gold leaves
+   * at once, so two golds are never on the paper together).
+   */
+  private underlines(): void {
+    const vm = this.vm!;
+    const want = new Set<TrackSegId>();
+    for (const seg of vm.segments) if (seg.state === 'current' || (this.gold === seg.id && seg.state !== 'done')) want.add(seg.id);
+    for (const [id, ul] of this.uls) {
+      const on = want.has(id);
+      const was = this.lined.has(id);
+      toggle(ul, 'on', on);
+      if (on === was) continue;
+      ul.getAnimations().forEach((a) => a.cancel());
+      if (motion.reduced || typeof ul.animate !== 'function') continue;
+      if (on) ul.animate([{ clipPath: 'inset(0 100% 0 0)' }, { clipPath: 'inset(0 0% 0 0)' }], { duration: 180, easing: EASE_BRUSH });
+      else {
+        ul.classList.add('drying');
+        const a = ul.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 140, easing: EASE_IN_QUAD });
+        a.onfinish = a.oncancel = () => ul.classList.remove('drying');
+      }
     }
-    toggle(this.fill, 'hidden', false);
-    const x = `${b.offsetLeft}px`;
-    const w = `${b.offsetWidth}px`;
-    if (!slide || motion.reduced) {
-      this.fill.style.transition = 'none';
-      this.fill.style.transform = `translateX(${x})`;
-      this.fill.style.width = w;
-      void this.fill.offsetWidth;
-      this.fill.style.transition = '';
-    } else {
-      this.fill.style.transform = `translateX(${x})`;
-      this.fill.style.width = w;
-    }
-    this.placed = cur!.id;
+    this.lined = want;
   }
 
   update(vm: TrackVM, gold: TrackSegId | null): void {
@@ -241,16 +255,20 @@ class Track {
     toggle(this.el, 'is-watch', !vm.live);
     this.el.dataset.kind = vm.kind;
     const cur = vm.segments.find((x) => x.state === 'current')?.id ?? null;
-    toggle(this.fill, 'gold', !!cur && gold === cur);
     for (const seg of vm.segments) {
       const b = this.segs.get(seg.id)!;
-      setText(b.querySelector('.tr-label')!, seg.label);
-      setText(b.querySelector('.tr-short')!, SEG_SHORT[seg.id] ?? seg.label);
+      const label = b.querySelector<HTMLElement>('.tr-label')!;
+      const short = b.querySelector<HTMLElement>('.tr-short')!;
+      setText(label, seg.label);
+      setText(short, SEG_SHORT[seg.id] ?? seg.label);
+      // Each word's box is reserved at its heaviest (600) weight, so the current word never nudges the group.
+      label.dataset.w = seg.label;
+      short.dataset.w = SEG_SHORT[seg.id] ?? seg.label;
       b.dataset.state = seg.state;
       for (const st of ['done', 'current', 'eligible', 'locked'] as const) toggle(b, `is-${st}`, seg.state === st);
       const rec = vm.recommended === seg.id;
       toggle(b, 'is-rec', rec);
-      // The one gold: this segment (the marker's outline when it is the current one).
+      // The one gold: this word and its underline.
       const isGold = gold === seg.id;
       toggle(b, 'gold', isGold);
       toggle(b, 'is-primary', isGold);
@@ -260,13 +278,57 @@ class Track {
       b.tabIndex = vm.live && !vm.disabled && seg.state === 'eligible' ? 0 : -1;
       setAttr(b, 'aria-current', seg.state === 'current' ? 'step' : null);
     }
+    this.underlines();
     const handsChanged = vm.turnKey !== this.turnKey;
     this.turnKey = vm.turnKey;
     if (cur !== this.placed || handsChanged || prev?.seat.color !== vm.seat.color) {
       const slide = !!prev && !handsChanged && prev.kind === vm.kind;
-      this.placeFill(slide);
-      if (handsChanged && prev && !motion.reduced) this.fill.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 240, easing: EASE_BRUSH });
+      this.placed = cur;
+      this.onPlace?.(slide);
     }
+  }
+}
+
+/**
+ * The seat mark (INK2 §3.1, desktop only): at the far left of the track row, a brush dab in the current
+ * seat's colour and the seat's name. No number (John, 2026-09-29). An AI's dab and name while it plays.
+ */
+class SeatMark {
+  readonly el: HTMLDivElement;
+  private dab: SVGSVGElement;
+  private name: HTMLSpanElement;
+  private key = '';
+
+  constructor() {
+    this.el = h('div', 'st-seat');
+    this.el.dataset.testid = 'seat-mark';
+    this.dab = svg('svg', { viewBox: '0 0 44 20', class: 'sm-dab', 'aria-hidden': 'true' });
+    this.name = h('span', 'sm-name');
+    this.el.append(this.dab, this.name);
+  }
+
+  update(seat: TrackVM['seat']): void {
+    const key = `${seat.id}:${seat.color}:${seat.name}`;
+    if (key === this.key) return;
+    const first = !this.key;
+    this.key = key;
+    const seed = hashSeed(`dab:${seat.id}:${seat.color}`);
+    // A short loaded dab laid on a slight rise, left to right (frame 5's vermilion stroke).
+    let s = seed;
+    const r = () => ((s = (Math.imul(s ^ (s >>> 13), 1274126177) + 0x6d2b79f5) >>> 0) / 4294967296);
+    const pts: [number, number][] = [];
+    const lift = 3 + r() * 3;
+    const sag = 0.6 + r() * 0.8;
+    for (let i = 0; i <= 8; i++) {
+      const t = i / 8;
+      pts.push([4 + t * 36, 12.5 - t * lift + Math.sin(Math.PI * t) * sag]);
+    }
+    this.dab.textContent = '';
+    this.dab.append(svg('path', { d: brushMark(pts, { seed, width: 7.5, samples: 48, bristles: 5 }), fill: 'currentColor' }));
+    this.dab.style.color = PLAYER_COLORS[seat.color].base;
+    setText(this.name, seat.name);
+    this.el.setAttribute('aria-label', `${seat.name}'s turn`);
+    if (!first) drawIn(this.el, 240);
   }
 }
 
@@ -367,6 +429,7 @@ class CountSlider {
     this.track = h('div', 'cs-track');
     this.fill = h('div', 'cs-fill');
     this.knob = h('div', 'cs-knob');
+    this.knob.append(ringEl(hashSeed('count-knob'), 1, undefined, { cls: 'knob-ring', weight: 1.6 }));
     this.track.append(this.fill, this.knob);
     this.el.append(this.lo, this.track, this.hi);
     const at = (e: PointerEvent) => {
@@ -456,19 +519,26 @@ class Buttons {
   }
 }
 
-/** The gold hairline rule with the game's ensō at its centre (INK A1: a glint every ~14 s, the ensō breathes). */
+/**
+ * The gold hairline rule with the game's ensō on it (INK A1: a glint every ~14 s, the ensō breathes).
+ * The ensō sits over the current phase word and slides there on an advance (180 ms, the brush); when
+ * the turn changes hands it cuts. The rule's halves run from the edges to the ensō's gap wherever it is.
+ */
 class GoldRule {
   readonly el: HTMLDivElement;
   private mark: SVGSVGElement;
+  private enso: HTMLSpanElement;
   private l: HTMLElement;
   private r: HTMLElement;
+  private x = -1;
   constructor() {
     this.el = h('div', 'st-rule');
     this.el.setAttribute('aria-hidden', 'true');
     this.l = h('i', 'sr-half sr-l');
     this.r = h('i', 'sr-half sr-r');
     const glint = h('i', 'sr-glint');
-    const c = h('span', 'sr-enso');
+    const c = (this.enso = h('span', 'sr-enso'));
+    c.dataset.testid = 'rule-enso';
     this.mark = ensoEl(1, 'enso', { small: true });
     c.append(this.mark);
     this.el.append(this.l, this.r, glint, c);
@@ -476,7 +546,23 @@ class GoldRule {
   setSeed(seed: number): void {
     setEnso(this.mark, seed, { small: true });
   }
-  /** Turn start: the rule redraws from the ensō outward (400 ms). */
+  /** Put the ensō at `x` px along the rule (null: the centre). A slide (180 ms), or a cut. */
+  place(x: number | null, slide: boolean): void {
+    const w = this.el.clientWidth;
+    if (!w) return;
+    const px = Math.round((x ?? w / 2) * 10) / 10;
+    if (px === this.x) return;
+    const cut = !slide || motion.reduced || this.x < 0;
+    this.x = px;
+    if (cut) this.el.classList.add('sr-cut');
+    this.el.style.setProperty('--ex', `${px}px`);
+    this.enso.dataset.x = String(px);
+    if (cut) {
+      void this.el.offsetWidth;
+      this.el.classList.remove('sr-cut');
+    }
+  }
+  /** Turn start: the rule redraws outward from wherever the ensō is (400 ms). */
   redraw(): void {
     if (motion.reduced || typeof this.l.animate !== 'function') return;
     for (const el of [this.l, this.r]) el.animate([{ transform: 'scaleX(0)' }, { transform: 'scaleX(1)' }], { duration: 400, easing: EASE_BRUSH });
@@ -494,6 +580,7 @@ export class BottomStrip {
   private slider: CountSlider;
   private buttons: Buttons;
   private zone: HTMLDivElement;
+  private seat = new SeatMark();
   private vm: StripVM | null = null;
   private gold: GoldVM | undefined = undefined;
   private turnKey = '';
@@ -514,7 +601,12 @@ export class BottomStrip {
     zone.append(this.count, this.buttons.el);
     this.say = h('div', 'st-say');
     this.say.append(this.line.el);
-    this.el.append(this.say, this.rule.el, this.track.el, zone);
+    this.el.append(this.say, this.rule.el, this.seat.el, this.track.el, zone);
+    // The ensō follows the current word: on an advance it slides; on a resize (or fonts arriving) it cuts.
+    const put = (slide: boolean) => this.rule.place(this.track.currentX(this.rule.el), slide);
+    this.track.onPlace = (slide) => put(slide);
+    new ResizeObserver(() => put(false)).observe(this.track.el);
+    new ResizeObserver(() => put(false)).observe(this.el);
     // The mouse wheel over the strip adjusts the count.
     this.el.addEventListener(
       'wheel',
@@ -558,6 +650,7 @@ export class BottomStrip {
       if (prev) this.rule.redraw();
       this.turnKey = vm.track.turnKey;
     }
+    this.seat.update(vm.track.seat);
     this.track.update(vm.track, g?.kind === 'segment' ? g.seg : null);
     this.line.update(vm.line, vm.lineKind, vm.lineKey, vm.lineKind === 'narration' ? PLAYER_COLORS[vm.track.seat.color].light : null);
     const c = vm.count;

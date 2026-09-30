@@ -26,8 +26,14 @@ async function dom(p: Page) {
       cursors: segs.map((s) => getComputedStyle(s).cursor),
       shown: segs.length > 0 && segs.every(vis),
       brass: brass.map((b) => (b.querySelector('.tr-label, .btn-label') ?? b).textContent?.trim() ?? ''),
-      fill: (document.querySelector('.tr-fill') as HTMLElement | null)?.style.transform ?? '',
-      fillMs: getComputedStyle(document.querySelector('.tr-fill')!).transitionDuration,
+      // The marker is the ensō on the gold rule (docs/INK2.md §3.1): where it sits, and its slide.
+      fill: (document.querySelector('.strip .sr-enso') as HTMLElement | null)?.dataset.x ?? '',
+      fillMs: getComputedStyle(document.querySelector('.strip .sr-enso')!).transitionDuration,
+      ensoOff: (() => {
+        const e = document.querySelector('.strip .sr-enso')?.getBoundingClientRect();
+        const c = document.querySelector('.strip .tr-seg.is-current')?.getBoundingClientRect();
+        return e && c ? Math.abs(e.left + e.width / 2 - (c.left + c.width / 2)) : 99;
+      })(),
     };
   });
 }
@@ -71,7 +77,10 @@ const fill0 = d.fill;
 await seg(page, 'attack');
 await page.waitForTimeout(40);
 d = await dom(page);
-check(d.fill !== fill0 && d.fillMs.split(',').some((x) => Math.abs(parseFloat(x) - 0.18) < 0.001), `the marker slides to Attack (transition ${d.fillMs})`, results);
+check(d.fill !== fill0 && d.fillMs.split(',').some((x) => Math.abs(parseFloat(x) - 0.18) < 0.001), `the ensō slides to Attack (transition ${d.fillMs})`, results);
+await page.waitForTimeout(300);
+d = await dom(page);
+check(d.ensoOff <= 2, `the ensō sits over the current word (${d.ensoOff.toFixed(1)} px off)`, results);
 check(d.states.join(',') === 'done,current,eligible,eligible' && d.labels[0] === 'Place', `Attack: ${d.states.join(' ')}`, results);
 await oneBrass('Attack with targets left and nothing armed: the current segment', 'Attack');
 await clickT(page, 'siberia');

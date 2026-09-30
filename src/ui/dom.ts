@@ -1,7 +1,7 @@
 // Tiny DOM helpers for the HUD. No framework: components keep their elements and patch them.
 
 import { EMBLEM_PATHS, PLAYER_COLORS } from '../shared/palette';
-import { ensoPath, type EnsoShape } from '../shared/enso';
+import { brushMark, brushRing, ensoPath, type EnsoShape } from '../shared/enso';
 import type { PlayerColorId } from '../engine/types';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -218,6 +218,100 @@ export function drawEnso(s: SVGSVGElement, ms = 900, delay = 0): void {
   }
   const len = parseFloat(sp.style.strokeDasharray) || 240;
   sp.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }], { duration: ms, delay, easing: 'cubic-bezier(0.45, 0.05, 0.3, 1)', fill: 'backwards' });
+}
+
+// ---------------------------------------------------------------------------
+// The UI's brush marks (docs/INK2.md §3): the brush underline ("this one") and the brush ring ("press
+// this"). Inline SVGs filled with currentColor; seeded per element so a control's brushwork never
+// changes under the pointer.
+// ---------------------------------------------------------------------------
+
+/** The underline's viewBox: long and low; the SVG is stretched to 1.1× the word (preserveAspectRatio none). */
+const UL_W = 120;
+const UL_H = 10;
+const ulCache = new Map<number, string>();
+function underlinePath(seed: number): string {
+  let d = ulCache.get(seed);
+  if (d) return d;
+  // A slightly bowed line: the hand dips a touch in the middle and rises out, never ruler-straight.
+  let s = seed >>> 0;
+  const rnd = () => ((s = (Math.imul(s ^ (s >>> 15), 2246822519) + 0x9e3779b9) >>> 0) / 4294967296);
+  const bow = 0.9 + rnd() * 0.7;
+  const tilt = (rnd() - 0.5) * 1.2;
+  const pts: [number, number][] = [];
+  for (let i = 0; i <= 12; i++) {
+    const t = i / 12;
+    pts.push([4 + t * (UL_W - 10), UL_H / 2 + 0.4 + Math.sin(Math.PI * t) * bow - tilt * (t - 0.5)]);
+  }
+  d = brushMark(pts, { seed, width: 3.6, samples: 64, bristles: 4 });
+  if (ulCache.size > 80) ulCache.clear();
+  ulCache.set(seed, d);
+  return d;
+}
+
+/**
+ * The brush underline: one bowed brush stroke (brushMark), 3–4 px, varying; stretch it to the word's
+ * width with CSS. `color` sets the ink (default: inherit currentColor).
+ */
+export function underlineEl(seed: number, color?: string, cls = 'brush-ul'): SVGSVGElement {
+  const s = svg('svg', { viewBox: `0 0 ${UL_W} ${UL_H}`, preserveAspectRatio: 'none', class: cls, 'aria-hidden': 'true' });
+  s.append(svg('path', { d: underlinePath(seed), fill: 'currentColor' }));
+  if (color) s.style.color = color;
+  return s;
+}
+
+const ringCache = new Map<string, EnsoShape>();
+function ringShape(seed: number, aspect: number, weight: number): EnsoShape {
+  const k = `${seed}:${aspect}:${weight}`;
+  let e = ringCache.get(k);
+  if (!e) {
+    e = brushRing(seed, aspect, { weight, bristles: aspect > 1.6 ? 5 : 4, samples: Math.round(96 + 24 * Math.min(3, aspect)) });
+    if (ringCache.size > 80) ringCache.clear();
+    ringCache.set(k, e);
+  }
+  return e;
+}
+
+/** Aspects are quantised so a resize by a pixel never re-brushes the ring. */
+export const ringAspect = (a: number): number => Math.round(Math.max(1, Math.min(3, a)) * 10) / 10;
+
+/**
+ * The brush ring: a closed brushed ellipse (brushRing: no gap, one dry patch) round a word or a knob.
+ * `aspect` = width / height (1…3). Drawable: a mask along the brush's spine so `drawEnso` can paint it
+ * in once (the busy state).
+ */
+export function ringEl(seed: number, aspect = 1, color?: string, opts: { cls?: string; weight?: number; drawable?: boolean } = {}): SVGSVGElement {
+  const s = svg('svg', { class: opts.cls ?? 'brush-ring', 'aria-hidden': 'true', preserveAspectRatio: 'none' });
+  setRing(s, seed, aspect, opts);
+  if (color) s.style.color = color;
+  return s;
+}
+
+/** Re-brush an existing ring for another seed / aspect (a no-op when nothing changed). */
+export function setRing(s: SVGSVGElement, seed: number, aspect: number, opts: { weight?: number; drawable?: boolean } = {}): void {
+  const a = ringAspect(aspect);
+  const w = opts.weight ?? 1;
+  const key = `${seed}:${a}:${w}:${opts.drawable ? 1 : 0}`;
+  if (s.dataset.ring === key) return;
+  s.dataset.ring = key;
+  const e = ringShape(seed, a, w);
+  s.setAttribute('viewBox', e.viewBox);
+  s.textContent = '';
+  const p = svg('path', { d: e.d, fill: 'currentColor' });
+  if (opts.drawable) {
+    const id = `ring-m${++maskSeq}`;
+    const W = 100 * a;
+    const defs = svg('defs');
+    const m = svg('mask', { id, maskUnits: 'userSpaceOnUse', x: '-10', y: '-10', width: String(W + 20), height: '120' });
+    const sp = svg('path', { d: e.spine, fill: 'none', stroke: '#fff', 'stroke-width': '24', 'stroke-linecap': 'round', class: 'enso-spine' });
+    sp.style.strokeDasharray = `${e.length + 6}`;
+    sp.style.strokeDashoffset = '0';
+    m.append(sp);
+    defs.append(m);
+    p.setAttribute('mask', `url(#${id})`);
+    s.append(defs);
+  }
+  s.append(p);
 }
 
 /** A stable small hash for seeding marks from names and ids. */

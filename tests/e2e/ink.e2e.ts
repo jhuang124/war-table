@@ -37,7 +37,9 @@ async function startGoldSampler(page: Page): Promise<void> {
       for (let e: Element | null = el; e; e = e.parentElement) o *= +getComputedStyle(e).opacity;
       return o;
     };
-    const signature = (el: Element) => !!el.closest('.st-rule, .lk-rule, #boot-splash');
+    // The gold rule and its ensō (wherever the ensō sits on the rule), the title's rule, and the Rules
+    // sheet's miniature of the rule are the UI's signature, not a gold "thing".
+    const signature = (el: Element) => !!el.closest('.st-rule, .lk-rule, .ra-rule, #boot-splash');
     const goldThings = (): string[] => {
       const found: Element[] = [];
       for (const el of document.querySelectorAll('.ui-root *')) {
@@ -53,9 +55,11 @@ async function startGoldSampler(page: Page): Promise<void> {
         const text = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent!.trim()) && near(cs.color);
         const shadow = /rgba?\(\s*20[0-2],\s*1(6[89]|7\d),\s*(9\d|10\d)/.test(cs.boxShadow);
         const bg = near(cs.backgroundColor);
-        const svg = el instanceof SVGElement && !(el instanceof SVGSVGElement) && (near(cs.fill) || near(cs.stroke));
-        // The track's marker (.tr-fill) and the current word inside it are one gold thing.
-        const key = el.closest('.tr-fill') ? (document.querySelector('.tr-seg.is-current') ?? el) : (el.closest('button, [data-testid], .seat') ?? el);
+        // The brush marks (docs/INK2.md §3.5): the ring behind a primary word and the underline under a
+        // track word are inline SVGs filled with currentColor, so the path's computed fill is the gold.
+        const svg = el instanceof SVGElement && !(el instanceof SVGSVGElement) && !el.closest('defs, mask') && (near(cs.fill) || near(cs.stroke));
+        // A word and its own ring / underline are one gold thing: key everything by its control.
+        const key = el.closest('button, [data-testid], .seat') ?? el;
         if ((border || text || shadow || bg || svg) && effOpacity(el) >= 0.3) found.push(key);
       }
       const uniq = [...new Set(found)];

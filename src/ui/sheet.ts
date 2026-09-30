@@ -10,7 +10,7 @@ export const SHEET_SPRING = 'cubic-bezier(0.3, 1.22, 0.6, 1)';
 /** Kept for older call sites: the same spring. */
 export const SHEET_EASE = SHEET_SPRING;
 
-/** The grab handle: a 36×5 pill, centred at the top of the sheet (hidden off phones by CSS). */
+/** The grab handle: a short hairline, centred at the top of the sheet (hidden off phones by CSS). */
 export function grabHandle(testid?: string): HTMLDivElement {
   const g = h('div', 'grab');
   g.setAttribute('aria-hidden', 'true');

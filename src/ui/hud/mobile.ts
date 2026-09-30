@@ -1,7 +1,8 @@
 // Phone-only HUD pieces (docs/MOBILE.md §1, §3):
 //   RotatePill — the one-time `Rotate for the full map` line on a portrait phone, in the dock's line
 //                slot; it dries after 4 s, at the first touch, or on rotating; never shown again.
-//   NameCard   — the long-press card above the finger: territory, continent + bonus, owner, armies.
+//   NameCard   — the long-press lines above the finger: territory, continent + bonus, owner, armies,
+//                serif words on the paper with a soft deepening behind them (no box, INK2 §3.3).
 //                Driven by the board's long-press callback through GameVM.nameCard; releasing hides it.
 
 import type { NameCardVM } from '../../game/viewModel';
