@@ -1,6 +1,8 @@
-// Procedural canvas textures: walnut, felt, paint grain, the ocean chart, dice faces, text.
+// Procedural canvas textures: walnut, felt, paint grain, the ocean chart, dice faces, the tray's ink ring,
+// text; and a small loader for the pigment maps in public/tex (docs/INK2.md §4).
 import * as THREE from 'three';
 import type { BoardGeometry, Vec2 } from '../map/types';
+import { brushRing } from '../shared/enso';
 
 export const FONT_SERIF_CAPS = "'Cormorant Garamond Variable', 'Cormorant Garamond', Georgia, serif";
 export const FONT_SANS = FONT_SERIF_CAPS; // one family (INK B3): Cinzel and Inter are gone
@@ -483,7 +485,7 @@ const PIPS: Record<number, [number, number][]> = {
 };
 
 // ---------------------------------------------------------------------------
-// Ink & lacquer (docs/INK.md B §3–4: the lacquer tray, pigment dice, the verdict's ink splash)
+// Ink (docs/INK.md B §3–4, INK2 §2.3: pigment dice, the verdict's ink splash, the tray's ink ring)
 // ---------------------------------------------------------------------------
 
 /**
@@ -569,27 +571,64 @@ export function inkSplashTexture(size = 128): THREE.CanvasTexture {
   return tex(c, true, false);
 }
 
-/** Black lacquer with a little wear: faint warm-brown scuffs where hands have worn the rim. */
-export function lacquerTexture(size = 256): THREE.CanvasTexture {
-  const [c, ctx] = canvas(size, size);
-  const img = ctx.createImageData(size, size);
-  const d = img.data;
-  for (let y = 0; y < size; y++)
-    for (let x = 0; x < size; x++) {
-      const n = fbm(x / 22, y / 60, 31, 4, size / 22, size / 60);
-      const wear = Math.max(0, fbm(x / 9, y / 40, 57, 3, size / 9, size / 40) - 0.62) * 2.2;
-      const o = (y * size + x) * 4;
-      const k = 0.9 + n * 0.2;
-      d[o] = Math.round((16 + 70 * wear) * k);
-      d[o + 1] = Math.round((16 + 30 * wear) * k);
-      d[o + 2] = Math.round((20 + 18 * wear) * k);
-      d[o + 3] = 255;
-    }
-  ctx.putImageData(img, 0, 0);
-  return tex(c, true, true);
-}
-
 function smooth(a: number, b: number, x: number): number {
   const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
+}
+
+/**
+ * The dice tray's ink ring (docs/INK2.md §2.3): one closed brushed ellipse (`brushRing` from
+ * src/shared/enso.ts) rasterised once per size into an alpha canvas (white ink, coverage in alpha).
+ * `aspect` is the ring's viewBox width / height (the viewBox is 100 × aspect by 100); `w` × `h` is the
+ * canvas in device px. Cached by size and seed, like the count rings.
+ */
+const ringCache = new Map<string, THREE.CanvasTexture>();
+export function inkRingTexture(seed: number, aspect: number, w: number, h: number, weight: number, bristles = 4): THREE.CanvasTexture {
+  const key = `${seed}|${aspect.toFixed(3)}|${w}x${h}|${weight.toFixed(3)}|${bristles}`;
+  const hit = ringCache.get(key);
+  if (hit) return hit;
+  const shape = brushRing(seed, aspect, { weight, bristles, startAt: 270, samples: 200 });
+  const [c, ctx] = canvas(w, h);
+  ctx.scale(w / (100 * aspect), h / 100);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill(new Path2D(shape.d), 'nonzero');
+  const t = tex(c, false, false);
+  t.premultiplyAlpha = false;
+  t.anisotropy = 4;
+  t.generateMipmaps = true;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  // A handful of sizes over a session at most (a resize, a rotation): keep the cache small.
+  if (ringCache.size > 6) {
+    const first = ringCache.keys().next().value as string;
+    ringCache.get(first)?.dispose();
+    ringCache.delete(first);
+  }
+  ringCache.set(key, t);
+  return t;
+}
+
+/**
+ * A pigment map from public/tex (Phase 0's `tip.png`, `smoke-512.webp`), for the strokes and the figures
+ * until src/render/texmaps.ts serves them (docs/INK2.md §5 Phase A). Data texture: premultiply off, no
+ * colour space, mipmapped. `onLoad` fires once it has arrived; a failure leaves the caller's fallback.
+ */
+export function loadInkMap(file: string, opts: { repeat?: boolean; flipY?: boolean } = {}, onLoad?: (t: THREE.Texture) => void): void {
+  const base = (import.meta.env?.BASE_URL as string | undefined) ?? './';
+  new THREE.TextureLoader().load(
+    `${base}tex/${file}`,
+    (t) => {
+      t.colorSpace = THREE.NoColorSpace;
+      t.premultiplyAlpha = false;
+      t.flipY = opts.flipY ?? true;
+      t.generateMipmaps = true;
+      t.minFilter = THREE.LinearMipmapLinearFilter;
+      t.magFilter = THREE.LinearFilter;
+      if (opts.repeat) t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      else t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+      t.needsUpdate = true;
+      onLoad?.(t);
+    },
+    undefined,
+    () => console.warn(`[render] pigment map ${file} failed to load; the procedural noise stays`),
+  );
 }

@@ -12,8 +12,9 @@
 //   place     N ink dots fall onto the blot and soak in; the figure re-inks (a brief deepening) and hops
 //   denom     the old figure dries out in patches, the new one is drawn in, feet → head
 //   attack    a slight lean toward the target (both figures turn to face each other)
-//   loss      a recoil away from the blow and a tiny ink splash
-//   fall      at 0 the figure dissolves upward as ink smoke
+//   loss      a recoil away from the blow and a tiny ink splash; at the verdict a puff (INK2 §2.2): a little
+//             ink lifts off the figure as smoke and settles back
+//   fall      at 0 the figure dissolves upward as ink smoke (the `smoke` pigment map, public/tex)
 //   traveller a figure walks the arrow (or the fortify route) with a light step
 // Nothing moves at idle: the calm belongs to the paper (index.ts), not the figures.
 import * as THREE from 'three';
@@ -22,6 +23,7 @@ import { TERRITORY_IDS } from '../engine/mapData';
 import { Animator, ease, type Run } from './anim';
 import { IVORY, TILE_TOP, hexToRgb, type RGB } from './util';
 import { deepOf, type TileSet } from './tiles';
+import { loadInkMap } from './textures';
 import ATLAS from './unitsAtlas.json';
 
 /** 0 = infantry (1–4), 1 = cavalry (5–9), 2 = artillery (10+). */
@@ -84,6 +86,8 @@ interface Tok {
   old: { denom: Denom; dry: number } | null;
   /** Ink smoke dissolve 0..1 (the fall). */
   smoke: number;
+  /** The verdict's puff (0 → 0.3 → 0): the smoke's look, but the figure stays (INK2 §2.2). */
+  puff: number;
   /** Overall alpha 0..1. */
   fade: number;
   /** Screen-plane offset (world units along the camera's right / up): hops, recoil. */
@@ -175,6 +179,8 @@ void main() {
 const FIG_FRAG = /* glsl */ `
 uniform sampler2D uAtlas;
 uniform sampler2D uNoise;
+uniform sampler2D uSmoke;
+uniform float uSmokeOn;
 uniform vec3 uIvory;
 varying vec2 vSt;
 varying vec4 vUV;
@@ -186,7 +192,14 @@ void main() {
   float smoke = vA.z;
   float seed = vB.w;
   vec2 sp = vec2((vSt.x - 0.5) * (1.0 + 0.6 * smoke) + 0.5, vSt.y);
-  vec4 nz = texture2D(uNoise, vec2(sp.x * 0.5 + seed, sp.y * 0.4 - smoke * 0.45 + seed * 0.37));
+  vec2 sc = vec2(sp.x * 0.5 + seed, sp.y * 0.4 - smoke * 0.45 + seed * 0.37);
+  vec4 nz = texture2D(uNoise, sc);
+  if (smoke > 0.0 && uSmokeOn > 0.5) {
+    // real ink in water (the smoke map): rise, curl and the thinning edge from three taps of it
+    nz.r = texture2D(uSmoke, sc).r;
+    nz.g = texture2D(uSmoke, sc * vec2(1.0, 0.8) + vec2(0.37, 0.61)).r;
+    nz.b = texture2D(uSmoke, sc * 1.6 + vec2(0.71, 0.13)).r;
+  }
   if (smoke > 0.0) {
     // the ink lifts off the paper as smoke: every part rises (the top most), curling as it goes
     float rise = smoke * (0.4 + 0.95 * nrm(nz.r)) * (0.3 + 0.7 * clamp(sp.y, 0.0, 1.3));
@@ -400,6 +413,8 @@ export class TokenSystem {
       uniforms: {
         uAtlas: { value: null },
         uNoise: { value: noise ?? null },
+        uSmoke: { value: null },
+        uSmokeOn: { value: 0 },
         uIvory: { value: new THREE.Vector3(IVORY_RGB[0], IVORY_RGB[1], IVORY_RGB[2]) },
       },
       vertexShader: FIG_VERT,
@@ -427,6 +442,13 @@ export class TokenSystem {
       toneMapped: false,
     });
     this.materials.push(this.figMat, this.blotMat);
+    // The smoke pigment (Phase 0); until it lands (or if it fails) the smoke curls with the value noise.
+    if (typeof document !== 'undefined')
+      loadInkMap('smoke-512.webp', { repeat: true }, (t) => {
+        this.figMat.uniforms.uSmoke.value = t;
+        this.figMat.uniforms.uSmokeOn.value = 1;
+        this.dirty = true;
+      });
     const figQuad = new THREE.PlaneGeometry(1, 1);
     figQuad.translate(0, 0.5, 0);
     this.figs = new Instanced(figQuad, { iPos: 3, iSize: 2, iUV: 4, iA: 4, iB: 4, iC: 4, iOff: 2 }, FIG_CAP, this.figMat);
@@ -476,6 +498,7 @@ export class TokenSystem {
         reveal: 1,
         old: null,
         smoke: 0,
+        puff: 0,
         fade: 1,
         offX: 0,
         offY: 0,
@@ -650,6 +673,7 @@ export class TokenSystem {
     t.reveal = 1;
     t.old = null;
     t.smoke = 0;
+    t.puff = 0;
     t.fade = 1;
     t.offX = 0;
     t.offY = 0;
@@ -825,7 +849,7 @@ export class TokenSystem {
     this.dirty = true;
     const instant = this.anim.instant || (run && run.skipped);
     if (mode === 'snap' || instant) {
-      this.cancel(t, ['scale', 'reveal', 'old', 'smoke', 'fade', 'off', 'ink', 'lean']);
+      this.cancel(t, ['scale', 'reveal', 'old', 'smoke', 'fade', 'off', 'ink', 'lean', 'puff']);
       this.rest(t);
       t.lean = 0;
       t.scale = n > 0 ? 1 : 0;
@@ -889,7 +913,8 @@ export class TokenSystem {
         t.scale = 0;
         return;
       }
-      this.cancel(t, ['old', 'ink']);
+      this.cancel(t, ['old', 'ink', 'puff']);
+      t.puff = 0;
       t.old = null;
       t.ink = 0;
       t.frozen = t.frozen ?? { blot: t.blot, deep: t.deep };
@@ -937,7 +962,7 @@ export class TokenSystem {
     // n > 0 from here
     if (!wasShown) {
       // Appear: drawn in feet → head (placement), or at once (a traveller became it).
-      this.cancel(t, ['scale', 'smoke', 'fade', 'old', 'reveal', 'off', 'lean']);
+      this.cancel(t, ['scale', 'smoke', 'fade', 'old', 'reveal', 'off', 'lean', 'puff']);
       this.rest(t);
       t.lean = 0;
       t.denom = nextDenom;
@@ -1008,6 +1033,24 @@ export class TokenSystem {
         this.step(t, run, 0.18);
         break;
     }
+  }
+
+  /**
+   * The verdict's puff (INK2 §2.2): a side that lost a die breathes out a little ink smoke over the
+   * verdict's `ms` (0 → 0.3 → 0) and settles. A figure that is falling (or gone) keeps its dissolve.
+   * Reduced motion: none.
+   */
+  puff(id: TerritoryId, ms: number, run: Run | null = null): void {
+    const t = this.toks.get(id);
+    if (!t || this.reduced || this.anim.instant || (run && run.skipped)) return;
+    if (t.n <= 0 || t.scale <= 0.001 || t.smoke > 0) return;
+    this.tw(t, 'puff', {
+      ms,
+      ease: ease.linear,
+      run,
+      update: (v) => (t.puff = 0.3 * Math.sin(Math.PI * Math.min(1, v)) * (v < 0.5 ? 1 : 1 - 0.15 * (v - 0.5))),
+      done: () => (t.puff = 0),
+    });
   }
 
   /** Denomination change: the old figure dries out (160) as the new one is drawn in, feet → head (280). */
@@ -1220,7 +1263,7 @@ export class TokenSystem {
       const blotA = 0.62 * t.fade * t.scale * (1 - 0.7 * t.smoke) * (1 - 0.1 * Math.min(1, dim));
       this.writeBlot(this.p, bw, R * 0.62, colors.blot, blotA, 0, t.seed);
       if (t.old) this.writeFig(this.p, t.old.denom, k, t.fade, 1, 0, t.old.dry, t.lean, t.flip, 0, t.seed, colors.deep, dim, t.offX, t.offY);
-      this.writeFig(this.p, t.denom, k, t.fade * t.scale, t.reveal, t.smoke, 0, t.lean, t.flip, t.ink, t.seed, colors.deep, dim, t.offX, t.offY);
+      this.writeFig(this.p, t.denom, k, t.fade * t.scale, t.reveal, Math.max(t.smoke, t.puff), 0, t.lean, t.flip, t.ink, t.seed, colors.deep, dim, t.offX, t.offY);
     }
     for (const tr of this.movers) {
       const pts = tr.pts;

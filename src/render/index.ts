@@ -245,6 +245,26 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     tray.hide(ms);
     emitTray(false);
   };
+  /**
+   * The fight recession (docs/INK2.md §2.2): while the ink ring is up, every territory but the pair recedes
+   * to dim 1.3 on desktop (1.0 on phones, the armed dim only) over 180 ms; the pair stays at 0; the count
+   * rings on receded tiles go to their dim look (80 %, never below 60 %). It comes back (300 ms) as the ring
+   * dries out. Reduced motion: at once.
+   */
+  let fightPair: string[] | null = null;
+  let fightDimMs: number | null = null;
+  const fightDimOf = (id: TerritoryId): number => (fightPair && !fightPair.includes(id) ? (compact ? 1 : 1.3) : 0);
+  const recede = (pair: string[] | null, ms: number) => {
+    if ((fightPair?.join('>') ?? '') === (pair?.join('>') ?? '')) return;
+    fightPair = pair;
+    fightDimMs = reduced || anim.instant ? 0 : ms;
+    try {
+      applyHighlights(lastHl, lastHl);
+    } finally {
+      fightDimMs = null;
+    }
+  };
+  tray.onHide = (ms) => recede(null, Math.max(ms, 300));
   const pal = (p: PlayerId): PlayerPalette | null => paletteOf(lastState, p);
   const isHuman = (p: PlayerId) => !!lastState?.players[p] && lastState.players[p].kind === 'human';
   const isAi = (p: PlayerId) => !!lastState?.players[p] && lastState.players[p].kind === 'ai';
@@ -362,8 +382,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
         tw(t, 'selectLift', t.selectLift, lift, up ? 160 : 120, up ? (reduced ? ease.outCubic : ease.outBack(1.4)) : ease.inQuad);
       }
       // Fortify's phase dim is deeper than a selection's: the board becomes "your side" (docs/ROUND2.md §A).
-      const dim = Math.max(h.dimOthers && !keep.has(t.id) ? 1 : 0, phaseDimmed.has(t.id) ? 1.8 : 0);
-      if (Math.abs(dim - t.dim) > 1e-4) tw(t, 'dim', t.dim, dim, dim > t.dim ? 180 : 140, ease.outQuad);
+      const dim = Math.max(h.dimOthers && !keep.has(t.id) ? 1 : 0, phaseDimmed.has(t.id) ? 1.8 : 0, fightDimOf(t.id));
+      if (Math.abs(dim - t.dim) > 1e-4) tw(t, 'dim', t.dim, dim, fightDimMs ?? (dim > t.dim ? 180 : 140), ease.outQuad);
       overlay.setDim(t.id, dim >= 1);
       if (!clickable.has(t.id) && t.hoverLift > 0 && t.id !== hovered) tw(t, 'hoverLift', t.hoverLift, 0, 140);
     }
@@ -1182,79 +1202,6 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
       return i === undefined ? [] : all.slice(i * 4, i * 4 + 4);
     });
   };
-  /**
-   * Landscape phones: the free band is so short that the dice tray and its header (the HUD's fight line,
-   * which rests on the tray's rim) always cover part of the board. Put them where they cover the fight
-   * least — the tray's usual spot, or up or down its column of the free band — and then the fewest other
-   * army counts. The HUD's header follows through `--tray-shift` on <html> (src/ui/mobile.css).
-   * Elsewhere the tray keeps its spot.
-   */
-  let trayFor = '';
-  const placeTrayFor = (from: TerritoryId, to: TerritoryId) => {
-    trayFor = `${from}>${to}`;
-    let best = 0;
-    // (Only where the HUD's header can follow: its phone form, src/ui/layout.ts.)
-    if (phoneLand() && document.documentElement.classList.contains('form-phone')) {
-      const baseCy = tray.cy - tray.shiftY;
-      const halfH = tray.trayH / 2 + 4;
-      const headH = overlay.headerBand;
-      // The header's words when the HUD has laid them out (it names the fight before the tray shows).
-      let hx0 = tray.cx - tray.trayW / 2;
-      let hx1 = tray.cx + tray.trayW / 2;
-      let l = Infinity;
-      let r = -Infinity;
-      document.querySelectorAll<HTMLElement>('[data-testid="battle"] .bt-head > *').forEach((k) => {
-        const bb = k.getBoundingClientRect();
-        if (bb.width > 0) {
-          l = Math.min(l, bb.left - rect0.left);
-          r = Math.max(r, bb.right - rect0.left);
-        }
-      });
-      if (l < r) {
-        hx0 = Math.min(hx0, l - 6);
-        hx1 = Math.max(hx1, r + 6);
-      }
-      const { y0, y1 } = rig.region();
-      const top0 = baseCy - halfH - headH; // the header's top at the usual spot
-      const up = Math.min(0, y0 + 2 - top0);
-      const down = Math.max(0, y1 - 4 - (baseCy + halfH));
-      const fight = [from, to].map((id) => overlay.pieceRects(id)).filter((x) => !!x);
-      const others = TERRITORY_IDS.filter((id) => id !== from && id !== to)
-        .map((id) => overlay.pieceRects(id))
-        .filter((x) => !!x);
-      const ov = (a0: number, a1: number, b0: number, b1: number) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
-      const cover = (q: [number, number, number, number], dy: number) => {
-        const tray0 = baseCy + dy - halfH;
-        const tray1 = baseCy + dy + halfH;
-        const tx0 = tray.cx - tray.trayW / 2;
-        const tx1 = tray.cx + tray.trayW / 2;
-        return ov(q[0], q[2], tx0, tx1) * ov(q[1], q[3], tray0, tray1) + ov(q[0], q[2], hx0, hx1) * ov(q[1], q[3], tray0 - headH, tray0);
-      };
-      // In 6 px steps: first the fight uncovered (a spear tip's worth is fine), then the fewest other counts
-      // covered, then the smallest move.
-      const steps: number[] = [0];
-      for (let dy = -6; dy > up; dy -= 6) steps.push(dy);
-      for (let dy = 6; dy < down; dy += 6) steps.push(dy);
-      steps.push(up, down);
-      let bestF = Infinity;
-      let bestO = Infinity;
-      for (const dy of steps) {
-        let f = 0;
-        for (const q of fight) f += cover(q!.box, dy);
-        f = f < 24 ? 0 : f;
-        let o = 0;
-        for (const q of others) o += cover(q!.plaque, dy);
-        if (f < bestF - 1 || (Math.abs(f - bestF) <= 1 && (o < bestO - 1 || (Math.abs(o - bestO) <= 1 && Math.abs(dy) < Math.abs(best))))) {
-          bestF = f;
-          bestO = o;
-          best = dy;
-        }
-      }
-      best = Math.round(best);
-    }
-    if (best !== tray.shiftY) tray.setShift(best);
-    document.documentElement.style.setProperty('--tray-shift', `${best}px`);
-  };
   const needsFraming = (from: TerritoryId, to: TerritoryId): boolean => {
     if (phoneLand()) {
       const ext = extentsOf([from, to]);
@@ -1676,7 +1623,8 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
           return;
         }
         // full: the battle tray. The two figures face each other; the attacker leans in while the dice roll.
-        if (!tray.showing || trayFor !== key) placeTrayFor(e.from, e.to);
+        // The ring brushes on and the rest of the board recedes with it (INK2 §2.2 t = 0).
+        recede([e.from, e.to], 180);
         tokens.lean(e.from, e.to, true);
         rolling++;
         try {
@@ -1710,6 +1658,13 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
                 sfx('hit', { volume: (mode === 'middle' ? 0.5 : 1) * vol, pan: loserSide });
               }
               applyLosses(e, fromN, toN, gen, mode !== 'middle' || count <= 6);
+              // The losing figure puffs (INK2 §2.2): each side that lost a die and still stands breathes
+              // out a little ink over the verdict beat (a defender at 0 starts its full dissolve instead).
+              if (gen === syncGen && (mode !== 'middle' || count <= 6)) {
+                const pm = mode === 'middle' ? 160 : mode === 'first' ? 200 : mode === 'final' ? 220 : 260;
+                if (e.attackerLosses > 0 && fromN > 0) tokens.puff(e.from, pm, run);
+                if (e.defenderLosses > 0 && toN > 0) tokens.puff(e.to, pm, run);
+              }
             },
           });
         } finally {
@@ -2103,8 +2058,6 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     const band = insets.trayBand > 0 ? insets.trayBand : nominalBand();
     // The band sits just above the bottom strip; the tray is centred in it.
     tray.layout(W, H, H - insets.bottom - band, band, uiScale);
-    document.documentElement.style.setProperty('--tray-shift', '0px');
-    trayFor = '';
     // The home view keeps tokens clear of the tray's footprint where it can (camera.ts). The band it
     // assumes only ever grows, so a HUD that reports the band only during fights never moves the camera
     // mid-game (it re-homes once, the first time).
@@ -2296,10 +2249,14 @@ export const createBoardView: CreateBoardView = async (opts: BoardViewOptions): 
     const oc = overlay.occluder;
     oc.on = tray.visible;
     if (oc.on) {
-      oc.x0 = tray.cx - tray.trayW / 2;
-      oc.x1 = tray.cx + tray.trayW / 2;
-      oc.y0 = tray.cy - tray.trayH / 2 - 4;
-      oc.y1 = tray.cy + tray.trayH / 2 + 4;
+      // Only the dice cover the board: the ink ring and its translucent wash leave what's under them
+      // readable (INK2 §2.3; the tray has one fixed spot per layout). No die out yet: the ring's box.
+      const dr = tray.diceRect();
+      oc.x0 = dr ? dr[0] : tray.cx - tray.trayW / 2;
+      oc.x1 = dr ? dr[2] : tray.cx + tray.trayW / 2;
+      oc.y0 = dr ? dr[1] : tray.cy - tray.trayH / 2 - 4;
+      oc.y1 = dr ? dr[3] : tray.cy + tray.trayH / 2 + 4;
+      oc.ring = [tray.cx - tray.trayW * 0.53, tray.cy - tray.trayH / 2 - 2, tray.cx + tray.trayW * 0.53, tray.cy + tray.trayH / 2 + 2];
       // Phones: the fight header's words (read from the HUD's DOM a few times a second, never written).
       if (compact && (frameNo % 6 === 0 || oc.hx0 === undefined)) {
         const kids = document.querySelectorAll<HTMLElement>('[data-testid="battle"] .bt-head > *');
