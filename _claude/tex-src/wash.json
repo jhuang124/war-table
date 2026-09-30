@@ -1,0 +1,21 @@
+{
+  "prompt": "Macro of a watercolour wash drying on cold-press paper: pigment pooled unevenly, cauliflower back-run blooms with pale centres and a darker tide line round each, granulation settling into the paper tooth. Mid grey overall. Flat, evenly lit, no shadows, no vignette, no border, no text, no objects, fills the frame edge to edge, seamless tileable, high detail, greyscale.",
+  "aspect": "1:1",
+  "transparent": false,
+  "refs": [],
+  "session": null,
+  "variant": null,
+  "backend": "direct",
+  "model": "gpt-image-2 (service-selected)",
+  "reportedQuality": "low",
+  "reportedSize": "1254x1254",
+  "generationId": "2769f808-ad99-4a96-9a56-e046ce1b0665",
+  "requestId": "3b1af97c-0a3e-4698-9150-7a9d6de8dbd8",
+  "codexVersion": "codex-cli 0.144.0",
+  "width": 1254,
+  "height": 1254,
+  "bytes": 3480246,
+  "attempts": 1,
+  "durationMs": 40011,
+  "createdAt": "2026-09-30T02:46:03.880Z"
+}

@@ -1,0 +1,21 @@
+{
+  "prompt": "The very end of a single dry brush stroke of black ink on white paper where the brush lifted off: the stroke thins and splits into a few separate bristle hairs that fade out, each ending on its own. Stroke enters from the left, ends toward the right. Flat, evenly lit, no shadows, no vignette, no border, no text, no objects, pure white paper around the stroke, high detail, greyscale.",
+  "aspect": "1:1",
+  "transparent": false,
+  "refs": [],
+  "session": null,
+  "variant": null,
+  "backend": "direct",
+  "model": "gpt-image-2 (service-selected)",
+  "reportedQuality": "medium",
+  "reportedSize": "1254x1254",
+  "generationId": "01096ade-d3c0-4431-9c25-993fafb46094",
+  "requestId": "777fa0d8-5578-4a40-991a-2bde140d1ee8",
+  "codexVersion": "codex-cli 0.144.0",
+  "width": 1254,
+  "height": 1254,
+  "bytes": 976506,
+  "attempts": 1,
+  "durationMs": 42442,
+  "createdAt": "2026-09-30T02:46:46.566Z"
+}

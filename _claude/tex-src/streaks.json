@@ -1,0 +1,21 @@
+{
+  "prompt": "A single very long straight horizontal dry-brush stroke of black ink on white paper, viewed close: bristle streaks with gaps where hairs lifted, the stroke thickening and thinning slowly along its length, some hairs breaking off and rejoining. Flat, evenly lit, no shadows, no vignette, no border, no text, no objects, fills the frame edge to edge, seamless tileable, high detail, greyscale.",
+  "aspect": "16:9",
+  "transparent": false,
+  "refs": [],
+  "session": null,
+  "variant": null,
+  "backend": "direct",
+  "model": "gpt-image-2 (service-selected)",
+  "reportedQuality": "medium",
+  "reportedSize": "1672x941",
+  "generationId": "5c5bba6e-1923-450e-a59b-f64e3fb39688",
+  "requestId": "40509f6a-dd8a-44f5-8b56-d2b9781ac678",
+  "codexVersion": "codex-cli 0.144.0",
+  "width": 1672,
+  "height": 941,
+  "bytes": 2067038,
+  "attempts": 1,
+  "durationMs": 32171,
+  "createdAt": "2026-09-30T02:45:56.040Z"
+}

@@ -1,0 +1,21 @@
+{
+  "prompt": "Macro texture of handmade washi paper: long fine fibres running mostly left-to-right (about 6:1 anisotropy), a few crossing fibres, soft mottling, a scattering of tiny flecks. Very subtle, low contrast. Flat, evenly lit, no shadows, no vignette, no border, no text, no objects, fills the frame edge to edge, seamless tileable, high detail, greyscale.",
+  "aspect": "1:1",
+  "transparent": false,
+  "refs": [],
+  "session": null,
+  "variant": null,
+  "backend": "direct",
+  "model": "gpt-image-2 (service-selected)",
+  "reportedQuality": "low",
+  "reportedSize": "1254x1254",
+  "generationId": "1ff9b2ad-6e62-4f06-9131-28596d514d76",
+  "requestId": "614294a2-35d0-4511-af57-3f3fc8fa47d1",
+  "codexVersion": "codex-cli 0.144.0",
+  "width": 1254,
+  "height": 1254,
+  "bytes": 3049321,
+  "attempts": 1,
+  "durationMs": 31138,
+  "createdAt": "2026-09-30T02:45:55.007Z"
+}

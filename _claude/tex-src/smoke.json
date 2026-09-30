@@ -1,0 +1,21 @@
+{
+  "prompt": "Black ink dropped into still water, photographed against white: soft rising wisps and curls, thinning at the top, fine tendrils. Flat, evenly lit, no shadows, no vignette, no border, no text, no objects, fills the frame edge to edge, seamless tileable, high detail, greyscale.",
+  "aspect": "1:1",
+  "transparent": false,
+  "refs": [],
+  "session": null,
+  "variant": null,
+  "backend": "direct",
+  "model": "gpt-image-2 (service-selected)",
+  "reportedQuality": "low",
+  "reportedSize": "1254x1254",
+  "generationId": "a53e56a5-fb55-4c0e-b687-376854563197",
+  "requestId": "6e6e1603-718c-4384-9040-b3a48f862ea5",
+  "codexVersion": "codex-cli 0.144.0",
+  "width": 1254,
+  "height": 1254,
+  "bytes": 2895350,
+  "attempts": 1,
+  "durationMs": 48907,
+  "createdAt": "2026-09-30T02:46:53.031Z"
+}

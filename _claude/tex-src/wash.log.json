@@ -1,0 +1,35 @@
+{
+  "ok": true,
+  "backend": "direct",
+  "images": [
+    {
+      "path": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/tex-src/wash.png",
+      "bytes": 3480246,
+      "width": 1254,
+      "height": 1254,
+      "revisedPrompt": null,
+      "sidecar": "/Users/jhuang/Desktop/JH-Projects/risk3d/_claude/tex-src/wash.json",
+      "attempts": 1,
+      "durationMs": 40011,
+      "backend": "direct",
+      "reportedQuality": "low"
+    }
+  ],
+  "failures": [],
+  "session": null,
+  "quota": {
+    "planType": "pro",
+    "usedPercent": 4,
+    "windowMinutes": 1440,
+    "resetsAt": "2026-10-01T00:09:13.000Z",
+    "fiveHour": {
+      "usedPercent": 4,
+      "windowMinutes": 1440,
+      "resetsAt": "2026-10-01T00:09:13.000Z"
+    },
+    "activeLimit": "imagegen_premium",
+    "asOf": "2026-09-30T02:46:03.876Z",
+    "source": "direct-headers"
+  },
+  "model": "gpt-image-2 (service-selected)"
+}

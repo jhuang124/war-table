@@ -1,0 +1,473 @@
+{
+  "version": 1,
+  "note": "Written by scripts/textures.ts (docs/INK2.md §4). Data textures: load with sRGB off, RepeatWrapping (streaks: repeat in x), no premultiply. Stats are measured on the shipped files as WebGL decodes them.",
+  "target": {
+    "mean": 128,
+    "std": 40
+  },
+  "budget": {
+    "desktopBytes": 600000,
+    "phoneBytes": 250000,
+    "totalBytes": 850000,
+    "desktop": 595403,
+    "phone": 247821,
+    "total": 761019
+  },
+  "maps": {
+    "paper": {
+      "source": "_claude/tex-src/paper.png",
+      "sha256": "92aa9f092bda483e997b6e1ef3d3288b797818949d87b4b79606afc2c4dc1ea1",
+      "tile": "xy",
+      "use": "paperAt(): fibre R at 14 units/repeat (+ 1.37× rotated tap), mottle G at 37, grain B at 1.9, flecks A",
+      "files": [
+        {
+          "file": "tex/paper-1024.webp",
+          "set": "desktop",
+          "w": 1024,
+          "h": 1024,
+          "bytes": 194388,
+          "channels": {
+            "R": {
+              "name": "fibre",
+              "note": "raw luminance: long fibres (bright), soft mottling",
+              "mean": 128,
+              "std": 40.02,
+              "seamX": {
+                "step": 11.66,
+                "interiorP99": 15.57,
+                "interiorMax": 18.28
+              },
+              "seamY": {
+                "step": 53.19,
+                "interiorP99": 58.41,
+                "interiorMax": 74.21
+              }
+            },
+            "G": {
+              "name": "mottle",
+              "note": "24 px (σ) blur of raw",
+              "mean": 128.24,
+              "std": 39.87,
+              "seamX": {
+                "step": 3.85,
+                "interiorP99": 5.51,
+                "interiorMax": 7.27
+              },
+              "seamY": {
+                "step": 6.3,
+                "interiorP99": 11.42,
+                "interiorMax": 13.36
+              }
+            },
+            "B": {
+              "name": "grain",
+              "note": "high-pass 2 px (raw − σ2 blur), band-limited to half resolution",
+              "mean": 127.44,
+              "std": 39.99,
+              "seamX": {
+                "step": 17.92,
+                "interiorP99": 21.47,
+                "interiorMax": 24.93
+              },
+              "seamY": {
+                "step": 88.2,
+                "interiorP99": 78.03,
+                "interiorMax": 93.92
+              }
+            },
+            "A": {
+              "name": "flecks",
+              "note": "MASK, not equalised: fleck mask (top 1 % DoG on darkness, dilated 1 px, 0.5 px AA; 3.0 % of texels). Background 0.5, fleck 1.0; \"set\" = smoothstep(0.6, 0.9, A)",
+              "mean": 131.82,
+              "std": 21.69,
+              "mask": true,
+              "threshold": 0.75,
+              "seamX": {
+                "step": 11.91,
+                "interiorP99": 20.84,
+                "interiorMax": 25.8
+              },
+              "seamY": {
+                "step": 26.79,
+                "interiorP99": 35.72,
+                "interiorMax": 52.59
+              }
+            }
+          }
+        },
+        {
+          "file": "tex/paper-512.webp",
+          "set": "phone",
+          "w": 512,
+          "h": 512,
+          "bytes": 70404,
+          "channels": {
+            "R": {
+              "name": "fibre",
+              "note": "raw luminance: long fibres (bright), soft mottling",
+              "mean": 128.02,
+              "std": 40.02,
+              "seamX": {
+                "step": 17.02,
+                "interiorP99": 14.34,
+                "interiorMax": 16.21
+              },
+              "seamY": {
+                "step": 35.14,
+                "interiorP99": 49.06,
+                "interiorMax": 54.84
+              }
+            },
+            "G": {
+              "name": "mottle",
+              "note": "24 px (σ) blur of raw",
+              "mean": 128.28,
+              "std": 39.93,
+              "seamX": {
+                "step": 6.73,
+                "interiorP99": 7.35,
+                "interiorMax": 8.66
+              },
+              "seamY": {
+                "step": 14.16,
+                "interiorP99": 15.23,
+                "interiorMax": 16.45
+              }
+            },
+            "B": {
+              "name": "grain",
+              "note": "high-pass 2 px (raw − σ2 blur), band-limited to half resolution",
+              "mean": 127.15,
+              "std": 39.95,
+              "seamX": {
+                "step": 15.65,
+                "interiorP99": 18.09,
+                "interiorMax": 20.02
+              },
+              "seamY": {
+                "step": 51.49,
+                "interiorP99": 70.2,
+                "interiorMax": 76.64
+              }
+            },
+            "A": {
+              "name": "flecks",
+              "note": "MASK, not equalised: fleck mask (top 1 % DoG on darkness, dilated 1 px, 0.5 px AA; 3.0 % of texels). Background 0.5, fleck 1.0; \"set\" = smoothstep(0.6, 0.9, A)",
+              "mean": 131.87,
+              "std": 17.62,
+              "mask": true,
+              "threshold": 0.75,
+              "seamX": {
+                "step": 12.65,
+                "interiorP99": 13.55,
+                "interiorMax": 17.2
+              },
+              "seamY": {
+                "step": 13.09,
+                "interiorP99": 25.5,
+                "interiorMax": 30.61
+              }
+            }
+          }
+        }
+      ]
+    },
+    "wash": {
+      "source": "_claude/tex-src/wash.png",
+      "sha256": "0bd7b790c5f223d90142fe125887cf7014a53a380722e287d97ea794b13bac73",
+      "tile": "xy",
+      "use": "TILE_FRAG: pools R at 22 units (+ 1.37× rotated tap), bloom G, tide B, granulation A at 4.5 and 1.9",
+      "files": [
+        {
+          "file": "tex/wash-1024.webp",
+          "set": "desktop",
+          "w": 1024,
+          "h": 1024,
+          "bytes": 242296,
+          "channels": {
+            "R": {
+              "name": "pigment",
+              "note": "raw luminance: pooled pigment (dark = more pigment), pale bloom centres, dark tide rims",
+              "mean": 128.03,
+              "std": 40.01,
+              "seamX": {
+                "step": 17.48,
+                "interiorP99": 20.47,
+                "interiorMax": 24.72
+              },
+              "seamY": {
+                "step": 16.25,
+                "interiorP99": 21.16,
+                "interiorMax": 27.93
+              }
+            },
+            "G": {
+              "name": "bloom",
+              "note": "16 px (σ) blur of raw, equalised; the bloom mask is smoothstep(0.56, 0.66, G) in the shader (rank-identical to the spec's smoothstepped mask, which as a 0/1 mask could not meet mean 128 / std 40)",
+              "mean": 128.18,
+              "std": 40.16,
+              "threshold": 0.56,
+              "seamX": {
+                "step": 5.06,
+                "interiorP99": 6.95,
+                "interiorMax": 7.73
+              },
+              "seamY": {
+                "step": 3.98,
+                "interiorP99": 6.63,
+                "interiorMax": 7.84
+              }
+            },
+            "B": {
+              "name": "granulation",
+              "note": "high-pass 3 px (raw − σ3 blur), band-limited to half resolution. MOVED from A (spec) to B: a noisy channel in the lossless alpha plane costs ~600 KB alone",
+              "mean": 127.75,
+              "std": 39.77,
+              "seamX": {
+                "step": 31.87,
+                "interiorP99": 36.19,
+                "interiorMax": 47.62
+              },
+              "seamY": {
+                "step": 38.68,
+                "interiorP99": 37.52,
+                "interiorMax": 42.98
+              }
+            },
+            "A": {
+              "name": "tide",
+              "note": "MASK, not equalised: Sobel edge of the bloom field, thinned by non-maximum suppression, 0.7 px AA, the stronger edges kept. Background 0.5, line 1.0; tide = smoothstep(0.55, 0.9, A). MOVED from B (spec) to A: thin lines need the full-resolution lossless plane",
+              "mean": 130.81,
+              "std": 14.04,
+              "mask": true,
+              "threshold": 0.75,
+              "seamX": {
+                "step": 1.03,
+                "interiorP99": 31.34,
+                "interiorMax": 53.41
+              },
+              "seamY": {
+                "step": 7.75,
+                "interiorP99": 22.41,
+                "interiorMax": 37.63
+              }
+            }
+          }
+        },
+        {
+          "file": "tex/wash-512.webp",
+          "set": "phone",
+          "w": 512,
+          "h": 512,
+          "bytes": 74262,
+          "channels": {
+            "R": {
+              "name": "pigment",
+              "note": "raw luminance: pooled pigment (dark = more pigment), pale bloom centres, dark tide rims",
+              "mean": 127.96,
+              "std": 39.92,
+              "seamX": {
+                "step": 5.88,
+                "interiorP99": 16.55,
+                "interiorMax": 18.63
+              },
+              "seamY": {
+                "step": 16,
+                "interiorP99": 20.62,
+                "interiorMax": 26.05
+              }
+            },
+            "G": {
+              "name": "bloom",
+              "note": "16 px (σ) blur of raw, equalised; the bloom mask is smoothstep(0.56, 0.66, G) in the shader (rank-identical to the spec's smoothstepped mask, which as a 0/1 mask could not meet mean 128 / std 40)",
+              "mean": 128.23,
+              "std": 39.89,
+              "threshold": 0.5605,
+              "seamX": {
+                "step": 7.98,
+                "interiorP99": 10.17,
+                "interiorMax": 10.93
+              },
+              "seamY": {
+                "step": 7.16,
+                "interiorP99": 9.66,
+                "interiorMax": 11.27
+              }
+            },
+            "B": {
+              "name": "granulation",
+              "note": "high-pass 3 px (raw − σ3 blur), band-limited to half resolution. MOVED from A (spec) to B: a noisy channel in the lossless alpha plane costs ~600 KB alone",
+              "mean": 127.51,
+              "std": 39.82,
+              "seamX": {
+                "step": 14.65,
+                "interiorP99": 34.9,
+                "interiorMax": 39.24
+              },
+              "seamY": {
+                "step": 19.09,
+                "interiorP99": 33.64,
+                "interiorMax": 40.13
+              }
+            },
+            "A": {
+              "name": "tide",
+              "note": "MASK, not equalised: Sobel edge of the bloom field, thinned by non-maximum suppression, 0.7 px AA, the stronger edges kept. Background 0.5, line 1.0; tide = smoothstep(0.55, 0.9, A). MOVED from B (spec) to A: thin lines need the full-resolution lossless plane",
+              "mean": 130.84,
+              "std": 10.56,
+              "mask": true,
+              "threshold": 0.75,
+              "seamX": {
+                "step": 1.59,
+                "interiorP99": 11.44,
+                "interiorMax": 21.09
+              },
+              "seamY": {
+                "step": 4.56,
+                "interiorP99": 10.56,
+                "interiorMax": 17.88
+              }
+            }
+          }
+        }
+      ]
+    },
+    "streaks": {
+      "source": "_claude/tex-src/streaks.png",
+      "sha256": "ddc6b10bf78bb41a3c383998289a9161558d044b3ef97c8dbba25d86494e39d6",
+      "tile": "x",
+      "use": "dryBrush() streak sampler: row = hash(k, seed) % 256 (128 on phone), x = S / (rowH·48) wrapped",
+      "files": [
+        {
+          "file": "tex/streaks-2048.webp",
+          "set": "desktop",
+          "w": 2048,
+          "h": 256,
+          "bytes": 76514,
+          "channels": {
+            "R": {
+              "name": "bristle",
+              "note": "ink density (1 − luminance), one row per bristle, x along the stroke; on = R > threshold (the source's 50 % ink level); scale the threshold by `dry`",
+              "mean": 127.99,
+              "std": 39.92,
+              "threshold": 0.4475,
+              "seamX": {
+                "step": 1.69,
+                "interiorP99": 6.47,
+                "interiorMax": 9.98
+              }
+            },
+            "G": {
+              "name": "swell",
+              "note": "64 px (σ) horizontal blur of the bristle density: the slow thickening/thinning",
+              "mean": 128.13,
+              "std": 40.03,
+              "seamX": {
+                "step": 1.22,
+                "interiorP99": 1.58,
+                "interiorMax": 2.06
+              }
+            }
+          }
+        },
+        {
+          "file": "tex/streaks-1024.webp",
+          "set": "phone",
+          "w": 1024,
+          "h": 128,
+          "bytes": 20950,
+          "channels": {
+            "R": {
+              "name": "bristle",
+              "note": "ink density (1 − luminance), one row per bristle, x along the stroke; on = R > threshold (the source's 50 % ink level); scale the threshold by `dry`",
+              "mean": 127.98,
+              "std": 39.88,
+              "threshold": 0.4424,
+              "seamX": {
+                "step": 2.89,
+                "interiorP99": 5.55,
+                "interiorMax": 8.25
+              }
+            },
+            "G": {
+              "name": "swell",
+              "note": "64 px (σ) horizontal blur of the bristle density: the slow thickening/thinning",
+              "mean": 128.14,
+              "std": 40.04,
+              "seamX": {
+                "step": 0.68,
+                "interiorP99": 1.58,
+                "interiorMax": 1.81
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tip": {
+      "source": "_claude/tex-src/tip.png",
+      "sha256": "648ce31681af7442278aba460fd28ccb93737f95f84c3c0767bba424cd85e1bb",
+      "tile": "none",
+      "use": "AttackArrow / LiveStroke: last 30 % of the stroke alpha × tip alpha, u along the stroke",
+      "files": [
+        {
+          "file": "tex/tip.png",
+          "set": "shared",
+          "w": 512,
+          "h": 512,
+          "bytes": 47465,
+          "channels": {
+            "A": {
+              "name": "ink",
+              "note": "alpha = ink (black ink → 255, paper → 0); not equalised: it multiplies the stroke alpha",
+              "mean": 126.9,
+              "std": 120.23
+            }
+          }
+        }
+      ],
+      "extra": {
+        "sourceBBox": [
+          0,
+          527,
+          1196,
+          200
+        ],
+        "axis": "u = x (0 = still loaded at the left edge, 1 = past the last hair), v = y across the stroke"
+      }
+    },
+    "smoke": {
+      "source": "_claude/tex-src/smoke.png",
+      "sha256": "843317388ecde38b49533a40ccc3d527993c26717069abd1b3c8f528051b741f",
+      "tile": "xy",
+      "use": "tokens.ts figure smoke: rise / curl",
+      "files": [
+        {
+          "file": "tex/smoke-512.webp",
+          "set": "shared",
+          "w": 512,
+          "h": 512,
+          "bytes": 34740,
+          "channels": {
+            "R": {
+              "name": "smoke",
+              "note": "ink density (1 − luminance) of ink wisps in water; drift flattened (σ 64) so repeats don't band; stored grey (R = G = B)",
+              "mean": 128.11,
+              "std": 39.82,
+              "seamX": {
+                "step": 5.37,
+                "interiorP99": 25.57,
+                "interiorMax": 30.84
+              },
+              "seamY": {
+                "step": 6.55,
+                "interiorP99": 23.96,
+                "interiorMax": 32.91
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

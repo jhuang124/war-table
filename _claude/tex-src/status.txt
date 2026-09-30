@@ -1,0 +1,6 @@
+paper exit 0
+streaks exit 0
+wash exit 0
+tip exit 0
+smoke exit 0
+done
